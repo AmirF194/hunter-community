@@ -744,7 +744,7 @@ def dashboard(branch: str = "base") -> dict:
             log.exception("[agent] RS 补位失败,观察列表按原样返回")
             fillers = []
     try:
-        scan_of = _scan_hits(cur)
+        scan_of = _scan_hits(cur, _pool_of(ao.BRANCHES[branch]["engine"]))
     except Exception:                                         # noqa: BLE001
         log.exception("[agent] 读扫描命中日失败,悬停日K 上就没有蓝线,其余照常")
         scan_of = {}
@@ -896,7 +896,7 @@ def _rs_fillers(cur, need: int, exclude: set) -> list[dict]:
     return out
 
 
-def _scan_hits(cur) -> dict:
+def _scan_hits(cur, pool: str = PRESET) -> dict:
     """每只票被扫描筛选命中过的日子 —— {代码: [YYYY-MM-DD, …]}。
 
     悬停日K 上那几条半透明蓝线就是它:用户要看的是「扫描什么时候盯上这只票、
@@ -905,7 +905,12 @@ def _scan_hits(cur) -> dict:
     agent_watch 一天一行、items 是 [代码, 名称, 评分] 的数组,
     实测 174 天一共 41 kB,全表读进来建映射比按代码去 JSONB 里查便宜得多。
     """
-    cur.execute("SELECT trade_date, items FROM agent_watch ORDER BY trade_date")
+    # 按方向自己的池读(2026-09-13 用户看突破买入的悬停日K 发现:原来一律读默认池 agent_watch,
+    # 突破买入看板上的「扫描命中」蓝线其实是 VCP 波段收缩池的命中日,和这条线的筛选没关系)
+    if pool == PRESET:
+        cur.execute("SELECT trade_date, items FROM agent_watch ORDER BY trade_date")
+    else:
+        cur.execute("SELECT trade_date, items FROM agent_watch_pool WHERE pool=%s ORDER BY trade_date", (pool,))
     out: dict = {}
     for d, items in cur.fetchall():
         for it in (items or []):
