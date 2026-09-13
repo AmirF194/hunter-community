@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>扫描筛选 · 猎鹿人 Hunter</title>
+  <title>魔法筛选器 · 猎鹿人 Hunter</title>
   <link rel="stylesheet" href="style.css" />
   <!-- 悬停日K 用。版本与 backtest.html / workbench.html 一致,别各引各的 -->
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
@@ -247,10 +247,11 @@
 <script src="app.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════════════
-// 扫描筛选 · 对齐 chartink 的「魔法筛选 + 可视条件行」交互
+// 魔法筛选器 · 对齐 chartink 的「魔法筛选 + 可视条件行」交互
 //
-// 用 renderShell('agent', …) —— 顶栏高亮仍停在「小鹿智能体」。
-// 它是小鹿的取数入口(候选票从哪来),不是并列的第六个一级功能。
+// 用 renderShell('screener', …) —— 顶栏高亮「魔法筛选器」(小鹿智能体左边)。
+// 2026-09-13 用户要求升成一级页面:原来它算小鹿的取数入口、顶栏高亮小鹿,
+// 现在找候选票是独立功能(研究台立新研究线之前也从这里开始)。
 //
 // ── 数据模型:脚本就是模型 ────────────────────────────────────────
 // 界面上一行条件 = 脚本里一句 `def`;「同时满足以下全部条件」= `plot scan = a and b …`。
@@ -264,9 +265,8 @@
 // 延迟 15 分钟 / 只有快照没有历史不能回测 / 市值口径与站内不一致。
 // 后端每次都带 warnings,这里原样渲染,不折叠、不做"下次不再提示"。
 // ═══════════════════════════════════════════════════════════════════
-document.body.innerHTML = renderShell('agent', '策略广场 / 扫描筛选',
-  '写筛选脚本 · 扫全市场找候选票',
-  '<a class="btn small" href="/strategies/agent.html">← 回小鹿智能体</a>')
+document.body.innerHTML = renderShell('screener', '策略广场 / 魔法筛选器',
+  '写筛选脚本 · 扫全市场找候选票', '')      // 升成一级页面后不再挂「← 回小鹿智能体」:顶栏 tab 就能过去
 
 const container = document.getElementById('page-content')
 const META_API  = '/api/quant/screener/meta'
@@ -449,7 +449,7 @@ function vMagic() {
       (S.metaErr ? '市场没拿到' : '加载中…') + '</span>'
 
   return '<div class="mg">' +
-    '<div class="mg-hd"><span class="hi hi-sparkle"></span>魔法筛选</div>' +
+    '<div class="mg-hd"><span class="hi hi-sparkle"></span>魔法筛选器</div>' +
     '<div class="mg-row">' +
       '<div class="mg-seg" id="mg-mode">' +
         '<button data-mode="append" class="' + (S.mode === 'append' ? 'on' : '') + '">追加</button>' +

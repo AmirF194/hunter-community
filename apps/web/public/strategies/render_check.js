@@ -795,6 +795,30 @@ try {
   console.log('FAIL 研究台定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 魔法筛选器是一级页面(2026-09-13 用户要求)──────────────────────────
+// 顶栏里「魔法筛选器」在「小鹿智能体」左边;screener.html 高亮它而不是小鹿;页面里的标题叫「魔法筛选器」。
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  vm.runInContext("var SH_SC = renderShell('screener', 't', 's', ''); var SH_AG = renderShell('agent', 't', 's', '')", ctx, { filename: 'assert-magic-tab' })
+  const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  const mt = [
+    ['顶栏有「魔法筛选器」且在「小鹿智能体」左边', ctx.SH_SC.indexOf('>魔法筛选器<') >= 0 && ctx.SH_SC.indexOf('>魔法筛选器<') < ctx.SH_SC.indexOf('>小鹿智能体<')],
+    ['「魔法筛选器」指向 screener.html', /href="\/strategies\/screener.html" class="tab-h active">魔法筛选器</.test(ctx.SH_SC)],
+    ['在魔法筛选器页只高亮它,不高亮小鹿', !/class="tab-h active">小鹿智能体</.test(ctx.SH_SC)],
+    ['在小鹿页不高亮魔法筛选器', !/class="tab-h active">魔法筛选器</.test(ctx.SH_AG) && /class="tab-h active">小鹿智能体</.test(ctx.SH_AG)],
+    ['screener.html 用 renderShell(\'screener\')', /renderShell\('screener'/.test(sc)],
+    ['页面里的标题叫「魔法筛选器」', /hi-sparkle"><\/span>魔法筛选器</.test(sc)],
+  ]
+  for (const [name, ok] of mt) {
+    if (ok) console.log('PASS 魔法筛选器 ·', name)
+    else { failed++; console.log('FAIL 魔法筛选器 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 魔法筛选器定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 筛选器悬停日K:当前脚本的历史命中日(2026-09-13)──────────────────────
 // 标记是异步来的(后端逐日回算),三件事钉住:
 //   ① 用的是「跑出结果表的那份脚本」,不是条件区此刻的样子;

@@ -727,6 +727,10 @@ function renderShell(activeTab, title, subTitle, actions) {
       <!-- 小鹿智能体(2026-09-09)。自迭代量化原型:每日自动收数据 / 回测 / 复盘 / 改规则。
            放在工作台与数据之间 —— 工作台是「人调策略」,它是「策略自己调自己」,
            两者是同一件事的手动挡与自动挡,挨着放才看得出关系。 -->
+      <!-- 魔法筛选器(2026-09-13 用户要求升成一级页面,放在小鹿智能体左边)。
+           原来 screener.html 算小鹿的取数入口、顶栏高亮小鹿;现在它是独立的一级功能 ——
+           找候选票不只给小鹿用,研究台立新研究线之前也先从这里开始。 -->
+      <a href="/strategies/screener.html" class="tab-h ${activeTab==='screener'?'active':''}">魔法筛选器</a>
       <a href="/strategies/agent.html"    class="tab-h ${activeTab==='agent'?'active':''}">小鹿智能体</a>
       <a href="/strategies/data.html"      class="tab-h ${activeTab==='data'?'active':''}">数据</a>
     </div>
