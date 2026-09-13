@@ -1266,7 +1266,9 @@ async def screener_parse(body: ScreenParseIn, request: Request):
     except screen_source.NeedsAI as e:
         # 结构化 detail —— 前端据此弹「AI 识别」按钮。
         # 让前端去匹配报错文本来判断"能不能试 AI"是一种迟早会断的耦合。
-        raise HTTPException(400, {"message": str(e), "can_try_ai": True})
+        # kind:text = 大白话没认出来 · script = 脚本编译不过(AI 只修报错那几处)
+        raise HTTPException(400, {"message": str(e), "can_try_ai": True,
+                                  "kind": getattr(e, "kind", "text")})
     except ScreenError as e:
         raise HTTPException(400, str(e))
 

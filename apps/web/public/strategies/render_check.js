@@ -992,6 +992,57 @@ try {
   console.log('FAIL 时间回溯定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 脚本编译不过也要给「AI 修脚本」按钮,改动逐句摆在外面(2026-09-13)──────
+// 前科:ThinkScript 脚本 17 句只错一处 average_volume_50d_calc,界面只有一行报错、没有 AI 按钮。
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const sc = inlineScripts(fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8'))
+  sc.forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    var FIX_SENT = []
+    post = async function (url, body) {
+      FIX_SENT.push(body)
+      return { ok: false, status: 400, data: { detail: { message: '扫描源没有 average_volume_50d_calc', can_try_ai: true, kind: body.script.indexOf('def ') >= 0 ? 'script' : 'text' } } }
+    }
+    toast = function () {}
+    S.mode = 'replace'
+    S.input = 'def c_v = average_volume_50d_calc > 1;\\nplot scan = c_v;'
+  `, ctx, { filename: 'assert-fix-1' })
+  const done = vm.runInContext(`generate().then(function () {
+      FIX_MAGIC_SCRIPT = vMagic()
+      S.input = '成交量大于一百万'
+      return generate()
+    }).then(function () { FIX_MAGIC_TEXT = vMagic() })`, ctx, { filename: 'assert-fix-2' })
+  Promise.resolve(done).then(() => {
+    vm.runInContext(`
+      S.ai = { mode: 'fix', model: 'gemini-3.5-flash', attempts: 1, error: '扫描源没有 average_volume_50d_calc',
+               script: 'def c_v = average_volume_60d_calc > 1;',
+               changes: [{ name: 'def c_v', before: 'average_volume_50d_calc > 1', after: 'average_volume_60d_calc > 1' }] }
+      var FIX_NOTE = vAiNote()
+    `, ctx, { filename: 'assert-fix-3' })
+    const note = ctx.FIX_NOTE
+    const beforeFold = note.split('<details')[0]
+    const checks = [
+      ['⭐脚本编译不过 → 有「用 AI 修脚本」按钮', /id="mg-ai"/.test(ctx.FIX_MAGIC_SCRIPT) && /用 AI 修脚本/.test(ctx.FIX_MAGIC_SCRIPT)],
+      ['大白话认不出 → 仍是「用 AI 识别」', /用 AI 识别/.test(ctx.FIX_MAGIC_TEXT) && !/用 AI 修脚本/.test(ctx.FIX_MAGIC_TEXT)],
+      ['点生成本身不花 token(allow_ai=false)', ctx.FIX_SENT.length === 2 && ctx.FIX_SENT.every(b => b.allow_ai === false)],
+      ['⭐改动逐句摆在折叠区外面', /average_volume_50d_calc &gt; 1|average_volume_50d_calc > 1/.test(beforeFold) && /average_volume_60d_calc/.test(beforeFold)],
+      ['写明改了几句', /改了 1 句/.test(beforeFold)],
+    ]
+    for (const [name, ok] of checks) {
+      if (ok) console.log('PASS AI 修脚本 ·', name)
+      else { failed++; console.log('FAIL AI 修脚本 ·', name) }
+    }
+  }).catch(e => {
+    failed++
+    console.log('FAIL AI 修脚本定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+  })
+} catch (e) {
+  failed++
+  console.log('FAIL AI 修脚本定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 保存的扫描策略:开关状态必须能往返 ─────────────────────────────
 // 这个功能最容易悄悄写错的地方:保存时如果用了 buildScript(true)(草稿用的那个),
 // 停用的条件也会被写进 plot —— 页面一切正常、保存也成功,但加载回来

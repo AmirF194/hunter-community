@@ -59,7 +59,13 @@ class NeedsAI(ScreenError):
 
     单独一个类型是为了让路由能把「可以试 AI」这个信号带给前端。
     用普通 ScreenError 的话前端只能靠匹配报错文本来猜,那种耦合迟早断。
+
+    kind:"text" = 大白话本地没认出来(AI 翻译);"script" = 写好的脚本编译不过(AI 只修报错那几处)。
     """
+
+    def __init__(self, msg: str, kind: str = "text"):
+        super().__init__(msg)
+        self.kind = kind
 
 
 # ⚠️ 下面三个值是**上游要求的**,不是可配项:换掉 Origin / Referer 会被直接拒。
@@ -568,47 +574,61 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     original_text = script
     try:
         c: Compiled = _compile(script)
-    except ScreenError:
+    except ScreenError as script_err:
         # 解析不了 —— 按"最省"的顺序往下试。
         #
-        # ① 写着 def/plot 却解析不过 = 他的脚本有错,把真实报错还给他。
-        #    让翻译器去"猜他想写什么"再悄悄改成别的,是调脚本时最坏的体验。
+        # ① 写着 def/plot 却解析不过 = 他的脚本有错,真实报错原样给他,**同时**给「AI 修错」按钮。
+        #    2026-09-13 以前这里直接 raise、不给按钮:用户粘 ThinkScript 脚本 17 句只错一处
+        #    (average_volume_50d_calc),只能自己对着报错改。怕的是 AI「悄悄改」——
+        #    现在要点了才改、只许改报错那几句、改了哪几句逐句列出来(screen_nl.fix_script)。
         # ② 本地关键词匹配 —— **零 token**,覆盖「字段+比较符+数字」这类规整描述。
         # ③ 都不行才轮到 AI,而且**必须 allow_ai=True**(前端弹按钮、用户点了才传)。
         #    默认不花钱是这条链路的设计目标。
         from app.services.quant import screen_kw, screen_nl
         if screen_nl.looks_like_script(script):
-            raise
-        from app.services.quant import screen_learned
-        try:
-            # names:字段原名不分大小写(perf.y → Perf.Y)。learned:之前 AI 识别学来的对照表,
-            # 只补规则认不出的句子。表读不到时是空 dict,本地规则照常工作。
-            k = screen_kw.translate(script, has_field, meta.sma, meta.ema, meta.rsi,
-                                    names=meta.names,
-                                    learned=screen_learned.table_for(screen_kw.candidate_keys(script)))
-            script = k["script"]
-            # 对照表里的表达式可能已经过时(字段下线、周期不支持)—— 这一步编译不过
-            # 就整体落回 AI,AI 的新结果会覆盖掉那条旧的
-            c = _compile(script)
-            kw = {"matched": k["matched"], "notes": k.get("notes") or [],
-                  "source_text": original_text,
-                  "script": script}
-            hit_ids = sorted({m["learned"]["id"] for m in k["matched"]
-                              if m.get("learned") and m["learned"].get("id")})
-            if hit_ids:
-                screen_learned.record_hits(hit_ids)
-        except ScreenError as kw_err:
             if not allow_ai:
-                # 不抛普通 ScreenError —— 路由要据此告诉前端"可以试试 AI"
-                raise NeedsAI(str(kw_err)) from kw_err
-            translated = screen_nl.translate(
-                script, md.label, meta.sma, meta.ema, meta.rsi, validate=_compile)
-            script = translated["script"]
-            c = _compile(script)         # translate 里已经 validate 过,这里必成功
-            ai = {k2: translated[k2] for k2 in
-                  ("model", "attempts", "tokens_in", "tokens_out")}
+                raise NeedsAI(str(script_err), kind="script") from script_err
+            fixed = screen_nl.fix_script(script, str(script_err), md.label, meta.sma,
+                                         meta.ema, meta.rsi, validate=_compile)
+            script = fixed["script"]
+            c = _compile(script)
+            ai = {k2: fixed[k2] for k2 in
+                  ("model", "attempts", "tokens_in", "tokens_out", "changes")}
+            ai["mode"] = "fix"
+            ai["error"] = str(script_err)
             ai["source_text"] = original_text
             ai["script"] = script
+        else:
+            from app.services.quant import screen_learned
+            try:
+                # names:字段原名不分大小写(perf.y → Perf.Y)。learned:之前 AI 识别学来的对照表,
+                # 只补规则认不出的句子。表读不到时是空 dict,本地规则照常工作。
+                k = screen_kw.translate(script, has_field, meta.sma, meta.ema, meta.rsi,
+                                        names=meta.names,
+                                        learned=screen_learned.table_for(screen_kw.candidate_keys(script)))
+                script = k["script"]
+                # 对照表里的表达式可能已经过时(字段下线、周期不支持)—— 这一步编译不过
+                # 就整体落回 AI,AI 的新结果会覆盖掉那条旧的
+                c = _compile(script)
+                kw = {"matched": k["matched"], "notes": k.get("notes") or [],
+                      "source_text": original_text,
+                      "script": script}
+                hit_ids = sorted({m["learned"]["id"] for m in k["matched"]
+                                  if m.get("learned") and m["learned"].get("id")})
+                if hit_ids:
+                    screen_learned.record_hits(hit_ids)
+            except ScreenError as kw_err:
+                if not allow_ai:
+                    # 不抛普通 ScreenError —— 路由要据此告诉前端"可以试试 AI"
+                    raise NeedsAI(str(kw_err)) from kw_err
+                translated = screen_nl.translate(
+                    script, md.label, meta.sma, meta.ema, meta.rsi, validate=_compile)
+                script = translated["script"]
+                c = _compile(script)         # translate 里已经 validate 过,这里必成功
+                ai = {k2: translated[k2] for k2 in
+                      ("model", "attempts", "tokens_in", "tokens_out")}
+                ai["source_text"] = original_text
+                ai["script"] = script
 
     d = screen_dsl.decompose(script, c, has_field, meta.sma, meta.ema, meta.rsi)
 
@@ -638,7 +658,14 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
         warnings.append(
             "以上条件由本地关键词匹配得出(未使用 AI,零成本),"
             "已通过语法与字段校验。逐句对照见上方折叠区,不对的话可直接改或改用 AI 识别。")
-    if ai:
+    if ai and ai.get("mode") == "fix":
+        # 修脚本不进对照表:那张表学的是「大白话 → 表达式」,拿脚本当原文会学出一堆垃圾键
+        d["ai"] = ai
+        warnings.append(
+            f"你的脚本编译不过,{ai['model']} 按报错改了 {len(ai.get('changes') or [])} 句"
+            f"(逐句对照见上方,由程序比对得出),其余原样保留。"
+            f"**改动的周期 / 数字不是你写的**,跑扫描前请确认。")
+    elif ai:
         # ── 学:把这次 AI 识别记进对照表(2026-09-11 用户要求)──────────
         # 下次同样的说法(数字可以不同)直接本地识别、零 token。
         # 学失败只记日志,绝不影响这次的结果 —— 用户要的是条件,不是对照表。

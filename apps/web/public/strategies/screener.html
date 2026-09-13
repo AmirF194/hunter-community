@@ -309,6 +309,7 @@ const S = {
   fieldOpen: {},             // 哪些族被点开了
   canTryAi: false,           // 本地两条路都不通 —— 弹「AI 识别」按钮问用户要不要花 token
   aiText: '',                // 点 AI 识别时要重发的原文
+  aiKind: 'text',            // text = 大白话没认出来 · script = 脚本编译不过(AI 只修报错那几处)
   generating: false, running: false,
   genError: null, runError: null,
   result: null,
@@ -485,9 +486,12 @@ function vMagic() {
         (S.canTryAi
           ? '<div class="sc-runbar" style="margin-top:9px">' +
               '<button class="btn small" id="mg-ai"' + (S.generating ? ' disabled' : '') + '>' +
-                (S.generating ? '识别中…' : '✨ 用 AI 识别') + '</button>' +
+                (S.generating ? (S.aiKind === 'script' ? '修改中…' : '识别中…')
+                  : (S.aiKind === 'script' ? '✨ 用 AI 修脚本' : '✨ 用 AI 识别')) + '</button>' +
               '<span style="font-size:11.5px;color:#9B2C2C">' +
-                '本地关键词没认出来 · AI 识别会消耗 token,点了才调用</span>' +
+                (S.aiKind === 'script'
+                  ? '脚本里有识别不了的写法 · AI 只改报错涉及的句子,改了哪几句会逐条列出 · 会消耗 token,点了才调用'
+                  : '本地关键词没认出来 · AI 识别会消耗 token,点了才调用') + '</span>' +
             '</div>'
           : '') +
         '</div>'
@@ -658,6 +662,24 @@ function vKwNote() {
 // 必须能看见它到底写了什么(仓内铁律:AI 产出要可核对,不能只给结论)。
 function vAiNote() {
   if (!S.ai) return ''
+  // 修脚本:改动逐句摆在折叠区**外面** —— 被改的周期 / 数字不是用户写的,藏起来等于悄悄改。
+  // changes 由后端逐句比对算出,不是模型自述。
+  if (S.ai.mode === 'fix') {
+    const ch = S.ai.changes || []
+    return '<div class="sc-warn"><b>AI 按报错改了 ' + ch.length + ' 句脚本,其余原样保留。</b>' +
+        '改动的周期 / 数字不是你写的,跑扫描前请确认:<ul>' +
+        ch.map(function (x) {
+          return '<li><code>' + esc(x.name) + '</code>:' +
+            (x.before == null ? '(新增)' : '<code>' + esc(x.before) + '</code>') + ' → ' +
+            (x.after == null ? '(删掉了)' : '<code>' + esc(x.after) + '</code>') + '</li>'
+        }).join('') + '</ul>' +
+        '<div style="font-size:11.5px;margin-top:4px">原报错:' + esc(maskSrc(S.ai.error || '')) + '</div></div>' +
+      '<details class="sc-fold ai-note"><summary>点开看 AI 改好的完整脚本</summary>' +
+        '<pre class="ai-script">' + esc(S.ai.script || '') + '</pre>' +
+        '<div class="sc-note">模型 ' + esc(S.ai.model || '') +
+          (S.ai.attempts > 1 ? ' · 第 ' + S.ai.attempts + ' 次才通过校验' : '') +
+          ' · 修出来的脚本不进对照表</div></details>'
+  }
   return '<details class="sc-fold ai-note"><summary>' +
       'AI 把「' + esc(String(S.ai.source_text || '').slice(0, 40)) + '」翻成了这些条件 · 点开看它写的脚本' +
     '</summary>' +
@@ -1351,6 +1373,7 @@ async function generate(allowAi) {
     // 后端说"本地两条路都不通,可以试 AI" → 把原文记下来,弹按钮等用户点
     S.canTryAi = canAi(r)
     S.aiText = S.canTryAi ? text : ''
+    S.aiKind = (S.canTryAi && r.data.detail.kind === 'script') ? 'script' : 'text'
     render(); return
   }
   const d = r.data

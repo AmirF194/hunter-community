@@ -241,3 +241,160 @@ def translate(text: str, market_label: str, sma: list[int], ema: list[int],
         f"没能把这段描述转成筛选条件({last_err})。\n"
         f"把描述写得更具体些通常就好了,比如「成交量大于100万,且收盘价站上50日均线」;"
         f"也可以直接写筛选脚本(点「语法速查」看写法)。")
+
+
+# ═══════════════════════════════════════════════════════════════
+# 脚本修错(2026-09-13 用户要求)
+#
+# 用户粘了一份 ThinkScript 风格的脚本,17 句里只有 `average_volume_50d_calc` 一处取不到
+# (扫描源只有 10/30/60/90 天均量),界面只给了一行报错、没有 AI 按钮 —— 原设计是
+# 「写着 def/plot 就是他自己写错了,别让 AI 悄悄改」。
+#
+# 「悄悄」才是问题,「改」不是。现在:
+#   1. 按钮照样要用户点(花 token 的动作必须明示);
+#   2. 模型只许改报错涉及的句子,**改了哪几句由我们逐句比对算出来**(script_changes),
+#      不采信模型自己的说明 —— 它说「只改了一处」不代表真的只改了一处;
+#   3. 改动句数超过门槛直接判失败,不把一份被重写过的脚本当成「修好了」交出去;
+#   4. 修出来的东西不进对照表(那张表学的是大白话 → 表达式,不是脚本 → 脚本)。
+# ═══════════════════════════════════════════════════════════════
+
+_MAX_FIX_INPUT = 8000
+# 改动句数上限:至少允许 3 句(一个错名字常被好几句引用),再多按总句数的 1/3 算
+_FIX_MIN_ALLOWED = 3
+
+
+def _statements(script: str) -> list[tuple[str, str]]:
+    """脚本 → [(「def 名字」/「plot 名字」, 规整后的表达式)],按出现顺序。
+
+    去掉 `#` 注释、合并空白后按 `;` 切。只用来**比对改动**,不是解析器 ——
+    合法性永远以 screen_dsl 为准。
+    """
+    lines = [ln.split("#", 1)[0] for ln in (script or "").splitlines()]
+    out = []
+    for part in " ".join(lines).split(";"):
+        s = " ".join(part.split())
+        if not s:
+            continue
+        m = re.match(r"^(def|plot)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", s)
+        if m:
+            out.append((f"{m.group(1)} {m.group(2)}", m.group(3).strip()))
+        else:
+            out.append(("?", s))
+    return out
+
+
+def script_changes(before: str, after: str) -> list[dict]:
+    """逐句比对两份脚本 → [{name, before, after}]。before/after 为 None 表示新增/删除。
+
+    表达式只做空白规整后逐字比较:`0.9` 改成 `0.90` 也算改动 —— 宁可多报,
+    不能让一个被改过的数字从对照里漏掉。
+    """
+    a = _statements(before)
+    b = _statements(after)
+    bmap = {}
+    for k, v in b:
+        bmap.setdefault(k, v)
+    amap = {}
+    for k, v in a:
+        amap.setdefault(k, v)
+    changes = []
+    for k, v in a:
+        if k == "?":
+            continue
+        nv = bmap.get(k)
+        if nv != v:
+            changes.append({"name": k, "before": v, "after": nv})
+    for k, v in b:
+        if k != "?" and k not in amap:
+            changes.append({"name": k, "before": None, "after": v})
+    return changes
+
+
+def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: list[int],
+               rsi: list[int], validate) -> dict:
+    """用户写的脚本编译不过 → 让模型只改报错那几处。
+
+    → {script, model, attempts, tokens_in, tokens_out, changes}
+    """
+    from app.services.online_analysis.llm_client import get_client
+
+    script = (script or "").strip()
+    if not script:
+        raise ScreenError("生成框是空的")
+    if len(script) > _MAX_FIX_INPUT:
+        raise ScreenError(f"脚本太长,AI 修错上限 {_MAX_FIX_INPUT} 字符。请按报错自己改,或删掉注释再试")
+
+    client = get_client()
+    if client is None:
+        raise ScreenError(
+            "这个部署没有配 LLM key,AI 修错用不了。请按上面的报错直接改脚本,"
+            "或在 .env 里配 LLM_API_KEY。")
+
+    n_stmt = sum(1 for k, _ in _statements(script) if k != "?")
+    allowed = max(_FIX_MIN_ALLOWED, n_stmt // 3)
+    system = _system_prompt(market_label, sma, ema, rsi) + """
+# 本次任务:修脚本,不是翻译
+用户给的是一份**已经写好**的筛选脚本(可能是 ThinkScript / TradingView 风格),我们的解析器报了错。
+1. 只改报错涉及的那几处。其余每一句**逐字保留**:def 名字、数字、运算符、plot 那句都不许动。
+2. 字段或周期在可用列表里取不到时,换成最接近的可用值(比如 50 天均量 → average_volume_60d_calc)。
+3. 脚本里出现的 high_63d / low_21d / rs_rating / vcp_ 开头这类名字是合法字段,不要改。
+4. 注释可以删掉。不要加新的条件,不要删条件。
+5. 直接输出改好的完整脚本,第一个字符必须是 d 或 p。
+"""
+    user = f"解析器报错:{error}\n\n脚本:\n{script}"
+    tokens_in = tokens_out = 0
+    last_err = error
+
+    for attempt in (1, 2, 3):
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user}],
+                max_tokens=4000,
+                temperature=0.1,
+            )
+        except Exception as e:                              # noqa: BLE001
+            raise ScreenError(f"调用模型失败:{type(e).__name__} · {e}") from e
+        raw = (completion.choices[0].message.content or "") if completion.choices else ""
+        usage = getattr(completion, "usage", None)
+        if usage:
+            tokens_in += usage.prompt_tokens or 0
+            tokens_out += usage.completion_tokens or 0
+
+        fixed = _extract_script(raw)
+        if not fixed or fixed.strip().upper().rstrip(".。") == "NONE":
+            last_err = "模型没有产出脚本"
+            user = (f"解析器报错:{error}\n\n脚本:\n{script}\n\n"
+                    f"(上一次你没有输出脚本。请直接以 def 开头输出改好的完整脚本)")
+            continue
+        try:
+            validate(fixed)
+        except ScreenError as e:
+            last_err = str(e)
+            log.info("[screen_nl] 修错第 %d 轮仍不合法:%s", attempt, last_err)
+            user = (f"原脚本:\n{script}\n\n你上一次改成:\n{fixed}\n\n"
+                    f"但还有错:{last_err}\n请在原脚本基础上改正后重新输出完整脚本。")
+            continue
+
+        changes = script_changes(script, fixed)
+        if len(changes) > allowed:
+            last_err = f"模型改动了 {len(changes)} 句(上限 {allowed} 句),不像是只修报错"
+            log.info("[screen_nl] 修错第 %d 轮改动过多:%s", attempt,
+                     [c["name"] for c in changes])
+            user = (f"解析器报错:{error}\n\n脚本:\n{script}\n\n"
+                    f"上一次你改动了 {len(changes)} 句,太多了。只改报错涉及的句子,其余逐字保留。")
+            continue
+
+        return {
+            "script": fixed,
+            "model": MODEL,
+            "attempts": attempt,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "changes": changes,
+        }
+
+    raise ScreenError(
+        f"AI 没能修好这份脚本({last_err})。\n"
+        f"最初的报错是:{error}\n请按这条报错直接改脚本。")
