@@ -49,8 +49,26 @@ NA = {"ok": False, "above": None, "text": "基准日线不足"}
 # ── 指标:[1] 的两处不含今天;prev = 前一天收盘的字段 ─────────────────
 bars = mk([100.0] * 79 + [110.0])
 ind = ab.indicators(bars)
-check("指标 · 枢轴 = 前一天为止 21 日最高(不含今天 111.1)", abs(ind["pivot"] - 101.0) < 1e-9, str(ind["pivot"]))
 check("指标 · Base 低点 = 前一天为止 21 日最低", abs(ind["base_low"] - 99.0) < 1e-9, str(ind["base_low"]))
+
+# ── v2 枢轴:浪高点下方的密集成交区上沿 ──────────────────────────────
+zb = mk([100.0] * 80)
+zb[50] = (zb[50][0], 104.0, 106.0, 103.5, 100_000.0)          # 一根冲高回落、几乎没成交的「浪高点」
+z = ab.pivot_zone(zb)
+check("枢轴 · 浪高 = 窗口最高价 106(不含今天)", z is not None and abs(z["wave_high"] - 106.0) < 1e-9, str(z))
+check("枢轴 · 取的是 99~101 的密集成交区,不是 106 那根长上影", z is not None and 100.5 < z["high"] < 102.0 and z["low"] < 99.6, str(z))
+check("枢轴 · indicators 的 pivot = 密集区上沿", ab.indicators(zb)["pivot"] == z["high"])
+zb2 = mk([100.0] * 80)
+zb2[60] = (zb2[60][0], 115.0, 116.0, 114.0, 1_000_000.0)     # 浪高 116,下方 10% 内几乎没有成交
+z2 = ab.pivot_zone(zb2)
+check("枢轴 · 浪高下方 10% 内成交不到 10% → 没有枢轴(不退回单根最高价)", z2 is None, str(z2))
+check("枢轴 · 日线不足 63 根 → 没有枢轴", ab.pivot_zone(mk([100.0] * 40)) is None)
+noz = ab.indicators(zb2)
+check("枢轴为空 → P-06 不成立并写明", noz["pivot"] is None and not ab.trigger_check(noz)["ok"]
+      and "密集成交区" in ab.trigger_check(noz)["text"])
+check("枢轴为空 → P-05 不成立", not ab.screen_checks(dict(noz, screen={"sma150": 1, "sma200": 1, "hi252": 1, "av30": 1e6,
+                                                                "rng3m": 0.2, "rng1m": 0.08, "rng5d": 0.04, "low21": 2, "low63": 1}),
+                                                     P, 90)[3]["ok"])
 check("指标 · prev 是前一天收盘的字段", ind["prev"] is not None and ind["prev"]["close"] == 100.0)
 check("指标 · 不足 252 根 → 筛选字段为空(不猜)", ind["screen"] is None and ind["prev"]["screen"] is None)
 check("指标 · 不足 60 根 → None", ab.indicators(bars[:50]) is None)
@@ -95,7 +113,8 @@ check("前一天筛选 · 前一天 1 月振幅不满足、只有今天满足 �
 check("P-06 · 高出枢轴 5% 以上不追", not ab.entry_ok(good(close=107.5, high=108.0), P, 90, UP))
 check("P-06 · 量不到 1.5 倍 50 日均量不买", not ab.entry_ok(good(volume=1_400_000.0), P, 90, UP))
 check("P-06 · 没站上枢轴不买", not ab.entry_ok(good(close=101.5), P, 90, UP))
-check("P-03 · RS 79 不买", not ab.entry_ok(good(), P, 79, UP))
+check("P-03 · RS 69 不买(v2 门槛 70)", not ab.entry_ok(good(), P, 69, UP))
+check("P-03 · RS 70 买(v2 从 80 降到 70)", ab.entry_ok(good(), P, 70, UP))
 check("P-03 · RS 缺不买", not ab.entry_ok(good(), P, None, UP))
 check("P-03 · 前一天均线没排好不买", not ab.entry_ok(good(prev={"sma50": 102.5}), P, 90, UP))
 check("P-04 · 前一天 5 日振幅没收紧(0.06 > 0.08 × 0.65)不买", not ab.entry_ok(good(prev={"screen": {"rng5d": 0.06}}), P, 90, UP))

@@ -48,8 +48,21 @@
 6. 所有字段由引擎用自家日线精确算(扫描源没有 50 日 / 20 日均量);池子只做宽松预筛。
 
 收盘后决策、信号当天收盘价成交。规则固定,满 30 笔前不优化(tunable 为空)。
+
+## v2(2026-09-13 用户:「枢轴改成前浪高点也太过于绝对,应该是贴着浪高点的密集成交区,RS 降到 70」)
+
+v1(枢轴 = 前一天为止 21 日最高、RS ≥ 80)一年:-4.72%、21 笔、胜 4 笔、每笔 -226 美元。用户看 CNO(4 月底)/ NATL(2 月底)
+认为「即将突破」的位置没命中;诊断见仓内 CLAUDE.md 研究台第 8 条 (h)。v2 只改这两处(一次改两处是用户的要求,归因时记住):
+
+- **枢轴 = 浪高点下方的密集成交区上沿**(`pivot_zone`):前一天为止 63 根里,浪高 = 最高价;在浪高下方 10% 以内,
+  把每天的成交量按当天高低区间均摊到 0.5% 宽的价位格,取量最大的格,向两边扩到量 ≥ 峰值一半的相邻格 → 密集成交区。
+  枢轴取区间**上沿**(站上它 = 冲出这片套牢盘)。区间量不到窗口总量 10% → 没有像样的密集区,枢轴为空、不买(不退回 21 日最高)。
+  不取单根最高价:一根冲高回落的长上影就能把「前浪高点」抬高几个点,而那里几乎没成交,不是真阻力。
+- **RS ≥ 70**(池子与 P-03 同步)。
 """
 from __future__ import annotations
+
+import math
 
 from app.services.quant import agent_vcp as av
 
@@ -59,7 +72,8 @@ MIN_BARS = 60                        # 持仓管理(EMA21 / 50 日线 / 21 日�
 SCREEN_BARS = 252                    # 筛选要近 252 日最高价
 
 PARAMS = {
-    "price_min": 20.0, "liq_min": 200_000.0, "near_high": 0.80, "rs_min": 80,
+    "price_min": 20.0, "liq_min": 200_000.0, "near_high": 0.80, "rs_min": 70,      # v2:80 → 70
+    "zone_lookback": 63, "zone_depth": 0.10, "zone_bin": 0.005, "zone_keep": 0.5, "zone_min_share": 0.10,
     "depth_min": 0.12, "depth_max": 0.35, "tight1m_min": 0.03, "tight1m_max": 0.12,
     "shrink": 0.55, "tight5d": 0.65, "higher_low": 1.01,
     "pivot_lo": -4.0, "pivot_hi": 5.0, "vdry": 0.9,
@@ -78,14 +92,14 @@ WATCH_POOL_DAYS = 1                  # 突破是当天的事;筛选条件由引�
 
 POOL = "breakout"
 POOL_LIMIT = 800
-POOL_LABEL = "突破买入预筛池(收盘 > 20 · 30 日均量 > 20 万 · 均线多头 · 距 52 周高点 20% 以内 · RS ≥ 80)"
+POOL_LABEL = "突破买入预筛池(收盘 > 20 · 30 日均量 > 20 万 · 均线多头 · 距 52 周高点 20% 以内 · RS ≥ 70)"
 POOL_SCRIPT = """# ===== 突破买入预筛池(小鹿 · 突破买入线)=====
 # 整理形态 / 枢轴 / 50 日均量 / 突破由引擎用日线精确算;这里只圈脚本里扫描源能算的那几条
 def c_price = close > 20;
 def c_liq   = average_volume_30d_calc > 200000;
 def c_trend = close > SMA50 and SMA50 > SMA150 and SMA150 > SMA200;
 def c_near  = close > price_52_week_high * 0.80;
-def c_rs    = rs_rating >= 80;
+def c_rs    = rs_rating >= 70;
 
 plot scan = c_price and c_liq and c_trend and c_near and c_rs;
 """
@@ -94,10 +108,10 @@ EXEC_NOTE = "纸上交易 · 日线收盘价成交(筛选看前一天收盘、�
 RULES = [
     {"id": "P-01", "kind": "risk", "condition": "市场环境(当天):标普 500 收盘 > 50 日均线 > 200 日均线;不满足不开新仓"},
     {"id": "P-02", "kind": "buy", "condition": "价格与流动性(前一天收盘):收盘 > $20,30 日均量 > 20 万股"},
-    {"id": "P-03", "kind": "buy", "condition": "趋势(前一天收盘):收盘 > 50 日 > 150 日 > 200 日均线;收盘 > 近 252 日最高 × 0.80;RS ≥ 80"},
+    {"id": "P-03", "kind": "buy", "condition": "趋势(前一天收盘):收盘 > 50 日 > 150 日 > 200 日均线;收盘 > 近 252 日最高 × 0.80;RS ≥ 70"},
     {"id": "P-04", "kind": "buy", "condition": "整理形态(前一天收盘):3 月振幅 12%~35%、1 月振幅 3%~12%、1 月 ≤ 3 月 × 0.55、5 日 ≤ 1 月 × 0.65、21 日最低 > 63 日最低 × 1.01"},
-    {"id": "P-05", "kind": "buy", "condition": "枢轴与缩量(前一天收盘):距枢轴 −4% ~ +5%;10 日均量 < 50 日均量 × 0.9"},
-    {"id": "P-06", "kind": "buy", "condition": "突破触发(当天):收盘 > 枢轴(前一天为止近 21 日最高)、收盘 < 枢轴 × 1.05、成交量 > 50 日均量 × 1.5(阳线条件没做:日线没有开盘价)"},
+    {"id": "P-05", "kind": "buy", "condition": "枢轴与缩量(前一天收盘):枢轴 = 近 63 日浪高点下方 10% 内的密集成交区上沿;距枢轴 −4% ~ +5%;10 日均量 < 50 日均量 × 0.9"},
+    {"id": "P-06", "kind": "buy", "condition": "突破触发(当天):收盘 > 枢轴(密集成交区上沿)、收盘 < 枢轴 × 1.05、成交量 > 50 日均量 × 1.5(阳线条件没做:日线没有开盘价)"},
     {"id": "P-07", "kind": "risk", "condition": "仓位:完整仓位 = 总资产 20%,首次买入 50%;最多 5 只"},
     {"id": "P-08", "kind": "buy", "condition": "加仓:收盘 > 进场价 × 1.02、量 > 20 日均量 × 1.2、收盘 > EMA8、市场向上 → +30%;收盘 > 进场价 × 1.05、量 > 20 日均量 × 1.1、收盘 > EMA21 → 再 +20%"},
     {"id": "P-09", "kind": "sell", "condition": "止损 A:当天最低价 < 前一天为止近 21 日最低 × 0.98(跌破 Base 低点),按收盘价出"},
@@ -120,8 +134,8 @@ def rules_for(p: dict = PARAMS) -> list[dict]:
 
 
 def summary(p: dict = PARAMS) -> str:
-    return ("Patrick Walker 风格突破:标普在 50 日 > 200 日之上才做;前一天收盘时已是均线多头、离一年高点 20% 以内、RS ≥ 80、"
-            "3 个月 → 1 个月 → 5 天振幅逐级收紧、低点抬高、量能干燥的票,今天收盘放量(> 1.5 倍 50 日均量)站上前 21 日最高、"
+    return ("Patrick Walker 风格突破:标普在 50 日 > 200 日之上才做;前一天收盘时已是均线多头、离一年高点 20% 以内、RS ≥ 70、"
+            "3 个月 → 1 个月 → 5 天振幅逐级收紧、低点抬高、量能干燥的票,今天收盘放量(> 1.5 倍 50 日均量)站上浪高点下方密集成交区的上沿、"
             "且不超过 5% 时买入完整仓位(总资产 20%)的一半;涨 2% / 5% 且放量站上 EMA8 / EMA21 各加 30% / 20%;"
             "跌破 Base 低点 2%、亏 6%、或亏损中跌破 EMA8 止损;浮盈 8% 后遇暂停卖 20%;"
             "浮盈 10% 跌破 EMA21、浮盈 20% 跌破 50 日线、或大盘转弱时清仓。")
@@ -146,6 +160,50 @@ def _mean(xs):
     return sum(xs) / len(xs) if xs and all(x is not None for x in xs) else None
 
 
+def pivot_zone(bars: list[tuple], p: dict = PARAMS) -> dict | None:
+    """浪高点下方的密集成交区(不含最后一根)→ {low, high, wave_high, share};算不出或不像样 → None。
+
+    窗口 = 最后一根之前的 zone_lookback 根。浪高 = 窗口最高价;只看浪高下方 zone_depth 以内的价位,
+    每天的量按当天 [最低, 最高] 均摊到 zone_bin 宽的价位格(当天区间超出这段价位的部分不计),
+    取量最大的格,向两边扩到量 ≥ 峰值 × zone_keep 的相邻格。区间量占窗口总量 < zone_min_share → None。"""
+    n = int(p["zone_lookback"])
+    win = bars[-n - 1:-1]
+    if len(win) < n or any(b[2] is None or b[3] is None or b[4] is None for b in win):
+        return None
+    wave = max(b[2] for b in win)
+    floor = wave * (1 - p["zone_depth"])
+    step = wave * p["zone_bin"]
+    nb = max(1, int(math.ceil((wave - floor) / step - 1e-9)))
+    vol = [0.0] * nb
+    total = 0.0
+    for _d, c, hi, lo, v in win:
+        total += v
+        top, bot = min(hi, wave), max(lo, floor)
+        if top < bot:
+            continue
+        if hi <= lo:
+            vol[min(nb - 1, max(0, int((c - floor) / step)))] += v
+            continue
+        per = v / (hi - lo)
+        for k in range(max(0, int((bot - floor) / step)), min(nb - 1, int((top - floor) / step)) + 1):
+            a = floor + k * step
+            ov = min(a + step, top) - max(a, bot)
+            if ov > 0:
+                vol[k] += per * ov
+    pk = max(range(nb), key=lambda k: vol[k])
+    if vol[pk] <= 0 or total <= 0:
+        return None
+    i0 = i1 = pk
+    while i0 > 0 and vol[i0 - 1] >= vol[pk] * p["zone_keep"]:
+        i0 -= 1
+    while i1 < nb - 1 and vol[i1 + 1] >= vol[pk] * p["zone_keep"]:
+        i1 += 1
+    share = sum(vol[i0:i1 + 1]) / total
+    if share < p["zone_min_share"]:
+        return None
+    return {"low": floor + i0 * step, "high": min(wave, floor + (i1 + 1) * step), "wave_high": wave, "share": share}
+
+
 def _core(bars: list[tuple]) -> dict | None:
     """一天的字段。持仓管理要的只要 60 根;筛选字段要 252 根且窗口里没有缺值,算不出时 screen = None(不猜)。"""
     n = len(bars)
@@ -157,9 +215,10 @@ def _core(bars: list[tuple]) -> dict | None:
     v = [b[4] for b in bars]
     if any(x is None for x in h[-23:] + lo[-23:] + v[-50:]):
         return None
+    zone = pivot_zone(bars)
     ind = {
         "close": c[-1], "high": h[-1], "low": lo[-1], "volume": v[-1], "prev_high": h[-2],
-        "pivot": max(h[-22:-1]), "base_low": min(lo[-22:-1]),
+        "pivot": zone["high"] if zone else None, "zone": zone, "base_low": min(lo[-22:-1]),
         "av10": _mean(v[-10:]), "av20": _mean(v[-20:]), "av50": _mean(v[-50:]),
         "ema8": av._ema(c[-160:], 8), "ema21": av._ema(c[-160:], 21),
         "sma50": av._sma(c, 50),
@@ -232,20 +291,28 @@ def screen_checks(sp: dict | None, p: dict = PARAMS, score=None) -> list[dict]:
         bad.append("近 21 日低点没比 63 日低点高 1% 以上")
     txt = (f"昨收时振幅 3 月 {r3 * 100:.1f}% → 1 月 {r1 * 100:.1f}% → 5 日 {r5 * 100:.1f}%" if None not in (r3, r1, r5) else "振幅算不出")
     out.append({"rule": "P-04", "ok": not bad, "text": txt + ("" if not bad else ";" + ";".join(bad))})
-    pv = sp["pivot"]
-    dist = (px - pv) / pv * 100
+    pv = sp.get("pivot")
     vdry = sp["av10"] is not None and sp["av50"] is not None and sp["av10"] < sp["av50"] * p["vdry"]
-    ok5 = p["pivot_lo"] <= dist <= p["pivot_hi"] and vdry
     ratio = f"{sp['av10'] / sp['av50']:.2f}" if sp["av10"] and sp["av50"] else "—"
+    if pv is None:
+        out.append({"rule": "P-05", "ok": False,
+                    "text": f"昨收时浪高点下方 {p['zone_depth'] * 100:.0f}% 内没有像样的密集成交区(区间量不到 {p['zone_min_share'] * 100:.0f}%),没有枢轴"})
+        return out
+    z = sp.get("zone") or {}
+    dist = (px - pv) / pv * 100
+    ok5 = p["pivot_lo"] <= dist <= p["pivot_hi"] and vdry
     out.append({"rule": "P-05", "ok": ok5,
-                "text": f"昨收距当时枢轴 ${pv:.2f} {dist:+.1f}%,10 日均量 ÷ 50 日均量 {ratio}"
+                "text": (f"昨收距枢轴 ${pv:.2f} {dist:+.1f}%(密集区 ${z.get('low', 0):.2f}~${pv:.2f} 占量 {z.get('share', 0) * 100:.0f}%,"
+                         f"浪高 ${z.get('wave_high', 0):.2f}),10 日均量 ÷ 50 日均量 {ratio}")
                         + ("" if ok5 else f"(要 {p['pivot_lo']:.0f}% ~ +{p['pivot_hi']:.0f}%、量比 < {p['vdry']})")})
     return out
 
 
 def trigger_check(ind: dict, p: dict = PARAMS) -> dict:
     """P-06:今天的突破。"""
-    px, pv = ind["close"], ind["pivot"]
+    px, pv = ind["close"], ind.get("pivot")
+    if pv is None:
+        return {"rule": "P-06", "ok": False, "text": "浪高点下方没有像样的密集成交区,没有枢轴可突破"}
     brk = px > pv
     not_ext = px < pv * p["extend"]
     surge = ind["av50"] is not None and ind["volume"] > ind["av50"] * p["vol_surge"]
