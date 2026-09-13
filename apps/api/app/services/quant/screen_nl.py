@@ -310,11 +310,85 @@ def script_changes(before: str, after: str) -> list[dict]:
     return changes
 
 
+# ── 模型只给「替换指令」,不给整份脚本 ─────────────────────────────
+# 第一版让模型输出改好的完整脚本,线上真跑(用户那份 40 行 ThinkScript)三轮全失败:
+# gemini-3.5-flash 先吐一大段英文推理,推理里把脚本抄一遍、注释截半句、还怀疑 SMA50 不合法;
+# _extract_script 从第一个 def 截,截到的是推理正文(「第 2 行:看不懂的字符 '.'」)。
+# 整份重写本来就给了它乱改的空间。现在它只许回 `<<原文>> => <<新写法>>`,由我们在代码里替换:
+#   · 原文必须在脚本**代码部分**逐字存在(推理里举的例子自然被滤掉)
+#   · 按标识符边界替换(换 SMA5 不会碰到 SMA50),注释原样保留
+_REPL_RE = re.compile(r"<<(.+?)>>\s*=>\s*<<(.*?)>>")
+
+
+def _split_comment(line: str) -> tuple[str, str]:
+    i = line.find("#")
+    return (line, "") if i < 0 else (line[:i], line[i:])
+
+
+def _repl_pattern(old: str):
+    # 首尾是标识符字符时才加边界 —— 原文可能是 `high_63d - low_63d` 这种带运算符的片段
+    pre = r"(?<![A-Za-z0-9_.])" if re.match(r"[A-Za-z0-9_]", old) else ""
+    post = r"(?![A-Za-z0-9_])" if re.search(r"[A-Za-z0-9_]$", old) else ""
+    return re.compile(pre + re.escape(old) + post)
+
+
+def parse_replacements(raw: str, script: str) -> list[tuple[str, str]]:
+    """从模型回复里取替换指令。只收原文在脚本代码部分存在的;同一原文多次出现取最后一次。"""
+    code = "\n".join(_split_comment(ln)[0] for ln in (script or "").splitlines())
+    out: dict[str, str] = {}
+    for m in _REPL_RE.finditer(raw or ""):
+        old, new = m.group(1).strip(), m.group(2).strip()
+        if not old or old == new or len(old) > 120 or len(new) > 200 or ";" in new or "#" in new:
+            continue
+        if not _repl_pattern(old).search(code):
+            continue
+        out.pop(old, None)
+        out[old] = new
+    return list(out.items())
+
+
+def apply_replacements(script: str, pairs: list[tuple[str, str]]) -> str:
+    lines = []
+    for ln in (script or "").splitlines():
+        code, comment = _split_comment(ln)
+        for old, new in pairs:
+            code = _repl_pattern(old).sub(lambda _m, n=new: n, code)
+        lines.append(code + comment)
+    return "\n".join(lines)
+
+
+def _fix_system_prompt(market_label: str, sma: list[int], rsi: list[int]) -> str:
+    return f"""你在帮用户修一份选股筛选脚本(可能是 ThinkScript / TradingView 风格)。解析器报了错,你只负责给出替换指令。
+
+# 输出格式(最重要)
+不要推理过程,不要解释,不要输出整份脚本。每条替换占一行,格式严格是:
+<<脚本里逐字存在的原文>> => <<新写法>>
+原文尽量短,通常就是报错点名的那个名字或那个函数调用。修不了就只输出 NONE。
+
+# 规则
+1. 只改报错点名的那一处,别的都不许动(数字、条件、名字都不许动)。
+2. 字段或周期取不到时,换成可用列表里最接近的那个。
+3. SMA50 / SMA150 / SMA200 / EMA20 / high_63d / low_21d / high_5d / rs_rating / vcp_ 开头的名字都是合法字段,不要改。
+
+# 可用写法
+Average(close, N) 与 SMA+N 字段:N 取 {', '.join(map(str, sma))}
+成交量均线只有 10 / 30 / 60 / 90 天:average_volume_10d_calc / average_volume_30d_calc / average_volume_60d_calc / average_volume_90d_calc
+Highest(high, N) / Lowest(low, N):N 只能接近 5 / 21 / 63 / 126 / 252
+RSI(N):N 取 {', '.join(map(str, rsi))}
+
+# 可直接使用的字段(中文名 = 字段名)
+{_field_hint()}
+
+当前市场:{market_label}
+"""
+
+
 def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: list[int],
                rsi: list[int], validate) -> dict:
-    """用户写的脚本编译不过 → 让模型只改报错那几处。
+    """用户写的脚本编译不过 → 模型给替换指令,我们替换、编译、比对改动。
 
     → {script, model, attempts, tokens_in, tokens_out, changes}
+    一轮修掉一处又露出下一处报错时,下一轮在修过的基础上继续(报错变了才算前进)。
     """
     from app.services.online_analysis.llm_client import get_client
 
@@ -332,26 +406,20 @@ def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: 
 
     n_stmt = sum(1 for k, _ in _statements(script) if k != "?")
     allowed = max(_FIX_MIN_ALLOWED, n_stmt // 3)
-    system = _system_prompt(market_label, sma, ema, rsi) + """
-# 本次任务:修脚本,不是翻译
-用户给的是一份**已经写好**的筛选脚本(可能是 ThinkScript / TradingView 风格),我们的解析器报了错。
-1. 只改报错涉及的那几处。其余每一句**逐字保留**:def 名字、数字、运算符、plot 那句都不许动。
-2. 字段或周期在可用列表里取不到时,换成最接近的可用值(比如 50 天均量 → average_volume_60d_calc)。
-3. 脚本里出现的 high_63d / low_21d / rs_rating / vcp_ 开头这类名字是合法字段,不要改。
-4. 注释可以删掉。不要加新的条件,不要删条件。
-5. 直接输出改好的完整脚本,第一个字符必须是 d 或 p。
-"""
-    user = f"解析器报错:{error}\n\n脚本:\n{script}"
+    system = _fix_system_prompt(market_label, sma, rsi)
     tokens_in = tokens_out = 0
+    cur, cur_err = script, error
     last_err = error
+    hint = ""
 
     for attempt in (1, 2, 3):
+        user = f"解析器报错:{cur_err}\n\n脚本:\n{cur}{hint}"
         try:
             completion = client.chat.completions.create(
                 model=MODEL,
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
-                max_tokens=4000,
+                max_tokens=2000,
                 temperature=0.1,
             )
         except Exception as e:                              # noqa: BLE001
@@ -362,32 +430,36 @@ def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: 
             tokens_in += usage.prompt_tokens or 0
             tokens_out += usage.completion_tokens or 0
 
-        fixed = _extract_script(raw)
-        if not fixed or fixed.strip().upper().rstrip(".。") == "NONE":
-            last_err = "模型没有产出脚本"
-            user = (f"解析器报错:{error}\n\n脚本:\n{script}\n\n"
-                    f"(上一次你没有输出脚本。请直接以 def 开头输出改好的完整脚本)")
-            continue
-        try:
-            validate(fixed)
-        except ScreenError as e:
-            last_err = str(e)
-            log.info("[screen_nl] 修错第 %d 轮仍不合法:%s", attempt, last_err)
-            user = (f"原脚本:\n{script}\n\n你上一次改成:\n{fixed}\n\n"
-                    f"但还有错:{last_err}\n请在原脚本基础上改正后重新输出完整脚本。")
+        pairs = parse_replacements(raw, cur)
+        if not pairs:
+            last_err = "模型没有给出可用的替换"
+            log.info("[screen_nl] 修错第 %d 轮没有可用替换:%r", attempt, raw[:300])
+            hint = ("\n\n(上一次你没有给出替换指令,或原文在脚本里找不到。"
+                    "只输出形如 <<average_volume_50d_calc>> => <<average_volume_60d_calc>> 的行)")
             continue
 
-        changes = script_changes(script, fixed)
+        nxt = apply_replacements(cur, pairs)
+        changes = script_changes(script, nxt)
         if len(changes) > allowed:
-            last_err = f"模型改动了 {len(changes)} 句(上限 {allowed} 句),不像是只修报错"
-            log.info("[screen_nl] 修错第 %d 轮改动过多:%s", attempt,
-                     [c["name"] for c in changes])
-            user = (f"解析器报错:{error}\n\n脚本:\n{script}\n\n"
-                    f"上一次你改动了 {len(changes)} 句,太多了。只改报错涉及的句子,其余逐字保留。")
+            last_err = f"模型要改 {len(changes)} 句(上限 {allowed} 句),不像是只修报错"
+            log.info("[screen_nl] 修错第 %d 轮改动过多:%s", attempt, pairs)
+            hint = f"\n\n(上一次你要改 {len(changes)} 句,太多了。只替换报错点名的那一处)"
+            continue
+        try:
+            validate(nxt)
+        except ScreenError as e:
+            new_err = str(e)
+            log.info("[screen_nl] 修错第 %d 轮替换 %s 后仍报错:%s", attempt, pairs, new_err)
+            last_err = new_err
+            if new_err != cur_err:
+                cur, cur_err = nxt, new_err      # 前一处修掉了,露出下一处 —— 在此基础上继续
+                hint = ""
+            else:
+                hint = "\n\n(上一次的替换没有解决这个报错,换一个写法)"
             continue
 
         return {
-            "script": fixed,
+            "script": nxt,
             "model": MODEL,
             "attempts": attempt,
             "tokens_in": tokens_in,
