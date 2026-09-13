@@ -329,7 +329,7 @@ def _load_positions(cur, branch: str) -> list[av.Position]:
                         extra=(json.loads(r[13]) if r[13] else {})) for r in cur.fetchall()]
 
 
-def run_date(d: date, ctx: Ctx | None = None) -> dict:
+def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> dict:
     """跑 d 这一天(收盘后),**只跑这天还没跑过的方向**。全都跑过 → 直接返回。
 
     2026-09-13 研究台加新方向时改的:原来按「这天的行数够不够方向数」判断,够不上就把全部方向的
@@ -339,7 +339,9 @@ def run_date(d: date, ctx: Ctx | None = None) -> dict:
     cur = conn.cursor()
     cur.execute("SELECT branch FROM agent_day WHERE trade_date=%s", (d,))
     done_b = {r[0] for r in cur.fetchall()}
-    todo = [b for b in BRANCHES if b not in done_b]
+    # only:研究线回填只跑那条线的方向。2026-09-13 突破买入线要从 2025-09-12 回测,比其他方向的起点
+    # (2026-01-02)早四个月 —— 不限定的话 VCP 那几个方向会在 2025 年那些天被跑出行来,对照组就被污染了
+    todo = [b for b in BRANCHES if b not in done_b and (only is None or b in only)]
     if not todo:
         cur.close()
         conn.close()
@@ -384,7 +386,10 @@ def run_date(d: date, ctx: Ctx | None = None) -> dict:
             screens[d] = items
         items_of[pool_key], ws_of[pool_key], ok_of[pool_key] = items, ws, scan_ok
     # 日期轴按默认池(每个交易日都有;只回填新方向时默认池不在 needed 里,但库里存着)
-    dates = sorted({x for x in ctx.screens.get(PRESET, {}) if x <= d} | {d})
+    # 再并上各池自己的日期:研究线比默认池起步早时(突破买入线 2025-09 起),只按默认池的日期轴,
+    # 2025 年那些天的轴只有当天一天 —— 前几天买进、今天不在池里的持仓算不到指标,永远不会被卖出
+    dates = sorted({x for x in ctx.screens.get(PRESET, {}) if x <= d}
+                   | {x for pk in needed for x in ctx.screens.get(pk, {}) if x <= d} | {d})
     pooled: dict = {}
     pool_days: dict = {}
     for pool_key, engs in needed.items():
@@ -816,6 +821,8 @@ _V1 = {
              "用户 2026-09-13 按 Minervini SEPA 五根柱子拆解方向 C 后给的 v4 草案;没有基本面 / 行业数据源,那两块没做"),
     "donchian": ("唐奇安通道突破 —— 收盘第一次突破 55 日最高进,跌破 20 日最低或 2 ATR 止损出,单笔风险 1% 定仓",
                  "研究台方案(2026-09-13 用户批准)的第一条新研究线;和 VCP 差得最远,规则固定,满 30 笔前不优化"),
+    "breakout": ("突破买入 —— 标普上升趋势 + Clean Simple Base 筛选 + 放量突破前 21 日最高 + 两次加仓 + 部分止盈 + 三种止损",
+                 "用户 2026-09-13 给的 Patrick Walker 风格完整脚本逐条移植;没有开盘价,阳线条件没做;规则固定,满 30 笔前不优化"),
 }
 
 
@@ -1006,7 +1013,7 @@ def _strategy_block(universe_size, st: dict, branch: str = "base") -> dict:
     p = st["params"]
     eng = ao.engine_of(branch)
     names = {"vcp": STRATEGY_NAME, "vcp3": "VCP 三段式(方向 C)", "vcp4": "VCP · SEPA 优化(方向 A)",
-             "donchian": "唐奇安通道突破"}
+             "donchian": "唐奇安通道突破", "breakout": "突破买入(Patrick Walker 风格)"}
     days_ = _pool_days(ao.BRANCHES[branch]["engine"])
     span = "当天筛选结果" if days_ <= 1 else f"近 {days_} 天并集"
     return {"name": names.get(ao.BRANCHES[branch]["engine"], STRATEGY_NAME), "version": f"v{st['version']}",
@@ -1175,12 +1182,12 @@ def research_archive(key: str, archived: bool, uid) -> dict:
     return _with_cur(lambda cur: research.set_archived(cur, key, archived, uid), commit=True)
 
 
-def backfill(start: date, end: date | None = None) -> dict:
+def backfill(start: date, end: date | None = None, only: list[str] | None = None) -> dict:
     ctx = Ctx()
     days = sorted(d for d in ctx.store["bench"] if d >= start and (end is None or d <= end))
     out = {"days": 0, "fills": 0}
     for d in days:
-        r = run_date(d, ctx)
+        r = run_date(d, ctx, only)
         out["days"] += r.get("ran", False)
         out["fills"] += sum(b["fills"] for b in r.get("branches", {}).values())
         log.info("[agent] 回填 %s → %s", d, r)
@@ -1221,7 +1228,7 @@ def _main(argv=None) -> int:
             print(f"要 --line,且那条线得有方向:{[k for k, v in lines.items() if v['branches']]}")
             return 2
         start = date.fromisoformat(a.start) if a.start else date.fromisoformat(_with_cur(lambda c: _meta_get(c, "started")))
-        print(backfill(start, date.fromisoformat(a.end) if a.end else None))
+        print(backfill(start, date.fromisoformat(a.end) if a.end else None, only=lines[a.line]["branches"]))
         print(research_evaluate())
     elif a.cmd == "research":
         b = research_board()

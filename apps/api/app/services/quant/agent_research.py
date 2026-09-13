@@ -57,6 +57,18 @@ LINES: dict = {
         "pool": "唐奇安预筛池(离 3 个月高点 3% 以内 · 日均成交额 ≥ 2000 万美元 · RS 排序前 300)",
         "compare_to": list(COMPARE_DEFAULT), "kill_text": KILL_TEXT,
     },
+    # 2026-09-13 用户给的「Patrick Walker Style Complete Strategy」完整脚本,取名「突破买入」。
+    # 回测从 2025-09-12 起(用户要最近一年),比对照组(2026-01-02 起)多四个月 —— 回撤比较口径不同,研究台文案里写明
+    "breakout": {
+        "label": "突破买入", "branches": ["breakout"], "best": "breakout",
+        "status": "backtest", "created_at": "2026-09-13",
+        "hypothesis": "大盘向上时,整理得干净、振幅逐级收紧、量能干燥的强势股,放量站上前 21 日最高后会走出一段;加仓放大赢家,三种止损截断输家",
+        "rules_draft": ("进:标普 > 50 日 > 200 日 + Clean Simple Base 筛选 + 放量 1.5 倍突破前 21 日最高且不超过 5% · "
+                        "仓:完整仓位 20% 总资产,首次 50%,+2% / +5% 各加 30% / 20% · "
+                        "出:跌破 Base 低点 2% / 亏 6% / 亏损中跌破 EMA8;浮盈 8% 暂停卖 20%;浮盈 10% 破 EMA21、20% 破 50 日线、大盘转弱清仓"),
+        "pool": "突破买入预筛池(收盘 > 20 · 30 日均量 > 20 万 · 均线多头 · 距 52 周高点 20% 以内 · RS ≥ 80)",
+        "compare_to": list(COMPARE_DEFAULT), "kill_text": KILL_TEXT,
+    },
 }
 
 

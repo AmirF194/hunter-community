@@ -39,9 +39,10 @@ from app.services.quant import agent_vcp as av
 from app.services.quant import agent_vcp3 as av3
 from app.services.quant import agent_vcp4 as av4
 from app.services.quant import agent_donchian as ad
+from app.services.quant import agent_breakout as abk
 from app.services.quant import agent_sim
 
-ENGINES = {"vcp": av, "vcp3": av3, "vcp4": av4, "donchian": ad}
+ENGINES = {"vcp": av, "vcp3": av3, "vcp4": av4, "donchian": ad, "breakout": abk}
 
 MIN_CYCLES = 8
 OBS_DAYS = 10           # 原 5,2026-09-12 全年回测后用户同意拉长
@@ -73,9 +74,13 @@ BRANCHES: dict = {
     "donchian": {"engine": "donchian", "label": "唐奇安 · 基准",
                  "direction": "收盘第一次突破 55 日最高进;跌破 20 日最低或进场价 − 2 ATR 出;规则固定,满 30 笔前不优化",
                  "tunable": {}},
+    # 2026-09-13 研究台:突破买入线(用户给的 Patrick Walker 风格完整脚本)。规则固定,满 30 笔前不优化
+    "breakout": {"engine": "breakout", "label": "突破买入 · 基准",
+                 "direction": "市场过滤 + Clean Simple Base 筛选 + 放量突破前 21 日最高 + 两次加仓 + 部分止盈 + 三种止损;规则固定",
+                 "tunable": {}},
 }
 # 方向键全局唯一(四张表按方向分行,不分研究线)。归属哪条研究线看 agent_research.LINES
-BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian"]
+BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian", "breakout"]
 
 
 def engine_of(branch: str):
