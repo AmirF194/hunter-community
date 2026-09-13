@@ -109,7 +109,7 @@ check("买入 · 构造的指标六条全满足", all(chk.values()), str(chk))
 check("前一天筛选 · 突破日当天振幅 / 10 日量被撑坏也照买(用户拍板)",
       ab.entry_ok(good(), P, 90, UP) and good()["screen"]["rng1m"] > P["tight1m_max"] and good()["av10"] > good()["av50"] * P["vdry"])
 check("前一天筛选 · 前一天 1 月振幅不满足、只有今天满足 → 不买",
-      not ab.entry_ok(good(prev={"screen": {"rng1m": 0.15}}, screen=dict(SCREEN_OK)), P, 90, UP))
+      not ab.entry_ok(good(prev={"screen": {"rng1m": 0.18}}, screen=dict(SCREEN_OK)), P, 90, UP))
 check("P-06 · 高出枢轴 5% 以上不追", not ab.entry_ok(good(close=107.5, high=108.0), P, 90, UP))
 check("P-06 · 量不到 1.5 倍 50 日均量不买", not ab.entry_ok(good(volume=1_400_000.0), P, 90, UP))
 check("P-06 · 没站上枢轴不买", not ab.entry_ok(good(close=101.5), P, 90, UP))
@@ -120,7 +120,8 @@ check("P-03 · 前一天均线没排好不买", not ab.entry_ok(good(prev={"sma5
 check("P-04 · 前一天 5 日振幅没收紧(0.06 > 0.08 × 0.65)不买", not ab.entry_ok(good(prev={"screen": {"rng5d": 0.06}}), P, 90, UP))
 check("P-04 · 前一天 1 月振幅没收缩到 3 月 0.55 倍不买", not ab.entry_ok(good(prev={"screen": {"rng1m": 0.12}}), P, 90, UP))
 check("P-04 · 前一天低点没抬高不买", not ab.entry_ok(good(prev={"screen": {"low21": 90.5}}), P, 90, UP))
-check("P-05 · 前一天 10 日均量没干燥(≥ 50 日 × 0.9)不买", not ab.entry_ok(good(prev={"av10": 950_000.0}), P, 90, UP))
+check("P-05 · 前一天 10 日均量放大(≥ 50 日均量)不买", not ab.entry_ok(good(prev={"av10": 1_050_000.0}), P, 90, UP))
+check("P-05 · v3 缩量门槛 1.0:10 日均量 0.95 倍也算过", ab.entry_ok(good(prev={"av10": 950_000.0}), P, 90, UP))
 check("P-05 · 前一天离枢轴超过 −4% 不买", not ab.entry_ok(good(prev={"close": 97.0}), P, 90, UP))
 check("P-02 · 前一天收盘 ≤ 20 不买", not ab.entry_ok(good(prev={"close": 19.0}), P, 90, UP))
 check("前一天筛选算不出 → 不买", not ab.entry_ok(good(prev={"screen": None}), P, 90, UP))
