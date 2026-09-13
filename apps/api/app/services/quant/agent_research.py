@@ -244,7 +244,9 @@ def evaluate(cur) -> list[dict]:
             # 用户自己的研究对象(2026-09-13 用户:「我还没开始调整参数你就给我淘汰了」)——
             # 回测关照算,只当参考写进 verdict,**状态不动**。淘汰 / 晋级由用户决定
             if v["decision"] in ("kill", "pass"):
-                v = {"decision": "advice", "text": "参考结论(用户研究线,不自动淘汰):" + v["text"]}
+                # 判定文案末尾的「—— 淘汰」换掉:卡片上还写着淘汰,用户会以为线又被淘汰了
+                t = re.sub(r"\s*——\s*(没过回测关,)?淘汰\s*$", " —— 按回测关口径不达标(仅参考)", v["text"])
+                v = {"decision": "advice", "text": "参考结论(用户研究线,不自动淘汰):" + t}
             patch = {"verdict": {"decision": v["decision"], "text": v["text"], "at": _now()}}
             if (ln.get("verdict") or {}).get("text") != v["text"]:
                 _save(cur, ln["key"], patch)
