@@ -67,7 +67,10 @@ LINES: dict = {
                         "仓:完整仓位 20% 总资产,首次 50%,+2% / +5% 各加 30% / 20% · "
                         "出:跌破 Base 低点 2% / 亏 6% / 亏损中跌破 EMA8;浮盈 8% 暂停卖 20%;浮盈 10% 破 EMA21、20% 破 50 日线、大盘转弱清仓"),
         "pool": "突破买入预筛池(收盘 > 20 · 30 日均量 > 20 万 · 均线多头 · 距 52 周高点 20% 以内 · RS ≥ 80)",
-        "compare_to": list(COMPARE_DEFAULT), "kill_text": KILL_TEXT,
+        "compare_to": list(COMPARE_DEFAULT),
+        # 用户的研究对象:回测关只给参考、不自动淘汰(2026-09-13 被自动淘汰后用户要求恢复)
+        "auto_kill": False,
+        "kill_text": "用户研究线:回测关与 30 笔判定照常计算,只作参考结论,不自动淘汰;是否淘汰由用户决定",
     },
 }
 
@@ -237,6 +240,16 @@ def evaluate(cur) -> list[dict]:
         if ct and ct[0] in by_key:
             cmp_ = branch_metrics(cur, ct[1])
         v = judge(st, m, cmp_, caught_up=bool(m and latest and m["last"] >= latest))
+        if ln.get("auto_kill") is False:
+            # 用户自己的研究对象(2026-09-13 用户:「我还没开始调整参数你就给我淘汰了」)——
+            # 回测关照算,只当参考写进 verdict,**状态不动**。淘汰 / 晋级由用户决定
+            if v["decision"] in ("kill", "pass"):
+                v = {"decision": "advice", "text": "参考结论(用户研究线,不自动淘汰):" + v["text"]}
+            patch = {"verdict": {"decision": v["decision"], "text": v["text"], "at": _now()}}
+            if (ln.get("verdict") or {}).get("text") != v["text"]:
+                _save(cur, ln["key"], patch)
+            out.append({"key": ln["key"], **v})
+            continue
         patch = {"verdict": {"decision": v["decision"], "text": v["text"], "at": _now()}}
         if v["decision"] == "kill":
             patch.update({"status": "killed", "killed_at": str(date.today()), "events": _event(ln, v["text"])})
@@ -331,7 +344,7 @@ def board(cur) -> dict:
             "hypothesis": ln.get("hypothesis"), "rules_draft": ln.get("rules_draft"), "pool": ln.get("pool"),
             "created_at": ln.get("created_at"), "archived_at": ln.get("archived_at"), "killed_at": ln.get("killed_at"),
             "archive_tag": ln.get("archive_tag"), "archive_reason": ln.get("archive_reason"),
-            "kill_text": ln.get("kill_text"),
+            "kill_text": ln.get("kill_text"), "auto_kill": ln.get("auto_kill", True) is not False,
             "compare_text": (f"{LINES[ct[0]]['label']} · {ao.BRANCHES[ct[1]]['label']}" if ct and ct[0] in LINES and ct[1] in ao.BRANCHES else None),
             "verdict": ln.get("verdict"), "events": (ln.get("events") or [])[-5:],
             "branches": brs, "best_branch": best,

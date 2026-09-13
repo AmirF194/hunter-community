@@ -567,7 +567,8 @@ function rsCard(ln) {
   if (has && st === 'archived') btns += '<button type="button" class="btn small" data-arch="0" data-line="' + esc(ln.key || '') + '">解除封存</button>'
   else if (has && (st === 'backtest' || st === 'paper')) btns += '<button type="button" class="btn small" data-arch="1" data-line="' + esc(ln.key || '') + '">封存</button>'
   const foot = (ln.compare_text ? '对照组 ' + esc(ln.compare_text) : (st === 'archived' ? '封存于 ' + txt(ln.archived_at) : '')) +
-    (ln.kill_text && st !== 'archived' ? ' · <span title="' + esc(ln.kill_text) + '">淘汰线已锁定</span>' : '')
+    (ln.kill_text && st !== 'archived'
+      ? ' · <span title="' + esc(ln.kill_text) + '">' + (ln.auto_kill === false ? '用户研究线 · 不自动淘汰' : '淘汰线已锁定') + '</span>' : '')
   return '<div class="rs-card ' + esc(st) + '">' +
     '<div class="t">' + txt(ln.label) + '<span class="rs-chip ' + (RS_CHIP[st] || '') + '">' + txt(ln.status_text) +
       (st === 'archived' && ln.archive_tag ? ' · ' + esc(ln.archive_tag.replace(/^vcp-archive-/, '')) : '') + '</span></div>' +
