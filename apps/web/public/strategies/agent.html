@@ -718,7 +718,9 @@ function renderResearch(r, notice) {
       (items.length ? items.map(rsCard).join('') : '<div class="rs-empty">' + (has ? '暂时没有' : NA) + '</div>') + '</div>'
   }).join('')
   const killed = byStage.killed || []
-  const html = '<div class="ag-wrap">' + vBanner(notice) + vTopNav('research') +
+  // 扫描筛选入口放在分页和研究台之间(用户 2026-09-13 指定):找候选票是立一条新研究线之前的第一步,
+  // 研究台首页也要能直接去。运行看板里原来那一张照旧保留。
+  const html = '<div class="ag-wrap">' + vBanner(notice) + vTopNav('research') + vScreener() +
     panel('研究台', (has ? esc(lines.length + ' 条研究线') : NA) + ' · 从左到右是一条线必经的先后阶段',
       strip + '<div class="rs-board">' + cols + '</div>') +
     vRsForm(r) +

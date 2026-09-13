@@ -365,6 +365,15 @@ class _FieldResolver:
         # 直接写扫描源字段名也放行 —— 3777 个字段,不可能都包成函数
         if self.has_field(name):
             return name
+        # TradingView / ThinkScript 用户常写 average_volume_50d_calc —— 格式对、周期没有。
+        # 泛泛的「不认识」会让人以为整份脚本写法不被支持(2026-09-13 用户原话:「ThinkScript 风格为什么识别不出」)。
+        m = re.match(r"^average_volume_(\d+)d_calc$", name, re.I)
+        if m:
+            raise ScreenError(
+                f"扫描源没有 {name}(没有 {m.group(1)} 天均量)—— 只提供 "
+                f"{'/'.join(map(str, _VOL_AVG_DAYS))} 天:"
+                + " / ".join(f"average_volume_{n}d_calc" for n in _VOL_AVG_DAYS)
+                + f"。请改成其中之一(不拿相近周期冒充 {m.group(1)} 天:那是在编数字)")
         raise ScreenError(
             f"不认识 {name!r}。它既不是 close/open/high/low/volume,"
             f"也不是扫描源的字段名。"
