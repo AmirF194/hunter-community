@@ -1176,6 +1176,7 @@ function bind() {
   if (fl) fl.addEventListener('click', insertField)
   bindKChart()
   KC.asOf = S.asOf          // 带着回溯日直接进页面时,第一次也要同步
+  KC.markOf = hitDaysOf     // 悬停日K 上标出这份脚本过去一年的命中日(淡蓝色)
   bindForget()
 }
 
@@ -1454,7 +1455,35 @@ async function runScan() {
     S.result = null; render(); return
   }
   S.result = r.data
+  // 悬停日K 要标「这份脚本过去一年哪些天命中」—— 用的必须是**跑出这张结果表的那份脚本**,
+  // 不是条件区此刻的样子(用户跑完可能又改了条件还没重跑)
+  S.resultScan = { script: script, market: S.market, asOf: S.asOf || null }
   render()
+}
+
+// ─── 悬停日K 的淡蓝色标记:这只票过去 250 个交易日里哪些天会被这份脚本命中 ─────────
+// 后端 /screener/hit-days 按「时间回溯」同一口径逐日回算(screen_hits)。
+// 同一只票 + 同一份脚本 + 同一个截止日只算一次;失败也缓存,免得鼠标每划过一次重打一次。
+const HITS_API = '/api/quant/screener/hit-days'
+const HITS = new Map()
+async function hitDaysOf(code) {
+  const sc = S.resultScan
+  if (!sc || !sc.script || !code) return null
+  const key = [sc.market, sc.asOf || '', code, sc.script].join('|')
+  if (HITS.has(key)) return HITS.get(key)
+  const r = await post(HITS_API, { script: sc.script, market: sc.market, code: code, as_of: sc.asOf })
+  let out
+  if (r.ok && r.data) {
+    const d = r.data
+    out = { scan: Array.isArray(d.hits) ? d.hits : [], scanLabel: '这份脚本命中',
+            scanWindow: Number.isFinite(d.evaluated) ? d.evaluated : null, alwaysScan: true,
+            unknown: Number.isFinite(d.unknown) ? d.unknown : 0, note: d.note || null }
+    if (d.note && !d.evaluated) out = { error: d.note }
+  } else {
+    out = { error: '命中日没算出来:' + ((r.data && (r.data.detail || r.data.error)) || ('HTTP ' + r.status)) }
+  }
+  HITS.set(key, out)
+  return out
 }
 
 // 单独测试一条:只留这一条(和它依赖的变量)跑一次,看它自己能命中多少。

@@ -1201,6 +1201,34 @@ class ScreenIn(BaseModel):
     as_of: str | None = None       # 时间回溯:YYYY-MM-DD,空 = 今天的快照
 
 
+class HitDaysIn(BaseModel):
+    script: str = ""
+    market: str = "us"
+    code: str = ""
+    as_of: str | None = None       # 截到哪天(结果是回溯出来的就传回溯日),空 = 日线最新一天
+
+
+@router.post("/screener/hit-days")
+async def screener_hit_days(body: HitDaysIn):
+    """一只票过去 250 个交易日里,这份脚本哪些天会命中(悬停日K 的淡蓝色标记)。口径同时间回溯,见 screen_hits。"""
+    code = (body.code or "").strip()
+    if not code:
+        raise HTTPException(400, "要给股票代码")
+    as_of = None
+    if body.as_of:
+        from datetime import date as _date
+        try:
+            as_of = _date.fromisoformat(body.as_of.strip())
+        except ValueError:
+            raise HTTPException(400, f"日期格式不对:{body.as_of!r},要 YYYY-MM-DD")
+    from app.services.quant import screen_hits
+    try:
+        # 首次要拉快照(1~3s)+ 整窗日线(冷启动约 10s),同步代码,不能占着事件循环
+        return await asyncio.to_thread(screen_hits.hit_days, body.script, body.market, code, as_of)
+    except ScreenError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.get("/screener/history-range")
 async def screener_history_range(market: str = "us"):
     """时间回溯能选的日期范围 —— 来自自家日线(rs_daily),前端据此限制日期框。"""

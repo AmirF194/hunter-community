@@ -795,6 +795,27 @@ try {
   console.log('FAIL 研究台定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 筛选器悬停日K:当前脚本的历史命中日(2026-09-13)──────────────────────
+// 标记是异步来的(后端逐日回算),三件事钉住:
+//   ① 用的是「跑出结果表的那份脚本」,不是条件区此刻的样子;
+//   ② K 线先画、标记后到,中间鼠标换了票要丢掉旧标记(await 之后再比 seq);
+//   ③ 0 天也写出来(alwaysScan),不然看不出是没算还是没命中。
+{
+  const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  const hk = [
+    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: S\.market, asOf: S\.asOf \|\| null \}/.test(sc)],
+    ['筛选器把命中日来源挂到悬停日K 上', /KC\.markOf = hitDaysOf/.test(sc)],
+    ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf \}\)/.test(sc)],
+    ['app.js:等标记之后再比一次 seq(防止画到别的票上)', /await KC\.markOf\(code, td\)[\s\S]{0,160}if \(seq !== KC\.seq\) return/.test(appJs)],
+    ['app.js:0 天命中也写进图例', /mark\.alwaysScan/.test(appJs)],
+    ['app.js:算不出的天数单独写', /天算不出/.test(appJs)],
+  ]
+  for (const [name, ok] of hk) {
+    if (ok) console.log('PASS 筛选器命中日 ·', name)
+    else { failed++; console.log('FAIL 筛选器命中日 ·', name) }
+  }
+}
+
 // ─── 悬停日K:dispose 必须在清容器之前(app.js)────────────────────────
 // 2026-09-12 线上 bug:kcRender 先 box.innerHTML='' 再 chart.dispose(),
 // echarts 去 removeChild 自己那个已经被摘走的根节点 → TypeError 把 kcRender 打断,

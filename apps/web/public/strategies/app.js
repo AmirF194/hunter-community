@@ -905,7 +905,8 @@ function shareCurrentUrl() {
 // 标记画在 K 线序列上,所以缩放平移时跟着走。
 const KC = { el: null, chart: null, cache: new Map(),
              seq: 0, showT: null, hideT: null, cur: null, bound: false,
-             asOf: null }          // asOf: 回溯时只画到这天(screener 用)
+             asOf: null,           // asOf: 回溯时只画到这天(screener 用)
+             markOf: null }        // 页面可选:async (code, td) → 标记 | null(screener 用来标历史命中日)
 const KC_LIMIT = 250          // 一年大约 250 个交易日
 // 中式红涨绿跌,与站内其它页面一致(标的可能是美股,但全站配色统一)
 const KC_UP = '#a4332b', KC_DN = '#3f6b40'
@@ -1125,7 +1126,18 @@ function kcLegend(rows, mark) {
   if (!mark) { lg.textContent = '滚轮缩放 · 十字星读数'; return }
   const n = function (a) { return kcIndexOf(rows, a).length }
   const parts = []
-  if (n(mark.scan)) parts.push('<i style="background:' + KC_SCAN + '"></i>扫描命中 ' + n(mark.scan) + ' 天')
+  if (mark.error) {
+    parts.push('<span style="color:var(--danger,#b34b43)">' + kcEsc(mark.error) + '</span>')
+  }
+  // alwaysScan:筛选器的标记是「把脚本放回过去逐日算」,0 天也是结论,要写出来(不写的话看不出是没算还是没命中)
+  if (n(mark.scan) || mark.alwaysScan) {
+    parts.push('<i style="background:' + KC_SCAN + '"></i>' + kcEsc(mark.scanLabel || '扫描命中') + ' ' + n(mark.scan) + ' 天' +
+      (mark.scanWindow ? '(近 ' + mark.scanWindow + ' 个交易日)' : ''))
+  }
+  if (mark.unknown) {
+    parts.push('<span title="' + kcEsc(mark.note || '') + '" style="border-bottom:1px dotted currentColor;cursor:help">' +
+      mark.unknown + ' 天算不出</span>')
+  }
   if (n(mark.buy)) parts.push('<i style="background:' + KC_BUY + '"></i>买入 ' + n(mark.buy))
   if (n(mark.sell)) parts.push('<i style="background:' + KC_SELL + '"></i>卖出 ' + n(mark.sell))
   lg.innerHTML = parts.length ? parts.join('　') : '滚轮缩放 · 十字星读数'
@@ -1229,7 +1241,19 @@ function kcShow(td) {
     const payload = await kcFetch(code)
     // 竞态:鼠标已经划到别的票上了,这次的响应直接丢掉
     if (seq !== KC.seq) return
-    kcRender(code, td.dataset.kname, payload, kcMarkOf(td))
+    const own = kcMarkOf(td)
+    kcRender(code, td.dataset.kname, payload, own)
+    // 页面可以挂一个异步的标记来源(KC.markOf):先把 K 线画出来,标记算好了再重画一次 ——
+    // 筛选器的「过去一年哪些天命中」要后端逐日回算 1~3 秒,不能让 K 线陪着等
+    if (!own && typeof KC.markOf === 'function' && payload && payload.rows && payload.rows.length) {
+      const lg = document.getElementById('kc-lg')
+      if (lg) lg.textContent = '正在算这份脚本过去一年哪些天会命中…'
+      let m = null
+      try { m = await KC.markOf(code, td) } catch (e) { m = { error: '命中日没算出来:' + ((e && e.message) || e) } }
+      if (seq !== KC.seq) return            // 等的这一两秒里鼠标换了票,别把上一只的标记画到这只上
+      if (m) kcRender(code, td.dataset.kname, payload, m)
+      else if (lg) lg.textContent = '滚轮缩放 · 十字星读数'
+    }
   }, 180)
 }
 
