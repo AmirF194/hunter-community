@@ -1231,6 +1231,14 @@ function kcShow(td) {
     const nm = document.getElementById('kc-nm')
     if (sy) sy.textContent = code
     if (nm) nm.textContent = td.dataset.kname || ''
+    // 换票时先清掉上一只的现价 / 图例 / 区间 —— 不清的话,新票还在加载的那几秒里,
+    // 标题是新票、数字却是上一只的(2026-09-13 截图实测:ZD 加载中显示着 STT 的 193.40 和「命中 24 天」)
+    const px0 = document.getElementById('kc-px')
+    if (px0) { px0.textContent = ''; px0.className = 'px' }
+    const lg0 = document.getElementById('kc-lg')
+    if (lg0) lg0.textContent = '滚轮缩放 · 十字星读数'
+    const rg0 = document.getElementById('kc-rg')
+    if (rg0) rg0.textContent = ''
     // 首次拉日线要 5~10 秒(上游接口),不说清楚用户会以为卡死了 —— 他没法区分
     // 「还在加载」和「坏了」,只会一直等或者以为功能是坏的
     if (!KC.cache.has(code)) {
