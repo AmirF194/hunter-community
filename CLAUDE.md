@@ -1517,6 +1517,17 @@ BFF prompt 里那句「用户说『用 xxx skill 分析』时,你会先读到那
 5. **前端:回溯日不进草稿、不进保存的策略**,刷新回到今天;开着时运行栏是琥珀色标签(改日期 / 回到今天常驻),
    结果区标「截至 X 收盘」,悬停日 K 只画到那天,切换日期清掉旧结果。render_check 有 10 条断言。
 
+**悬停日K 的淡蓝色历史命中日(2026-09-13 · `quant/screen_hits.py` · `POST /screener/hit-days`)**:把跑出结果表的那份脚本
+放回过去 250 个交易日,对一只票逐日回算,口径与时间回溯逐条相同。三条别改坏的:
+- **RS 评级靠「日期 → 排名池全部 RS Raw」表查名次**,和 `screen_rs.rs_ratings` 逐位相同;Raw 的算术顺序照抄
+  `rs_history.rs_raw_exact`(浮点不一致二分就查不到自己,评级整批变空)。`tests/test_screen_hits.py` 76 条盯着。
+  改 rs_ratings 的并列 / 门槛规则,或改 rs_raw_exact 的算式,这边要一起改。
+- **算不出的天单独计 `unknown` 并点名,不当没命中** —— 否则图上没有蓝线,用户会以为这只票一年没满足过条件。
+- **用 `S.resultScan`(runScan 那一刻的脚本)**,不是条件区此刻的样子。
+上线当天用 BNY / ROKU 两只票和 `agent_watch`(小鹿每天收盘真跑同一份「VCP 波段收缩」的名单)逐日对照最近 60 天,60/60 一致;
+抽 3 天直接跑 `run_script(as_of=)` 也一致。**冷启动约 18 秒**(快照 + 整窗日线 + RS 表),之后同市场每只票约 0.4 秒、同一只再看瞬开;
+K 线先画、标记后到,图例写「正在算…」。
+
 `render_check.js` 顺带改了收尾:`setImmediate` 退出(有一组断言挂在 async 的 await 链上),
 并吞掉 `unhandledRejection`(fetch 一律 reject,data.html 有不 catch 的调用,node 20 会当崩溃)。
 
