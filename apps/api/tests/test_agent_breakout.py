@@ -5,6 +5,8 @@
 
 每条买卖规则至少一例;替用户做的几个决定(entryprice = 首笔价、部分止盈只做一次、
 加仓按顺序、市场算不出不当成转弱)各有一例盯着。
+「筛选看前一天收盘、突破看当天」(2026-09-13 用户拍板)有正反两例:突破日当天的振幅 / 量能被突破撑坏也照买;
+前一天不满足、今天才满足的不买。
 """
 from __future__ import annotations
 
@@ -44,17 +46,17 @@ UP = {"ok": True, "above": True, "text": "标普上升趋势"}
 DOWN = {"ok": False, "above": False, "text": "标普不在上升趋势"}
 NA = {"ok": False, "above": None, "text": "基准日线不足"}
 
-# ── 指标:[1] 的两处不含今天 ───────────────────────────────────
+# ── 指标:[1] 的两处不含今天;prev = 前一天收盘的字段 ─────────────────
 bars = mk([100.0] * 79 + [110.0])
 ind = ab.indicators(bars)
 check("指标 · 枢轴 = 前一天为止 21 日最高(不含今天 111.1)", abs(ind["pivot"] - 101.0) < 1e-9, str(ind["pivot"]))
 check("指标 · Base 低点 = 前一天为止 21 日最低", abs(ind["base_low"] - 99.0) < 1e-9, str(ind["base_low"]))
-check("指标 · 不足 252 根 → 筛选字段为空(不猜)", ind["screen"] is None)
+check("指标 · prev 是前一天收盘的字段", ind["prev"] is not None and ind["prev"]["close"] == 100.0)
+check("指标 · 不足 252 根 → 筛选字段为空(不猜)", ind["screen"] is None and ind["prev"]["screen"] is None)
 check("指标 · 不足 60 根 → None", ab.indicators(bars[:50]) is None)
-long_ = mk([100.0] * 300)
-check("指标 · 252 根以上 → 筛选字段算得出", ab.indicators(long_)["screen"] is not None)
+long_ = ab.indicators(mk([100.0] * 300))
+check("指标 · 252 根以上 → 今天和前一天的筛选字段都算得出", long_["screen"] is not None and long_["prev"]["screen"] is not None)
 
-# 市场环境
 mr = ab.market_regime(mk([100.0 + i * 0.1 for i in range(260)]))
 check("P-01 · 标普一路向上 → 上升趋势", mr["ok"] and mr["above"] is True)
 mr2 = ab.market_regime(mk([100.0] * 150))
@@ -62,32 +64,51 @@ check("P-01 · 不足 200 根 → 算不出(above = None,不当成转弱)", not 
 
 
 # ── 买入:构造一份全满足的指标 ───────────────────────────────────
-def good(**kw):
+SCREEN_OK = {"sma150": 90.0, "sma200": 85.0, "hi252": 110.0, "av30": 900_000.0,
+             "rng3m": 0.20, "rng1m": 0.08, "rng5d": 0.04, "low21": 96.0, "low63": 90.0}
+# 突破日当天的筛选字段被突破撑坏(1 月振幅 15%、5 日振幅大),照字面同一天判断就过不了
+SCREEN_BROKEN = dict(SCREEN_OK, rng1m=0.15, rng5d=0.12)
+
+
+def good(prev=None, **kw):
     x = {"close": 104.0, "high": 104.5, "low": 101.5, "volume": 2_000_000.0, "prev_high": 102.0,
-         "pivot": 102.0, "base_low": 95.0, "av10": 800_000.0, "av20": 1_000_000.0, "av50": 1_000_000.0,
-         "ema8": 101.0, "ema21": 99.0, "sma50": 95.0,
-         "screen": {"sma150": 90.0, "sma200": 85.0, "hi252": 110.0, "av30": 900_000.0,
-                    "rng3m": 0.20, "rng1m": 0.08, "rng5d": 0.04, "low21": 96.0, "low63": 90.0}}
-    sc = kw.pop("screen", None)
+         "pivot": 102.0, "base_low": 95.0, "av10": 1_100_000.0, "av20": 1_000_000.0, "av50": 1_000_000.0,
+         "ema8": 101.0, "ema21": 99.0, "sma50": 95.0, "screen": dict(SCREEN_BROKEN)}
+    pv = {"close": 101.8, "pivot": 102.0, "av10": 800_000.0, "av50": 1_000_000.0, "sma50": 95.0,
+          "screen": dict(SCREEN_OK)}
+    prev = dict(prev or {})
+    if "screen" in prev:
+        sc = prev.pop("screen")
+        pv["screen"] = None if sc is None else dict(SCREEN_OK, **sc)
+    pv.update(prev)
+    x["prev"] = pv
     x.update(kw)
-    if sc:
-        x["screen"] = dict(x["screen"], **sc)
     return x
 
 
 chk = {c["rule"]: c["ok"] for c in ab.entry_checks(good(), P, 90, UP)}
 check("买入 · 构造的指标六条全满足", all(chk.values()), str(chk))
+check("前一天筛选 · 突破日当天振幅 / 10 日量被撑坏也照买(用户拍板)",
+      ab.entry_ok(good(), P, 90, UP) and good()["screen"]["rng1m"] > P["tight1m_max"] and good()["av10"] > good()["av50"] * P["vdry"])
+check("前一天筛选 · 前一天 1 月振幅不满足、只有今天满足 → 不买",
+      not ab.entry_ok(good(prev={"screen": {"rng1m": 0.15}}, screen=dict(SCREEN_OK)), P, 90, UP))
 check("P-06 · 高出枢轴 5% 以上不追", not ab.entry_ok(good(close=107.5, high=108.0), P, 90, UP))
 check("P-06 · 量不到 1.5 倍 50 日均量不买", not ab.entry_ok(good(volume=1_400_000.0), P, 90, UP))
 check("P-06 · 没站上枢轴不买", not ab.entry_ok(good(close=101.5), P, 90, UP))
 check("P-03 · RS 79 不买", not ab.entry_ok(good(), P, 79, UP))
 check("P-03 · RS 缺不买", not ab.entry_ok(good(), P, None, UP))
-check("P-04 · 5 日振幅没收紧(0.06 > 0.08 × 0.65)不买", not ab.entry_ok(good(screen={"rng5d": 0.06}), P, 90, UP))
-check("P-04 · 1 月振幅没收缩到 3 月 0.55 倍不买", not ab.entry_ok(good(screen={"rng1m": 0.12, "rng3m": 0.20}), P, 90, UP))
-check("P-04 · 低点没抬高不买", not ab.entry_ok(good(screen={"low21": 90.5}), P, 90, UP))
-check("P-05 · 10 日均量没干燥(≥ 50 日 × 0.9)不买", not ab.entry_ok(good(av10=950_000.0), P, 90, UP))
-check("P-02 · 收盘 ≤ 20 不买", not ab.entry_ok(good(close=19.0, pivot=18.5), P, 90, UP))
-check("筛选算不出 → 不买", not ab.entry_ok(good(screen=None) | {"screen": None}, P, 90, UP))
+check("P-03 · 前一天均线没排好不买", not ab.entry_ok(good(prev={"sma50": 102.5}), P, 90, UP))
+check("P-04 · 前一天 5 日振幅没收紧(0.06 > 0.08 × 0.65)不买", not ab.entry_ok(good(prev={"screen": {"rng5d": 0.06}}), P, 90, UP))
+check("P-04 · 前一天 1 月振幅没收缩到 3 月 0.55 倍不买", not ab.entry_ok(good(prev={"screen": {"rng1m": 0.12}}), P, 90, UP))
+check("P-04 · 前一天低点没抬高不买", not ab.entry_ok(good(prev={"screen": {"low21": 90.5}}), P, 90, UP))
+check("P-05 · 前一天 10 日均量没干燥(≥ 50 日 × 0.9)不买", not ab.entry_ok(good(prev={"av10": 950_000.0}), P, 90, UP))
+check("P-05 · 前一天离枢轴超过 −4% 不买", not ab.entry_ok(good(prev={"close": 97.0}), P, 90, UP))
+check("P-02 · 前一天收盘 ≤ 20 不买", not ab.entry_ok(good(prev={"close": 19.0}), P, 90, UP))
+check("前一天筛选算不出 → 不买", not ab.entry_ok(good(prev={"screen": None}), P, 90, UP))
+g0 = good()
+g0["prev"] = None
+check("前一天字段整个缺 → 不买", not ab.entry_ok(g0, P, 90, UP))
+check("接口 · 规则文案写明看前一天收盘", "前一天收盘" in ab.RULES[3]["condition"] and "当天" in ab.RULES[5]["condition"])
 
 r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
                ind_of=lambda c: UP if c == ab.MARKET_KEY else good())
@@ -96,7 +117,7 @@ check("进场 · 全满足当天买入", len(buys) == 1, str(r["fills"]))
 if buys:
     unit = int(100_000 * 0.20 / 104.0)
     check("P-07 · 首次买入 = 完整仓位(总资产 20%)的一半", buys[0]["shares"] == int(unit * 0.5), f"{buys[0]['shares']} vs {unit}")
-    check("进场 · 理由里逐条写了 P-01 ~ P-06 与股数算法", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "完整仓位")))
+    check("进场 · 理由里逐条写了 P-01 ~ P-06 与股数算法", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "完整仓位", "昨收")))
     check("进场 · 完整仓位记在 extra 里(加仓按它算)", r["positions"][0].extra.get("unit") == unit)
 
 r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
@@ -119,7 +140,7 @@ def hold(close, **kw):
     """一份「什么出场条件都不碰」的持仓指标,再按需改几个字段。"""
     x = {"close": close, "high": close * 1.005, "low": close * 0.995, "volume": 1_000_000.0, "prev_high": close * 0.99,
          "pivot": 100.0, "base_low": 90.0, "av10": 1_000_000.0, "av20": 1_000_000.0, "av50": 1_000_000.0,
-         "ema8": close * 0.98, "ema21": close * 0.96, "sma50": close * 0.9, "screen": None}
+         "ema8": close * 0.98, "ema21": close * 0.96, "sma50": close * 0.9, "screen": None, "prev": None}
     x.update(kw)
     return x
 
