@@ -100,12 +100,38 @@ v5 一年:+3.98%、回撤 -5.86%、62 笔(赚 18)、每笔 +63、盈亏比 1.19;
         保本(+5% 移到均价)、+20% 减半、破 EMA10 再减半、破 EMA20 清仓不变。
 - **去掉 P-09(Base 低点 2%)和 P-10(固定 6%)** —— 用户选的。它们和 7% 上限冲突:6% 会先卖掉,止损距离永远到不了 7%;
         P-09 每天按滚动 21 日低点重算、会跟着上移,可能比进场时定的止损先触发。新 P-11 已经包含 Base 低点与最大风险上限。
+
+v6 一年:-2.30%、回撤 -7.50%、49 笔、每笔 -49。49 笔里 43 笔被截在 7%(21 日低点离突破收盘通常超过 7%),
+等于固定 7% 止损;仓位不随止损距离变,止损放宽 3 倍、每笔最大亏损也放大 3 倍。
+
+## v7(2026-09-14 用户:「先回退到 v5 的初始止损,加上入场前根据级别确认仓位」,入场筛选保持 v4/v5)
+
+**止损回到 v5**:P-11 = max(进场价 − 1 × ATR20, 进场价 × 0.92),P-09 Base 低点 2%、P-10 固定 6% 加回来。
+
+**P-20 入场前五项评分(满分 500)**:每项 S 100 / A 80 / B 60 / C 40 / D 0;总分 ≥350 S · ≥300 A · ≥250 B · ≥200 C · <200 D。
+档位定仓(用户选「首次就买满这个比例,加仓另加」):**S / A / B / C 首次买入总资产 20 / 15 / 10 / 5%,D 不买**;
+加仓仍按 P-08,股数 = 首次股数的 30% / 20%(S 级单票最多约 30%)。
+1. 止损上方支撑(本引擎新写 `supports`):在「止损价 < 价位 < 收盘价」之间数有几**类**结构,≥4 S · 3 A · 2 B · 1 C · 0 D。
+   - 均线:10 日 / 20 日均线、11 日 / 21 日加权均线(含今天)四条里至少两条落在区间内 → 算 1 类;
+   - 前浪顶:今天之前 63 根里的 5 根摆动高点(比前后各 2 根都高);
+   - 拒绝块(用户选「长下影」):当天振幅 ≥ 1 ATR 且收盘离最低价占振幅 ≥ 60%,支撑价 = 当天最低;
+   - 缺口:向上跳空(当天最低 > 前一天最高)且到今天还没回补,支撑价 = 缺口下沿(前一天最高);
+   - 关键 K 线(用户选「放量阳线」):成交量 ≥ 当时 50 日均量 2 倍、收盘在当天振幅上 1/3、收盘高于前一天,支撑价 = 当天最低。
+   **没有开盘价**,拒绝块和关键 K 线只能用高 / 低 / 收 / 量认(用户确认过)。只看今天之前的 K 线 ——
+   突破当天那根放量阳线必然满足「关键 K 线」,算进去等于人人白送 1 类。
+2. 量价配合、3. 抗跌、5. MACD 金叉:直接用方向 C(agent_vcp3)的 `_vp_net` / `_defense` / `_macd_cross`,口径与用户这次给的一致
+   (最近 63 个交易日;日线金叉最近 5 天内、周线最近 3 根周 K 内)。
+4. 走廊:R = 收盘 − P-11 止损;走廊 = (上方 252 日强阻力 − 收盘)÷ R,阻力取「近 252 根最高价」与「1 年高成交量节点下沿」里近的
+   (`agent_vcp3.res_above`,离收盘不足 0.5 ATR 的不算);上方没有阻力 = 走廊无上限记 S。≥5R S · ≥4R A · ≥3R B · ≥2R C。
+**P-21 空间受限**:走廊不足 2R 直接不买(排在评分之前,不是记 0 分)。
+算不出的项按 D 记 0 分并写原因(第 5 项没有 D,算不出记 C)。评分字段只在突破当天(P-06 成立)算,别的日子不花这份计算。
 """
 from __future__ import annotations
 
 import math
 
 from app.services.quant import agent_vcp as av
+from app.services.quant import agent_vcp3 as c3
 
 MARKET_KEY = "__market__"
 SECTORS_KEY = "__sectors__"          # agent_run.ensure_cache 按有 MARKET_KEY 的引擎一起写;本引擎不用板块
@@ -121,14 +147,18 @@ PARAMS = {
     "extend": 1.05, "vol_surge": 1.5,
     "add1_pct": 1.02, "add1_vol": 1.2, "add2_pct": 1.05, "add2_vol": 1.1,
     "base_stop": 0.98, "fixed_stop": 0.94,
-    "stop_atr": 1.5, "stop_cap": 0.07, "form_buffer": 0.015,                          # v6:形态 + 1.5 ATR 取宽,上限 7%
+    "stop_atr": 1.0, "stop_cap": 0.08,                                                 # v7 回到 v5:1 ATR,最多 8%
     "be_trigger": 1.05, "half_trigger": 1.20,                                          # v5 起:保本 / 20% 减半
+    "grade_pct": {"S": 0.20, "A": 0.15, "B": 0.10, "C": 0.05},                         # v7:档位 → 首次买入占总资产
+    "corr_min": 2.0, "sup_look": 63, "rej_close_pos": 0.6, "key_vol": 2.0,             # v7:空间受限 / 支撑结构口径
     "partial_profit": 8.0, "partial_frac": 0.20,
     "exit_ema21_profit": 10.0, "exit_sma50_profit": 20.0,
     "unit_pct": 0.20, "initial_frac": 0.50, "add1_frac": 0.30, "add2_frac": 0.20, "max_holdings": 5,
     "watch_pool_days": 1,
 }
-STOP_KEYS = ("stop_cap",)            # v6 起 fixed_stop / base_stop 不再参与出场(P-09 / P-10 已去掉)
+STOP_KEYS = ("fixed_stop",)
+SUP_MIN = {"S": 4, "A": 3, "B": 2, "C": 1}      # 第 1 项:支撑结构类数的档位下限
+GRADE_RULE = "P-20"
 ENTRY_RULE = "P-06"
 ADD_RULE = "P-08"
 WATCH_POOL_DAYS = 1                  # 突破是当天的事;筛选条件由引擎按前一天收盘重算,池子只要当天的
@@ -155,9 +185,11 @@ RULES = [
     {"id": "P-04", "kind": "buy", "condition": "整理形态(前一天收盘):3 月振幅 12%~35%、1 月振幅 3%~15%、1 月 ≤ 3 月 × 0.55、5 日 ≤ 1 月 × 0.65、21 日最低 > 63 日最低 × 1.01"},
     {"id": "P-05", "kind": "buy", "condition": "枢轴与缩量(前一天收盘):枢轴 = 近 63 日浪高点下方 10% 内的密集成交区上沿;距枢轴 −4% ~ +5%;10 日均量 < 50 日均量 × 1.0"},
     {"id": "P-06", "kind": "buy", "condition": "突破触发(当天):收盘 > 枢轴(密集成交区上沿)、收盘 < 枢轴 × 1.05、成交量 > 50 日均量 × 1.5(阳线条件没做:日线没有开盘价)"},
-    {"id": "P-07", "kind": "risk", "condition": "仓位:完整仓位 = 总资产 20%,首次买入 50%;最多 5 只"},
+    {"id": "P-07", "kind": "risk", "condition": "仓位:按 P-20 档位首次买入 S 20% / A 15% / B 10% / C 5% 总资产,D 不买;加仓按首次股数的 30% / 20%;最多 5 只"},
     {"id": "P-08", "kind": "buy", "condition": "加仓:收盘 > 进场价 × 1.02、量 > 20 日均量 × 1.2、收盘 > EMA8、市场向上 → +30%;收盘 > 进场价 × 1.05、量 > 20 日均量 × 1.1、收盘 > EMA21 → 再 +20%"},
-    {"id": "P-11", "kind": "sell", "condition": "初始止损:距离 = max(Base 低点下方 1.5%, 1.5 × ATR20),上限 7%;最高收盘到过进场价 × 1.05 后上移到持仓均价(保本);收盘跌破即出"},
+    {"id": "P-09", "kind": "sell", "condition": "止损 A:当天最低价 < 前一天为止近 21 日最低 × 0.98(跌破 Base 低点),按收盘价出"},
+    {"id": "P-10", "kind": "sell", "condition": "止损 B:收盘 < 进场价 × 0.94(固定 6%)"},
+    {"id": "P-11", "kind": "sell", "condition": "初始止损:进场价 − 1 × ATR(20),止损距离最多 8%;最高收盘到过进场价 × 1.05 后上移到持仓均价(保本);收盘跌破即出"},
     {"id": "P-12", "kind": "sell", "condition": "部分止盈:浮盈 ≥ 8% 且收盘 < 前一天最高、量 < 10 日均量 → 卖出约 20%(每个持仓一次)"},
     {"id": "P-13", "kind": "sell", "condition": "趋势出场:收盘 < EMA21 且浮盈 > 10%"},
     {"id": "P-14", "kind": "sell", "condition": "趋势出场:收盘 < 50 日均线且浮盈 > 20%"},
@@ -166,6 +198,8 @@ RULES = [
     {"id": "P-17", "kind": "sell", "condition": "+20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)"},
     {"id": "P-18", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA10 卖出余仓一半(一次)"},
     {"id": "P-19", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA20 清仓"},
+    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 近 3 月量价配合 · 近 3 月标普下跌日抗跌 · 走廊 R 倍数 · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D 不买"},
+    {"id": "P-21", "kind": "risk", "condition": "空间受限:走廊(上方 252 日强阻力 − 收盘)÷ R 不足 2R,达到买点也不进"},
 ]
 RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Base 低点", "P-10": "固定 6% 止损",
              "P-11": "ATR 止损 / 保本", "P-12": "部分止盈", "P-13": "跌破 EMA21", "P-14": "跌破 50 日线",
@@ -180,8 +214,9 @@ def rules_for(p: dict = PARAMS) -> list[dict]:
 def summary(p: dict = PARAMS) -> str:
     return ("Patrick Walker 风格突破:标普在 50 日 > 200 日之上才做;前一天收盘时已是均线多头、离一年高点 20% 以内、RS ≥ 70、"
             "3 个月 → 1 个月 → 5 天振幅逐级收紧、低点抬高、量能干燥的票,今天收盘放量(> 1.5 倍 50 日均量)站上浪高点下方密集成交区的上沿、"
-            "且不超过 5% 时买入完整仓位(总资产 20%)的一半;涨 2% / 5% 且放量站上 EMA8 / EMA21 各加 30% / 20%;"
-            "初始止损取 Base 低点下方 1.5% 与 1.5 倍 ATR 中较宽的一个(最多 7%),最高到过 +5% 后止损上移到均价保本;"
+            "且不超过 5% 时,先看走廊(不足 2R 不买),再按五项评分定档:S / A / B / C 首次买入总资产 20 / 15 / 10 / 5%,D 不买;"
+            "涨 2% / 5% 且放量站上 EMA8 / EMA21 各加首次股数的 30% / 20%;"
+            "跌破 Base 低点 2%、亏 6%、或跌破 1 倍 ATR 初始止损(最多 8%)出场,最高到过 +5% 后止损上移到均价保本;"
             "浮盈 8% 后遇暂停卖 20%,+20% 减半,之后跌破 EMA10 再减半、跌破 EMA20 清仓;"
             "浮盈 10% 跌破 EMA21、浮盈 20% 跌破 50 日线、或大盘转弱时清仓。")
 
@@ -286,14 +321,139 @@ def _core(bars: list[tuple]) -> dict | None:
 
 
 def indicators(bars: list[tuple], p: dict = PARAMS, bench: dict | None = None) -> dict | None:
-    """bars = [(d, c, h, l, v)] 升序,最后一根是今天。→ 今天的字段 + prev(前一天收盘的字段,筛选用)。"""
+    """bars = [(d, c, h, l, v)] 升序,最后一根是今天。→ 今天的字段 + prev(前一天收盘的字段,筛选用)
+    + gf(突破当天才算的五项评分特征)。"""
     ind = _core(bars)
     if ind is not None:
         prev = _core(bars[:-1])
         if prev is not None:
             prev.pop("prev", None)
         ind["prev"] = prev
+        ind["gf"] = None
+        if ind.get("atr20") and trigger_check(ind, p)["ok"]:
+            ind["gf"] = grade_features(bars, ind, bench, p)
     return ind
+
+
+# ═══════════════════════════════════════════════════════════════
+# v7 入场评分(P-20)与空间受限(P-21)
+# ═══════════════════════════════════════════════════════════════
+
+def stop_of(px: float, atr: float, p: dict = PARAMS) -> float:
+    """P-11 初始止损价 = max(收盘 − stop_atr × ATR, 收盘 × (1 − stop_cap))。"""
+    return max(px - p["stop_atr"] * atr, px * (1 - p["stop_cap"]))
+
+
+def _wma(xs: list[float], n: int) -> float | None:
+    if len(xs) < n:
+        return None
+    return sum(x * k for x, k in zip(xs[-n:], range(1, n + 1))) / (n * (n + 1) / 2)
+
+
+def supports(bars: list[tuple], stop: float, p: dict = PARAMS) -> dict | None:
+    """第 1 项 · 止损价与收盘价之间的支撑结构 → {count, items:[(类, 价, 说明)], text};日线不够 → None。
+    均线含今天;前浪顶 / 拒绝块 / 缺口 / 关键 K 线只看今天之前 sup_look 根。每类最多算 1 个。"""
+    look = int(p["sup_look"])
+    n = len(bars)
+    if n < look + 52:
+        return None
+    c = [b[1] for b in bars]
+    h = [b[2] for b in bars]
+    lo = [b[3] for b in bars]
+    v = [b[4] for b in bars]
+    if any(x is None for x in h[-look - 2:] + lo[-look - 2:] + v[-look - 51:]):
+        return None
+    px = c[-1]
+
+    def between(x):
+        return x is not None and stop < x < px
+
+    items = []
+    mas = [("10 日均线", av._sma(c, 10)), ("20 日均线", av._sma(c, 20)), ("11 日加权", _wma(c, 11)), ("21 日加权", _wma(c, 21))]
+    inb = [(k, x) for k, x in mas if between(x)]
+    if len(inb) >= 2:
+        items.append(("均线", max(x for _k, x in inb), "、".join(f"{k} ${x:.2f}" for k, x in inb)))
+    i0 = n - 1 - look                                   # 窗口 = [i0, n-2](不含今天)
+    tops = [h[i] for i in range(max(i0, 2), n - 3) if h[i] > max(h[i - 2:i] + h[i + 1:i + 3]) and between(h[i])]
+    if tops:
+        items.append(("前浪顶", max(tops), f"摆动高点 ${max(tops):.2f}"))
+    atr = av._atr(bars[-61:], 20)
+    rej, key, gaps = [], [], []
+    for i in range(max(i0, 50), n - 1):
+        rng = h[i] - lo[i]
+        pos_ = (c[i] - lo[i]) / rng if rng > 0 else None
+        if atr and rng >= atr and pos_ is not None and pos_ >= p["rej_close_pos"] and between(lo[i]):
+            rej.append(lo[i])
+        a50 = sum(v[i - 49:i + 1]) / 50
+        if a50 and v[i] >= p["key_vol"] * a50 and pos_ is not None and pos_ >= 2 / 3 and c[i] > c[i - 1] and between(lo[i]):
+            key.append(lo[i])
+        if lo[i] > h[i - 1] and min(lo[i:]) > h[i - 1] and between(h[i - 1]):
+            gaps.append(h[i - 1])
+    if rej:
+        items.append(("拒绝块", max(rej), f"长下影低点 ${max(rej):.2f}"))
+    if gaps:
+        items.append(("缺口", max(gaps), f"未回补缺口下沿 ${max(gaps):.2f}"))
+    if key:
+        items.append(("关键 K 线", max(key), f"放量阳线低点 ${max(key):.2f}"))
+    text = (f"止损 ${stop:.2f} ~ 收盘 ${px:.2f} 之间 {len(items)} 类:" + ";".join(f"{a}({t})" for a, _x, t in items)
+            if items else f"止损 ${stop:.2f} ~ 收盘 ${px:.2f} 之间没有支撑结构")
+    return {"count": len(items), "items": items, "text": text}
+
+
+def grade_features(bars: list[tuple], ind: dict, bench: dict | None, p: dict = PARAMS) -> dict:
+    c = [b[1] for b in bars]
+    v = [b[4] for b in bars]
+    px, atr = ind["close"], ind["atr20"]
+    stop = stop_of(px, atr, p)
+    need = c3.LOOKBACK + c3.VOL_SMA
+    return {
+        "stop": stop,
+        "sup": supports(bars, stop, p),
+        "vp": c3._vp_net(c, v) if len(v) >= need and all(x is not None for x in v[-need:]) else None,
+        "def": c3._defense(bars, bench),
+        "macd_d": c3._macd_cross(c, c3.MACD_DAILY_WITHIN),
+        "macd_w": c3._macd_cross(c3._weekly_closes(bars), c3.MACD_WEEKLY_WITHIN),
+        "res": c3.res_above(bars, px, atr),
+    }
+
+
+def corridor(ind: dict, stop: float) -> tuple[float | None, str]:
+    """第 4 项 · 走廊 = (上方 252 日强阻力 − 收盘)÷ R;上方没有阻力 → inf。"""
+    px = ind["close"]
+    r1 = px - stop
+    if r1 <= 0:
+        return None, "止损不在收盘下方,R 算不出"
+    ra = (ind.get("gf") or {}).get("res")
+    if not ra:
+        return math.inf, f"R = ${r1:.2f};上方 252 根内没有强阻力(一年新高之上),走廊无上限"
+    lvl, src = ra
+    corr = max(lvl - px, 0.0) / r1
+    return corr, f"R = ${r1:.2f};到上方强阻力 ${lvl:.2f}({src})走廊 {corr:.1f}R"
+
+
+def grade(ind: dict, stop: float, score=None, p: dict = PARAMS) -> dict:
+    """P-20 五项 500 分 → {grade, points, factors:[(项, 档, 分, 说明)], text}。算不出的项按 D 计 0 分(第 5 项算不出记 C)。"""
+    gf = ind.get("gf") or {}
+    items = []
+    sup = gf.get("sup")
+    items.append(("止损上方支撑", c3._tier(sup["count"], SUP_MIN) if sup else None,
+                  sup["text"] if sup else f"日线不足 {int(p['sup_look']) + 52} 根,算不出"))
+    vp = gf.get("vp")
+    items.append(("量价配合", c3._tier(vp, c3.VP_MIN),
+                  f"近 {c3.LOOKBACK} 天净 {vp:+d} 次" if vp is not None else f"日线不足 {c3.LOOKBACK + c3.VOL_SMA} 根,算不出"))
+    df = gf.get("def")
+    items.append(("抗跌", c3._tier(df[0], c3.DEF_MIN) if df else None,
+                  f"标普下跌 {df[1]} 天里 {df[0]} 天不跌" if df else "没有基准日线,算不出"))
+    corr, corr_txt = corridor(ind, stop)
+    items.append(("走廊", c3._tier(corr, c3.RR_MIN), corr_txt))
+    md, mw = bool(gf.get("macd_d")), bool(gf.get("macd_w"))
+    items.append(("MACD 金叉", "S" if md and mw else "A" if mw else "B" if md else "C",
+                  "日线 + 周线" if md and mw else "只有周线" if mw else "只有日线" if md else "没有金叉"))
+    factors = [(name, t or "D", c3.SUB_POINTS[t or "D"], txt) for name, t, txt in items]
+    total = sum(x[2] for x in factors)
+    g = c3._tier(total, c3.GRADE_MIN)
+    return {"grade": g, "points": total, "factors": factors,
+            "text": f"{g} 级({total}/500):" + "、".join(f"{a} {b} {pt}({t})" for a, b, pt, t in factors)}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -435,7 +595,11 @@ def exit_rule(pos: av.Position, ind: dict, market: dict | None, p: dict = PARAMS
     按脚本 full_exit 里的顺序取第一个成立的做出场原因。"""
     px, ep = ind["close"], pos.entry_price
     profit = (px - ep) / ep * 100
-    # v6 起去掉 P-09(Base 低点 2%)和 P-10(固定 6%):初始止损由 P-11 统一决定(形态 + ATR 取宽,上限 7%)
+    # v7 回到 v5:P-09 / P-10 加回来(v6 去掉过)
+    if ind["low"] < ind["base_low"] * p["base_stop"]:
+        return "P-09", f"最低价 ${ind['low']:.2f} 跌破 Base 低点 ${ind['base_low']:.2f} 的 {p['base_stop']:.2f} 倍 —— 止损 A,按收盘出。"
+    if px < ep * p["fixed_stop"]:
+        return "P-10", f"收盘 ${px:.2f} 跌破进场价 × {p['fixed_stop']:.2f} = ${ep * p['fixed_stop']:.2f} —— 固定止损。"
     if pos.stop and px < pos.stop:
         be = pos.stop >= pos.avg_cost - 1e-9
         return "P-11", (f"收盘 ${px:.2f} 跌破{'保本止损(持仓均价)' if be else '初始止损'} ${pos.stop:.2f} —— 出场。")
@@ -512,24 +676,6 @@ def manage_position(pos: av.Position, ind: dict, state: dict, p: dict = PARAMS, 
     return fills
 
 
-def initial_stop(px: float, atr: float, base_low: float | None, p: dict = PARAMS) -> tuple[float, str]:
-    """v6 初始止损 → (止损价, 说明)。距离 = max(形态距离, stop_atr × ATR),上限 stop_cap。
-    形态距离 = 收盘 − Base 低点 × (1 − form_buffer);Base 低点缺失或不在收盘下方时只用 ATR。"""
-    atr_d = p["stop_atr"] * atr
-    form_d = (px - base_low * (1 - p["form_buffer"])) if base_low else None
-    if form_d is not None and form_d <= 0:
-        form_d = None
-    raw = max(atr_d, form_d) if form_d is not None else atr_d
-    cap = px * p["stop_cap"]
-    d = min(raw, cap)
-    form_txt = (f"形态 = Base 低点 ${base_low:.2f} 下方 {p['form_buffer'] * 100:.1f}% → {form_d / px * 100:.1f}%"
-                if form_d is not None else "形态止损算不出(没有 Base 低点)")
-    how = (f"{form_txt};{p['stop_atr']:.1f} × ATR ${atr:.2f} → {atr_d / px * 100:.1f}%;"
-           + ("取形态" if form_d is not None and form_d >= atr_d else "取 ATR")
-           + (f",超过 {p['stop_cap'] * 100:.0f}% 截在 {p['stop_cap'] * 100:.0f}%" if raw > cap else ""))
-    return px - d, how
-
-
 def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = True, score=None):
     market = state.get("market")
     checks = entry_checks(ind, p, score, market)
@@ -545,11 +691,19 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     atr = ind.get("atr20")
     if not atr or atr <= 0:
         return None, "突破成立,但 ATR(20) 算不出,没法定初始止损(不拿 8% 顶替)(P-11)"
-    stop, stop_how = initial_stop(px, atr, ind.get("base_low"), p)
-    unit = int(equity * p["unit_pct"] / px)
-    size = int(unit * p["initial_frac"])
+    stop = stop_of(px, atr, p)
+    if ind.get("gf") is None:
+        return None, "突破成立,但评分字段没算出来(日线不足或缺值),不定档不买(P-20)"
+    corr, corr_txt = corridor(ind, stop)
+    if corr is not None and corr < p["corr_min"]:
+        return None, f"突破成立,但空间受限:{corr_txt},不足 {p['corr_min']:.0f}R —— 不买(P-21)"
+    gr = grade(ind, stop, score, p)
+    if gr["grade"] == "D":
+        return None, f"突破成立,但评分 {gr['text']} —— D 级不买(P-20)"
+    pct = p["grade_pct"][gr["grade"]]
+    size = int(equity * pct / px)
     if size <= 0:
-        return None, "突破成立,但按仓位算出的股数为 0"
+        return None, f"突破成立({gr['grade']} 级),但按 {pct * 100:.0f}% 算出的股数为 0"
     cash_cut = False
     if size * px > state["cash"]:
         size = int(state["cash"] / px)
@@ -558,19 +712,24 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
             return None, f"突破成立,但现金只剩 ${state['cash']:.0f},买不起 1 股"
     cost = size * px
     state["cash"] -= cost
+    unit = size                                  # 加仓按首次股数的 30% / 20%(用户选「首次就买满,加仓另加」)
     pos = av.Position(code=code, name=name or code, size=size, initial_size=unit, entry_price=px,
                       entry_date=state["date"], avg_cost=px, highest=px, level=1, bars_held=0,
                       entry_rule=ENTRY_RULE, stop=stop, risk=px - stop,
-                      extra={"unit": unit, "pivot": ind["pivot"], "atr": atr})
+                      extra={"unit": unit, "pivot": ind["pivot"], "atr": atr, "grade": gr["grade"], "points": gr["points"]})
     state["positions"].append(pos)
-    extra = {"amount": round(cost, 2), "position_pct": round(cost / equity * 100, 2)}
+    extra = {"amount": round(cost, 2), "position_pct": round(cost / equity * 100, 2),
+             "grade": gr["grade"], "points": gr["points"], "grade_detail": gr["text"]}
     if not want_text:
         return _fill("buy", pos, size, px, ENTRY_RULE, "", **extra), None
     rationale = ("".join(f"{c['rule']} {c['text']};" for c in checks)
-                 + f"完整仓位 = 总资产 {p['unit_pct'] * 100:.0f}% ÷ ${px:.2f} = {unit} 股,首次买入 {p['initial_frac'] * 100:.0f}%"
+                 + f"P-21 {corr_txt}(≥ {p['corr_min']:.0f}R)。"
+                 + f"P-20 评分 {gr['text']}。"
+                 + f"P-07 {gr['grade']} 级首次买入总资产 {pct * 100:.0f}% ÷ ${px:.2f}"
                  + (f",现金只够 {size} 股" if cash_cut else f" = {size} 股")
                  + f",占总资产 {cost / equity * 100:.1f}%。"
-                 + f"初始止损 ${stop:.2f}(距收盘 {(1 - stop / px) * 100:.1f}%):{stop_how}。")
+                 + f"初始止损 = max(收盘 − {p['stop_atr']:.0f} × ATR ${atr:.2f}, 收盘 × {1 - p['stop_cap']:.2f}) = ${stop:.2f}"
+                 + f"(距收盘 {(1 - stop / px) * 100:.1f}%{',被 8% 上限截住' if px - p['stop_atr'] * atr < px * (1 - p['stop_cap']) else ''})。")
     return _fill("buy", pos, size, px, ENTRY_RULE, rationale, **extra), None
 
 

@@ -88,11 +88,15 @@ SCREEN_OK = {"sma150": 90.0, "sma200": 85.0, "hi252": 110.0, "av30": 900_000.0,
 SCREEN_BROKEN = dict(SCREEN_OK, rng1m=0.18, rng5d=0.12)       # 18%:v4 把 4b 上限放到 15% 之后仍算撑坏
 
 
-def good(prev=None, **kw):
+GF_S = {"stop": 101.0, "sup": {"count": 4, "items": [], "text": "4 类"}, "vp": 6, "def": (16, 30),
+        "macd_d": True, "macd_w": True, "res": None}              # 五项全 S(500 分)
+
+
+def good(prev=None, gf=None, **kw):
     x = {"close": 104.0, "high": 104.5, "low": 101.5, "volume": 2_000_000.0, "prev_high": 102.0,
          "pivot": 102.0, "base_low": 95.0, "av10": 1_100_000.0, "av20": 1_000_000.0, "av50": 1_000_000.0,
          "ema8": 101.0, "ema21": 99.0, "sma50": 95.0, "screen": dict(SCREEN_BROKEN),
-         "ema10": 101.5, "ema20": 99.5, "atr20": 3.0}
+         "ema10": 101.5, "ema20": 99.5, "atr20": 3.0, "gf": dict(GF_S, **(gf or {}))}
     pv = {"close": 101.8, "pivot": 102.0, "av10": 800_000.0, "av50": 1_000_000.0, "sma50": 95.0,
           "screen": dict(SCREEN_OK)}
     prev = dict(prev or {})
@@ -141,25 +145,79 @@ r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], 
 buys = [f for f in r["fills"] if f["side"] == "buy"]
 check("进场 · 全满足当天买入", len(buys) == 1, str(r["fills"]))
 if buys:
-    unit = int(100_000 * 0.20 / 104.0)
-    check("P-07 · 首次买入 = 完整仓位(总资产 20%)的一半", buys[0]["shares"] == int(unit * 0.5), f"{buys[0]['shares']} vs {unit}")
-    check("进场 · 理由里逐条写了 P-01 ~ P-06 与股数算法", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "完整仓位", "昨收")))
-    check("进场 · 完整仓位记在 extra 里(加仓按它算)", r["positions"][0].extra.get("unit") == unit)
-    # good():收盘 104、Base 低点 95、ATR 3 → 形态 95 × 0.985 = 93.575(10.0%)、1.5 ATR = 4.5(4.3%)→ 取形态 10% → 截在 7%
-    check("P-11 · v6 形态 10% > 1.5 ATR 4.3% → 取形态,超过 7% 截在 7%", abs(r["positions"][0].stop - 104.0 * 0.93) < 1e-9,
+    size_s = int(100_000 * 0.20 / 104.0)
+    check("P-07 · S 级首次买入总资产 20%", buys[0]["shares"] == size_s, f"{buys[0]['shares']} vs {size_s}")
+    check("进场 · 理由里写了 P-01 ~ P-06、走廊、评分与仓位", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "P-21", "P-20", "S 级", "昨收")))
+    check("进场 · 加仓基数 = 首次股数(extra.unit)", r["positions"][0].extra.get("unit") == size_s)
+    check("进场 · 成交记录带档位与分数(写进 agent_trade.grade)", buys[0].get("grade") == "S" and buys[0].get("points") == 500)
+    check("P-11 · v7 回到 v5:初始止损 = 进场价 − 1 ATR(104 − 3 = 101)", abs(r["positions"][0].stop - 101.0) < 1e-9,
           str(r["positions"][0].stop))
-    check("P-11 · 买入理由写了形态 / ATR / 上限的算法", all(k in buys[0]["rationale"] for k in ("初始止损", "Base 低点", "ATR", "截在 7%")))
 
-# 形态比 ATR 宽、没超 7%:Base 低点 101 → 101 × 0.985 = 99.485(4.34%);1.5 ATR = 4.5(4.33%)→ 取形态
-s, how = ab.initial_stop(104.0, 3.0, 101.0)
-check("P-11 · 形态 4.34% 略宽于 1.5 ATR 4.33% → 取形态", abs(s - 101.0 * 0.985) < 1e-9 and "取形态" in how, f"{s} {how}")
-# ATR 比形态宽:Base 低点 102.5 → 100.96(2.9%);1.5 ATR = 4.5 → 取 ATR,止损 99.5
-s, how = ab.initial_stop(104.0, 3.0, 102.5)
-check("P-11 · 形态 2.9% 太紧 → 取 1.5 ATR(止损 99.5)", abs(s - 99.5) < 1e-9 and "取 ATR" in how, f"{s} {how}")
-s, how = ab.initial_stop(104.0, 3.0, None)
-check("P-11 · 没有 Base 低点 → 只用 ATR", abs(s - 99.5) < 1e-9 and "算不出" in how, f"{s} {how}")
-s, how = ab.initial_stop(104.0, 6.0, 102.5)
-check("P-11 · 1.5 ATR = 9 超过 7% → 截在 进场价 × 0.93", abs(s - 104.0 * 0.93) < 1e-9 and "截在 7%" in how, f"{s} {how}")
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(atr20=12.0))
+check("P-11 · ATR 12 超过 8% → 止损被截在 进场价 × 0.92",
+      r["positions"] and abs(r["positions"][0].stop - 104.0 * 0.92) < 1e-9, str([x.stop for x in r["positions"]]))
+
+# ── v7 评分定仓 ──────────────────────────────────────────────
+def entry_with(gf, score=90):
+    return ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", score)], None, 0, P, G,
+                      ind_of=lambda c: UP if c == ab.MARKET_KEY else good(gf=gf))
+
+
+# A 级:支撑 1 类 C40 + 量价 3 C40 + 抗跌 3 次 C40 + 走廊无上限 S100 + 只有周线金叉 A80 = 300
+gf_a = {"sup": {"count": 1, "items": [], "text": "1 类"}, "vp": 3, "def": (3, 30), "macd_d": False, "macd_w": True}
+g_a = ab.grade(good(gf=gf_a), 101.0, 90)
+check("P-20 · 40 + 40 + 40 + 100 + 80 = 300 → A", g_a["grade"] == "A" and g_a["points"] == 300, g_a["text"])
+r = entry_with(gf_a)
+b = [f for f in r["fills"] if f["side"] == "buy"]
+check("P-07 · A 级首次买入总资产 15%", b and b[0]["shares"] == int(100_000 * 0.15 / 104.0) and b[0]["grade"] == "A", str(r["fills"]))
+# C 级:支撑 0 D + 量价 2 D + 抗跌 2 D + 走廊 5R S + 周线 A → 180 → D;加 1 类支撑 → 220 → C
+gf_d = {"sup": {"count": 0, "items": [], "text": "0 类"}, "vp": 2, "def": (2, 30), "macd_d": False, "macd_w": True}
+check("P-20 · 0 + 0 + 0 + 100 + 80 = 180 → D", ab.grade(good(gf=gf_d), 101.0, 90)["grade"] == "D")
+r = entry_with(gf_d)
+check("P-20 · D 级不买并写明", not r["fills"] and "D 级不买" in (r["watch_items"][0].get("blocked_reason") or ""), str(r["watch_items"][0]))
+gf_c = dict(gf_d, sup={"count": 2, "items": [], "text": "2 类"})
+g_c = ab.grade(good(gf=gf_c), 101.0, 90)
+check("P-20 · 60 + 0 + 0 + 100 + 80 = 240 → C", g_c["grade"] == "C" and g_c["points"] == 240, g_c["text"])
+r = entry_with(gf_c)
+b = [f for f in r["fills"] if f["side"] == "buy"]
+check("P-07 · C 级首次买入总资产 5%", b and b[0]["shares"] == int(100_000 * 0.05 / 104.0), str(r["fills"]))
+g_na = ab.grade(good(gf={"sup": None, "vp": None, "def": None, "macd_d": None, "macd_w": None}), 101.0, 90)
+check("P-20 · 算不出的项按 D 计 0 分、MACD 算不出记 C", [f[1] for f in g_na["factors"]] == ["D", "D", "D", "S", "C"], str(g_na["factors"]))
+
+# 走廊:R = 104 − 101 = 3。阻力 116 → 4R A;阻力 108.5 → 1.5R 空间受限
+check("走廊 · 阻力 116 → 4.0R → A", ab.c3._tier(ab.corridor(good(gf={"res": (116.0, "前高")}), 101.0)[0], ab.c3.RR_MIN) == "A")
+r = entry_with({"res": (108.5, "底部左侧前高")})
+check("P-21 · 走廊 1.5R 不足 2R → 空间受限不买(不是记 0 分)", not r["fills"]
+      and "空间受限" in (r["watch_items"][0].get("blocked_reason") or ""), str(r["watch_items"][0]))
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else dict(good(), gf=None))
+check("P-20 · 评分字段没算出来 → 不买", not r["fills"])
+
+# 第 1 项支撑结构:造一段 100 → 106 平台 → 108 平台 的日线,止损 105、今天收 110
+def bar(i, c, h, l, v=1_000_000.0):
+    return (date(2025, 1, 1) + timedelta(days=i), c, h, l, v)
+
+
+sb = [bar(i, 100.0, 100.5, 99.5) for i in range(100)]
+sb += [bar(100 + i, 106.0, 106.3, 105.7) for i in range(10)]                   # 平台 A
+for i in range(30):                                                             # 平台 B:缺口下沿 106.3 未回补
+    sb.append(bar(110 + i, 108.0, 108.3, 107.7))
+sb[115] = bar(115, 108.0, 108.9, 107.7)                                         # 前浪顶 108.9
+sb[122] = bar(122, 108.2, 108.6, 106.6)                                         # 拒绝块:振幅 2.0、收盘在 80% 处,低点 106.6
+sb[130] = bar(130, 108.25, 108.3, 107.7, 3_000_000.0)                           # 关键 K 线:3 倍量、收在上 1/3、高于前一天
+sb.append(bar(140, 110.0, 110.5, 109.5, 2_000_000.0))                           # 今天
+sp = ab.supports(sb, 105.0)
+kinds = {x[0] for x in sp["items"]} if sp else set()
+check("支撑 · 均线 / 前浪顶 / 拒绝块 / 缺口 / 关键 K 线五类都认出来", kinds == {"均线", "前浪顶", "拒绝块", "缺口", "关键 K 线"}, str(sp))
+check("支撑 · 五类 → S", sp and ab.c3._tier(sp["count"], ab.SUP_MIN) == "S")
+check("支撑 · 止损 109.6(区间里什么都没有)→ 0 类", ab.supports(sb, 109.6)["count"] == 0, ab.supports(sb, 109.6)["text"])
+sb_fill = list(sb)
+sb_fill[135] = bar(135, 108.0, 108.3, 106.0)                                     # 回补到 106 → 缺口没了
+check("支撑 · 缺口被回补就不算", "缺口" not in {x[0] for x in ab.supports(sb_fill, 105.0)["items"]})
+check("支撑 · 突破当天那根放量阳线不算关键 K 线(只看今天之前)",
+      "关键 K 线" not in {x[0] for x in ab.supports(sb[:130] + [bar(130, 108.0, 108.3, 107.7)] + sb[131:], 105.0)["items"]})
+check("支撑 · 日线不够 → None", ab.supports(sb[-80:], 105.0) is None)
 r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
                ind_of=lambda c: UP if c == ab.MARKET_KEY else good(atr20=None))
 check("P-11 · ATR 算不出 → 不买并写明(不拿 8% 顶替)", not r["fills"] and "ATR" in (r["watch_items"][0].get("blocked_reason") or ""))
@@ -200,10 +258,10 @@ def sold(r_):
 
 
 r = day(pos(), hold(101.0, low=87.0))
-check("v6 · P-09 已去掉:最低价跌破 Base 低点 × 0.98 不再出场", not sold(r), str(r["fills"]))
+check("P-09 · v7 加回:最低价跌破 Base 低点 × 0.98 → 清仓按收盘价", sold(r) and sold(r)[0]["rule_id"] == "P-09"
+      and sold(r)[0]["price"] == 101.0 and sold(r)[0]["shares"] == 100, str(r["fills"]))
 r = day(pos(), hold(93.9, ema8=90.0, low=93.5))
-check("v6 · P-10 已去掉:收盘跌 6.1% 但没破初始止损 90 → 不出场", not sold(r), str(r["fills"]))
-check("v6 · 规则手册里没有 P-09 / P-10", not any(x["id"] in ("P-09", "P-10") for x in ab.RULES))
+check("P-10 · v7 加回:收盘 < 进场价 × 0.94 → 固定止损", sold(r) and sold(r)[0]["rule_id"] == "P-10", str(r["fills"]))
 p11 = pos()
 p11.stop = 97.0
 r = day(p11, hold(96.5, low=96.0))
@@ -256,7 +314,7 @@ check("P-15 · 大盘算不出不当成转弱", not sold(r), str(r["fills"]))
 p_ord = pos()
 p_ord.stop = 97.0
 r = day(p_ord, hold(96.5, low=87.0))
-check("v6 · 最低价破 Base 低点且收盘破初始止损 → 记 P-11", sold(r) and sold(r)[0]["rule_id"] == "P-11")
+check("出场顺序 · 同时满足 Base 低点(P-09)和初始止损(P-11)时记 P-09", sold(r) and sold(r)[0]["rule_id"] == "P-09")
 
 # 部分止盈:只做一次
 p1 = pos()
