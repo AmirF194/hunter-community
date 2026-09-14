@@ -187,7 +187,20 @@ check("P-07 · v8 统一仓位:A 级也买完整仓位一半,档位照记", b an
 gf_d = {"sup": {"count": 0, "items": [], "text": "0 类"}, "vp": 2, "def": (2, 30), "macd_d": False, "macd_w": True}
 check("P-20 · 0 + 0 + 0 + 80 + 80 = 160 → D", ab.grade(good(gf=gf_d), 101.0, 90)["grade"] == "D")
 r = entry_with(gf_d)
-check("P-20 · D 级仍然不买并写明(v8 只取消按档定仓)", not r["fills"] and "D 级不买" in (r["watch_items"][0].get("blocked_reason") or ""), str(r["watch_items"][0]))
+b = [f for f in r["fills"] if f["side"] == "buy"]
+check("P-20 · v9 D 级不再拦人:照买、档位记 D", b and b[0]["grade"] == "D" and b[0]["shares"] == UNIFORM, str(r["fills"]))
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, dict(P, block_d=True), G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(gf=gf_d))
+check("P-20 · 开关 block_d 打开 → D 级不买(v8 口径留成开关)", not r["fills"]
+      and "D 级不买" in (r["watch_items"][0].get("blocked_reason") or ""), str(r["watch_items"][0]))
+# v9 唯一硬条件:追高超过 4% 不买。枢轴 102:收盘 106.5 → 4.4% 挡;106.0 → 3.9% 放行
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(close=106.5))
+check("P-20 · 追高 4.4% > 4% → 不买并写明", not r["fills"] and "追高不买" in (r["watch_items"][0].get("blocked_reason") or ""),
+      str(r["watch_items"][0]))
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(close=106.0))
+check("P-20 · 追高 3.9% → 照买", any(f["side"] == "buy" for f in r["fills"]), str(r["watch_items"][0]))
 gf_c = dict(gf_d, sup={"count": 2, "items": [], "text": "2 类"})
 g_c = ab.grade(good(gf=gf_c), 101.0, 90)
 check("P-20 · 60 + 0 + 0 + 80 + 80 = 220 → C", g_c["grade"] == "C" and g_c["points"] == 220, g_c["text"])
@@ -204,7 +217,9 @@ check("P-20 · 算不出的项按 D 计 0 分、MACD 算不出记 C", [f[1] for 
 # 走廊:R = 104 − 101 = 3。阻力 116 → 4R A;阻力 108.5 → 1.5R 空间受限
 check("走廊 · 阻力 116 → 4.0R → A", ab.c3._tier(ab.corridor(good(gf={"res": (116.0, "前高")}), 101.0)[0], ab.c3.RR_MIN) == "A")
 r = entry_with({"res": (108.5, "底部左侧前高")})
-check("P-21 · 走廊 1.5R 不足 2R → 空间受限不买(不是记 0 分)", not r["fills"]
+check("P-21 · v9 门槛 1R:走廊 1.5R → 照买", any(f["side"] == "buy" for f in r["fills"]), str(r["watch_items"][0]))
+r = entry_with({"res": (106.4, "底部左侧前高")})
+check("P-21 · 走廊 0.8R 不足 1R → 空间受限不买(不是记 0 分)", not r["fills"]
       and "空间受限" in (r["watch_items"][0].get("blocked_reason") or ""), str(r["watch_items"][0]))
 r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
                ind_of=lambda c: UP if c == ab.MARKET_KEY else dict(good(), gf=None))
