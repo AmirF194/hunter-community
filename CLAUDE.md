@@ -1541,6 +1541,39 @@ K 线先画、标记后到,图例写「正在算…」。
 `render_check.js` 顺带改了收尾:`setImmediate` 退出(有一组断言挂在 async 的 await 链上),
 并吞掉 `unhandledRejection`(fetch 一律 reject,data.html 有不 catch 的调用,node 20 会当崩溃)。
 
+## 魔法筛选器 · 会员校验 / 次数额度 / 上游保护 / 触屏日K(2026-09-14 用户定)· 七条
+
+用户要把魔法筛选器开给会员。数字全是用户给的:**普通会员每天 AI 识别 10 次、扫描 20 次;按 5000 会员估上游压力;
+每次扫描后等 5 秒再显示结果;每用一次提示剩余**。后端 `quant/screen_quota.py`(文件头写了全部口径)+
+`routers/quant.py` 的 `_member`,前端 `screener.html`「会员校验与额度」一节,用例 `tests/test_screen_quota.py`
+(24 条,不连库)+ `render_check.js`「会员额度」「触屏日K」30 条。
+
+1. **拦截只能在路由里做。** `/api/quant/` 是免登录前缀(可选身份识别),中间件不会替你 401。
+   run / parse / fields / hit-days 调 `_member(request)`;meta / history-range 故意留公开(没登录也要看得到这页是什么)。
+   401 的 detail 是 `{message, need_login: true}`。**免登录前缀上原来不设 `user_role`**,已在 `_bind_optional_identity` 补上 ——
+   不补的话管理员在这里被当成普通会员限次。
+2. **AI 次数只在真调模型的那一刻扣**:`parse_script(..., on_ai=)` 在 `fix_script` / `translate` 之前回调。点「生成」走脚本和本地关键词,零 token 不扣。
+   模型没调通(报错以「调用模型失败」开头)退回;**模型答了但结果用不了照计**(token 花掉了,不计就等于反复点失败的 AI 不限次)。
+3. **扫描先占后退**:一条 `INSERT … ON CONFLICT DO UPDATE … WHERE used < limit RETURNING`,没返回行 = 用满(429,detail 带 quota)。
+   不许改成先 SELECT 再 UPDATE —— 并发连点会超额。脚本报错 / 上游挂了退回。**单条测试(`probe: true`)不扣扫描次数**,
+   单独计 300/天,返回体只有命中数、不回结果行 —— 否则「测一条」就成了不扣次数的扫描。
+   存 postgres(`screen_quota_usage`,幂等 DDL,user_id 不做外键):存内存的话每次部署都白送所有人一整天额度。
+   日期按上海时间,零点重置;管理员(role=admin)不限。
+4. **5 秒两层**:前端扫描返回后倒数 5 秒才放结果(`revealAfter`,只改两处数字不整页重画 —— 整页 render 会弄丢生成框的光标);
+   等待期间条件 / 市场 / 回溯日变了,**丢掉这次结果并说明**,不许把旧结果挂在新条件下面。
+   后端 `check_gap` + `mark_done`:同一用户两次扫描至少隔 5 秒、从上一次**完成**起算(给绕过页面直接调接口的)。
+5. **上游保护在 `fetch_rows`**(估算写在那段注释里:高峰约每秒 13 个上游请求):同市场 + 同列组 + 同过滤 90 秒缓存、
+   同 key 合并(single-flight)、同时最多 3 路、页间全局隔 0.15 秒、失败缓存 10 秒;**返回行的副本**(run_script 会往行里补 RS / VCP 字段,
+   给缓存本体会串到下一个请求)。扫描 warnings 里多一句 `ROWS_CACHE_NOTE` 说明共用取数。
+   rs_history / us_kline / agent_run 也走 fetch_rows,它们跑在一次性容器 / 别的进程里,缓存和槽位不共享,不受影响。
+6. **登录回跳**:筛选器的登录 / 注册链接带 `?return_to=/strategies/screener.html`。register 页原来没有 return_to,已补;
+   两页都只认以 `/` 开头且不是 `//` 的路径(防开放跳转),`.html` 走 `window.location.replace`(public 静态页不是 Next 路由)。
+7. **触屏日K(`app.js` 的 KC 模块,筛选器与小鹿看板共用)**:点代码打开、单指拖动平移 / 双指缩放 / 点一下读数(echarts 原生支持,
+   靠 `.kc-box{touch-action:none}` 不让浏览器抢手势),✕ / 点空白处 / 再点同一只票收起。三条别改坏:
+   ① 触摸后浏览器会补发 mouseover / mouseout,`kcRecentTouch()`(800ms)认出来忽略,否则刚打开就被 mouseout 关掉;
+   ② `KC.touch` 为真时 `kcHide` 不收起、页面滚动不收起(点开时常带惯性滚动);③ 窄屏 / 触屏时弹层放在那一行下方(放不下放上方),宽度不超过屏宽。
+   **没在真机上试过**(本机没有触屏设备),只在桌面浏览器里模拟过。
+
 ## 小鹿智能体 · 后端已接(2026-09-12)· 六条边界
 
 策略 = 「VCP 波段交易」(`quant/agent_vcp.py`,用户给的 Backtrader 策略逐条移植),观察列表 = 筛选器内置示例

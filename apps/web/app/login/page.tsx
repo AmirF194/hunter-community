@@ -25,12 +25,23 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [checking, setChecking] = useState(true)
+  const [registerHref, setRegisterHref] = useState('/register')
+
+  // return_to 只认站内路径(以 / 开头、不是 //),防开放跳转。
+  // .html 是 public 下的静态页(策略中心 / 魔法筛选器),不是 Next 路由,要整页跳
+  const retOf = () => {
+    const r = new URLSearchParams(window.location.search).get('return_to')
+    return r && r.startsWith('/') && !r.startsWith('//') ? r : ''
+  }
+  const goTo = (ret: string) => {
+    if (ret.endsWith('.html')) window.location.replace(ret)
+    else router.replace(ret || '/')
+  }
 
   useEffect(() => {
-    const back = () => {
-      const ret = new URLSearchParams(window.location.search).get('return_to')
-      router.replace(ret && ret.startsWith('/') ? ret : '/')
-    }
+    const r0 = retOf()
+    if (r0) setRegisterHref(`/register?return_to=${encodeURIComponent(r0)}`)
+    const back = () => goTo(retOf())
     // 单用户模式:换到 token 就原路返回,登录表单一眼都不用看
     ensureLocalSession().then((token) => {
       if (token) { back(); return }
@@ -56,8 +67,7 @@ export default function LoginPage() {
       if (r.ok && (d.access_token || d.token)) {
         localStorage.setItem('hunter_token', d.access_token || d.token)
         if (d.refresh_token) localStorage.setItem('hunter_refresh', d.refresh_token)
-        const ret = new URLSearchParams(window.location.search).get('return_to')
-        router.replace(ret && ret.startsWith('/') ? ret : '/')
+        goTo(retOf())
       } else {
         setError(d.detail || d.error || '邮箱或密码错误')
       }
@@ -142,7 +152,7 @@ export default function LoginPage() {
 
         <div style={{ marginTop: 20, textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
           还没有账号？{' '}
-          <Link href="/register" style={{ color: 'var(--blue)', textDecoration: 'none' }}>
+          <Link href={registerHref} style={{ color: 'var(--blue)', textDecoration: 'none' }}>
             注册本地账号 →
           </Link>
         </div>

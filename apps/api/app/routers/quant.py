@@ -1199,6 +1199,40 @@ class ScreenIn(BaseModel):
     sort_by: str | None = None
     descending: bool = True
     as_of: str | None = None       # 时间回溯:YYYY-MM-DD,空 = 今天的快照
+    probe: bool = False            # 条件行上的「单条测试」:不扣扫描次数,只回命中数
+
+
+# ─── 会员校验与额度(2026-09-14 用户定)─────────────────────────────
+# 规则与「为什么」在 services/quant/screen_quota.py 文件头。这里只做两件事:
+#   · 扫描 / 生成 / 字段搜索 / 命中日 要登录。/api/quant/ 是免登录前缀,**只能在路由里拦**。
+#   · 扫描、AI 识别扣次数,返回体带 quota,前端每用一次提示剩余。
+# meta / history-range 仍然公开:页面骨架和示例要让没登录的人也看得到「这是什么」。
+from app.services.quant import screen_quota
+
+LOGIN_MSG = "魔法筛选器是会员功能,登录或注册后即可使用。"
+
+
+def _member(request: Request) -> tuple[str, str | None]:
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        raise HTTPException(401, {"message": LOGIN_MSG, "need_login": True})
+    return uid, getattr(request.state, "user_role", None)
+
+
+def _quota_http(e: Exception) -> HTTPException:
+    if isinstance(e, screen_quota.TooFast):
+        return HTTPException(429, {"message": str(e), "kind": "too_fast",
+                                   "retry_after": round(e.wait_s, 1)})
+    return HTTPException(429, {"message": str(e), "kind": "quota", "quota": e.info})
+
+
+@router.get("/screener/quota")
+async def screener_quota(request: Request):
+    """今天还剩几次。没登录不报 401(页面启动就调,401 会在控制台刷红),回 login=false 让前端弹登录。"""
+    uid = getattr(request.state, "user_id", None)
+    if not uid:
+        return {"login": False, "message": LOGIN_MSG}
+    return await asyncio.to_thread(screen_quota.snapshot, uid, getattr(request.state, "user_role", None))
 
 
 class HitDaysIn(BaseModel):
@@ -1209,8 +1243,9 @@ class HitDaysIn(BaseModel):
 
 
 @router.post("/screener/hit-days")
-async def screener_hit_days(body: HitDaysIn):
+async def screener_hit_days(body: HitDaysIn, request: Request):
     """一只票过去 250 个交易日里,这份脚本哪些天会命中(悬停日K 的淡蓝色标记)。口径同时间回溯,见 screen_hits。"""
+    _member(request)               # 不扣次数:快照 20 分钟缓存 + 自家日线,不打上游
     code = (body.code or "").strip()
     if not code:
         raise HTTPException(400, "要给股票代码")
@@ -1277,20 +1312,27 @@ class ScreenParseIn(BaseModel):
 @router.post("/screener/parse")
 async def screener_parse(body: ScreenParseIn, request: Request):
     """脚本 → 可视化条件行。界面上点「生成」走这条,不拉行情。"""
+    uid, role = _member(request)
     script = body.script or ""
     if body.preset and not script.strip():
         p = screen_source.preset(body.preset)
         if p is None:
             raise HTTPException(404, f"没有这个示例脚本:{body.preset}")
         script = p["script"]
+    # AI 次数只在 parse_script 真要调模型的那一刻扣(on_ai),本地识别成功一次都不扣
+    reserved: list[dict] = []
+
+    def on_ai():
+        reserved.append(screen_quota.reserve(uid, role, "ai"))
+
     try:
         # to_thread 不能省:自然语言那条分支要调 LLM(秒级、同步阻塞),
         # 直接在 async 路由里跑会把整个事件循环卡住,别的用户的请求全在排队。
-        # user_id 只用来记「这条对照表是谁用 AI 学出来的」,不影响识别本身。
-        # /api/quant/ 是免登录前缀,匿名时这里是 None,照样能学。
-        return await asyncio.to_thread(
-            screen_source.parse_script, script, body.market, body.allow_ai,
-            getattr(request.state, "user_id", None))
+        # user_id 还用来记「这条对照表是谁用 AI 学出来的」,不影响识别本身。
+        d = await asyncio.to_thread(
+            screen_source.parse_script, script, body.market, body.allow_ai, uid, on_ai)
+    except screen_quota.QuotaExceeded as e:
+        raise _quota_http(e)
     except screen_source.NeedsAI as e:
         # 结构化 detail —— 前端据此弹「AI 识别」按钮。
         # 让前端去匹配报错文本来判断"能不能试 AI"是一种迟早会断的耦合。
@@ -1298,11 +1340,29 @@ async def screener_parse(body: ScreenParseIn, request: Request):
         raise HTTPException(400, {"message": str(e), "can_try_ai": True,
                                   "kind": getattr(e, "kind", "text")})
     except ScreenError as e:
+        # 模型压根没调通(网络 / 网关错)= 没花 token,退回次数;
+        # 模型答了但结果用不了 = token 已经花了,照计 —— 否则反复点失败的 AI 等于不限次调模型
+        if reserved and str(e).startswith("调用模型失败"):
+            await asyncio.to_thread(screen_quota.refund, uid, role, "ai")
+            raise HTTPException(400, str(e) + "(这次没调通模型,不计入 AI 识别次数)")
+        if reserved:
+            q = reserved[-1]
+            raise HTTPException(400, {"message": str(e), "quota": q,
+                                      "quota_note": f"这次已经调用了模型,计 1 次 AI 识别,今天还剩 {q['remaining']} 次"
+                                      if q.get("remaining") is not None else None})
         raise HTTPException(400, str(e))
+    except Exception:
+        if reserved:
+            await asyncio.to_thread(screen_quota.refund, uid, role, "ai")
+        raise
+    if reserved:
+        d["quota"] = reserved[-1]
+    return d
 
 
 @router.get("/screener/fields")
-async def screener_fields(market: str = "us", q: str = "", limit: int = 50):
+async def screener_fields(request: Request, market: str = "us", q: str = "", limit: int = 50):
+    _member(request)
     try:
         return {"market": market,
                 "fields": screen_source.field_search(market, q, max(1, min(limit, 200)))}
@@ -1311,7 +1371,8 @@ async def screener_fields(market: str = "us", q: str = "", limit: int = 50):
 
 
 @router.post("/screener/run")
-async def screener_run(body: ScreenIn):
+async def screener_run(body: ScreenIn, request: Request):
+    uid, role = _member(request)
     script = body.script or ""
     if body.preset and not script.strip():
         p = screen_source.preset(body.preset)
@@ -1327,15 +1388,36 @@ async def screener_run(body: ScreenIn):
             raise HTTPException(400, f"时间回溯的日期格式不对:{body.as_of!r},要 YYYY-MM-DD")
         if as_of > _date.today():
             raise HTTPException(400, f"时间回溯不能选未来的日期:{as_of}")
+    kind = "probe" if body.probe else "scan"
+    try:
+        if not body.probe:
+            screen_quota.check_gap(uid, role)
+        # 先占后退:并发连点也不会超额;脚本报错 / 上游挂了退回,失败的扫描不吃次数
+        q = await asyncio.to_thread(screen_quota.reserve, uid, role, kind)
+    except (screen_quota.QuotaExceeded, screen_quota.TooFast) as e:
+        raise _quota_http(e)
     try:
         # 同上 —— 拉全市场实测 1~3s,同步 httpx,不能占着事件循环
-        return await asyncio.to_thread(
+        out = await asyncio.to_thread(
             screen_source.run_script,
-            script, body.market, body.limit, body.sort_by, body.descending, as_of)
+            script, body.market, 1 if body.probe else body.limit, body.sort_by, body.descending, as_of)
     except ScreenError as e:
         # 脚本写错、周期映射不了、上游挂了 —— 都是 400,message 直接给用户看。
         # 不要吞成 500 空结果:用户看到"0 只命中"会以为是市场里真的没有票满足条件。
-        raise HTTPException(400, str(e))
+        await asyncio.to_thread(screen_quota.refund, uid, role, kind)
+        raise HTTPException(400, str(e) + ("" if body.probe else "(这次扫描没有成功,不计入次数)"))
+    except Exception:
+        await asyncio.to_thread(screen_quota.refund, uid, role, kind)
+        raise
+    finally:
+        if not body.probe:
+            screen_quota.mark_done(uid)
+    if body.probe:
+        # 单条测试只要命中数。不回结果行 —— 否则「测一条」就成了不扣次数的扫描
+        return {"probe": True, "matched": out.get("matched"), "scanned": out.get("scanned"),
+                "skipped_incomplete": out.get("skipped_incomplete")}
+    out["quota"] = q
+    return out
 
 
 # ─── 用户保存的扫描策略 ─────────────────────────────────────────────

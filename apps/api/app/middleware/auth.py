@@ -158,6 +158,7 @@ def _bind_optional_identity(request: Request, path: str) -> None:
     "我明明加了数据源,列表里却说我没加",而这个原因从现象上完全看不出来。
     """
     uid = None
+    role = None
     try:
         if path.startswith("/api/internal/"):
             uid = request.headers.get("X-Hunter-User-Id", "").strip() or None
@@ -167,10 +168,14 @@ def _bind_optional_identity(request: Request, path: str) -> None:
                 payload = _verify(token)
                 if payload and payload.get("type") in ("access", None):
                     uid = payload.get("sub")
+                    role = payload.get("role", "user")
 
         # request.state 与 contextvar 两处都设:前者给能拿到 request 的
         # handler(如 /catalog/sources),后者给取数层那些模块级同步函数
         request.state.user_id = uid
+        # 角色也要设(2026-09-14):魔法筛选器的会员额度按角色分档(管理员不限),
+        # 原来只有硬鉴权分支设 user_role,免登录前缀上读不到,管理员会被当成普通会员限次
+        request.state.user_role = role if uid else None
         from app.services import request_ctx
         request_ctx.set_user(uid)
         request_ctx.begin_provenance()

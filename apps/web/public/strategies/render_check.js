@@ -827,14 +827,15 @@ try {
 {
   const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
   const hk = [
-    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: S\.market, asOf: S\.asOf \|\| null \}/.test(sc)],
+    // 2026-09-14 起 market / asOf 在发请求那一刻就取下来(等 5 秒的这段时间里用户可能切了市场)
+    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: market, asOf: asOf \}/.test(sc)],
     ['筛选器把命中日来源挂到悬停日K 上', /KC\.markOf = hitDaysOf/.test(sc)],
     ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf \}\)/.test(sc)],
     ['app.js:等标记之后再比一次 seq(防止画到别的票上)', /await KC\.markOf\(code, td\)[\s\S]{0,160}if \(seq !== KC\.seq\) return/.test(appJs)],
     ['app.js:0 天命中也写进图例', /mark\.alwaysScan/.test(appJs)],
     ['app.js:算不出的天数单独写', /天算不出/.test(appJs)],
     // 换票时不清头部,新票加载中会顶着上一只的现价和命中天数(2026-09-13 截图实测)
-    ['app.js:换票先清上一只的现价 / 图例 / 区间,再去拉日线', /px0\.textContent = ''[\s\S]{0,200}lg0\.textContent = KC_HINT[\s\S]{0,120}rg0\.textContent = ''[\s\S]{0,600}await kcFetch\(code\)/.test(appJs)],
+    ['app.js:换票先清上一只的现价 / 图例 / 区间,再去拉日线', /px0\.textContent = ''[\s\S]{0,200}lg0\.textContent = kcHint\(\)[\s\S]{0,120}rg0\.textContent = ''[\s\S]{0,600}await kcFetch\(code\)/.test(appJs)],
   ]
   for (const [name, ok] of hk) {
     if (ok) console.log('PASS 筛选器命中日 ·', name)
@@ -1056,6 +1057,10 @@ try {
     var SENT = []
     post = async function (url, body) { SENT.push(body); return { ok: true, status: 200, data: { matched: 0, picks: [], as_of: body.as_of } } }
     toast = function () {}
+    // 2026-09-14 起扫描要登录、结果等 5 秒再放:这里给个令牌,等待换成立即返回(等待本身在「会员额度」那组测)
+    localStorage.setItem('hunter_token', 't')
+    S.login = true                 // 页面加载时没令牌已经判成未登录了,这里模拟登录后
+    revealAfter = async function () {}
     S.result = { picks: [{ code: 'X' }] }; S.probe = { c1: 3 }
     setAsOf('2026-08-15')
     var BAR_ON = vRunBar()
@@ -1121,6 +1126,8 @@ try {
       return { ok: false, status: 400, data: { detail: { message: '扫描源没有 average_volume_50d_calc', can_try_ai: true, kind: body.script.indexOf('def ') >= 0 ? 'script' : 'text' } } }
     }
     toast = function () {}
+    localStorage.setItem('hunter_token', 't')     // 2026-09-14 起生成要登录
+    S.login = true
     S.mode = 'replace'
     S.input = 'def c_v = average_volume_50d_calc > 1;\\nplot scan = c_v;'
   `, ctx, { filename: 'assert-fix-1' })
@@ -1201,6 +1208,125 @@ try {
 } catch (e) {
   failed++
   console.log('FAIL 保存策略定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
+// ─── 魔法筛选器 · 会员校验 / 额度 / 等 5 秒(2026-09-14)────────────────────
+// 真正的拦截在接口层(screen_quota),这里盯前端别把三件事做丢:没登录立刻提醒、每用一次提示剩余、
+// 扫描结果等 5 秒再显示且等待期间改了条件不许把旧结果当新结果。
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const scSrc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  inlineScripts(scSrc).forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    var MB = {}
+    MB.bootLogin = S.login
+    S.login = false
+    MB.gateHtml = render()
+    S.login = true
+    S.conditions = [{ name: 'c1', expr: 'close > 20', is_bool: true, enabled: true }]
+    S.quota = { login: true,
+      scan: { kind: 'scan', label: '扫描', used: 20, limit: 20, remaining: 0, unlimited: false },
+      ai:   { kind: 'ai', label: 'AI 识别', used: 3, limit: 10, remaining: 7, unlimited: false } }
+    MB.bar0 = vRunBar()
+    MB.aiLeft = aiLeftText()
+    S.quota.scan.remaining = 12
+    MB.bar12 = vRunBar()
+    S.reveal = 3
+    MB.revealHtml = vResult()
+    MB.revealBar = vRunBar()
+    S.reveal = 0
+    localStorage.setItem('hunter_token', 't')
+    var LAST = null, NEXT = null, REVEALED = null, TOASTS = []
+    toast = function (m, k) { TOASTS.push(String(m)) }
+    post = async function (u, b) { LAST = { url: u, body: b }; return NEXT }
+    revealAfter = async function (s) { REVEALED = s; if (MB.mutate) S.conditions[0].expr = 'close > 30' }
+    MB.done = (async function () {
+      NEXT = { ok: true, status: 200, data: { matched: 5 } }
+      await probeOne(S.conditions[0])
+      MB.probeBody = LAST.body
+      NEXT = { ok: true, status: 200, data: { matched: 9, rows: [],
+        quota: { kind: 'scan', label: '扫描', used: 9, limit: 20, remaining: 11, unlimited: false } } }
+      await runScan()
+      MB.runRevealed = REVEALED
+      MB.runResult = S.result && S.result.matched
+      MB.runLeft = S.quota.scan.remaining
+      MB.runToast = TOASTS.join(' | ')
+      MB.mutate = true
+      S.conditions[0].expr = 'close > 20'
+      await runScan()
+      MB.mutResult = S.result
+      MB.mutErr = S.runError
+      MB.mutate = false
+      S.runError = null
+      NEXT = { ok: false, status: 429, data: { detail: { kind: 'quota', message: '今天的扫描次数已经用完',
+        quota: { kind: 'scan', label: '扫描', used: 20, limit: 20, remaining: 0, unlimited: false } } } }
+      await runScan()
+      MB.q429Err = S.runError
+      MB.q429Left = S.quota.scan.remaining
+      NEXT = { ok: false, status: 401, data: { detail: { message: '魔法筛选器是会员功能', need_login: true } } }
+      S.quota.scan.remaining = 5
+      await runScan()
+      MB.after401 = S.login
+    })()
+  `, ctx, { filename: 'assert-member' })
+  const MB = ctx.MB
+  const sync = [
+    ['没令牌打开页面立刻判成未登录(不等用户点按钮)', MB.bootLogin === false],
+    ['未登录顶上常驻登录 / 注册提示', /class="sc-login"/.test(MB.gateHtml)],
+    ['登录链接带 return_to 回到筛选器', /\/login\?return_to=%2Fstrategies%2Fscreener\.html/.test(MB.gateHtml)],
+    ['注册链接也带 return_to', /\/register\?return_to=%2Fstrategies%2Fscreener\.html/.test(MB.gateHtml)],
+    ['运行栏常驻今日剩余', /今日剩余 · 扫描 <b class="zero">0<\/b>\/20 · AI 识别 <b>7<\/b>\/10/.test(MB.bar0)],
+    ['扫描用完:按钮禁用并写明', /id="sc-run" disabled>今天的扫描次数已用完/.test(MB.bar0)],
+    ['还有次数时按钮可点', /id="sc-run">/.test(MB.bar12)],
+    ['AI 按钮上写剩余次数', MB.aiLeft === '(今天还剩 7 次)'],
+    ['倒数中结果区显示秒数、不出结果表', /id="sc-reveal-n">3</.test(MB.revealHtml) && !/<table/.test(MB.revealHtml)],
+    ['倒数中运行按钮禁用', /id="sc-run" disabled>扫描完成 · <span id="sc-reveal-btn">3<\/span> 秒后显示/.test(MB.revealBar)],
+    ['REVEAL_S 是 5', vm.runInContext('REVEAL_S', ctx) === 5],
+    ['真的 revealAfter 不整页重画(只改两处数字)', /\['sc-reveal-n', 'sc-reveal-btn'\]/.test(scSrc)],
+    ['app.js 有触屏:touchstart 监听', /addEventListener\('touchstart'/.test(appJs)],
+    ['app.js 有触屏:触摸后补发的假鼠标事件被忽略', /if \(kcRecentTouch\(\)\) return/.test(appJs)],
+    ['app.js 有触屏:✕ 关闭', /class="kc-x"/.test(appJs) && /function kcClose\(\)/.test(appJs)],
+    ['app.js 触屏打开的弹层不因「移开」收起', /if \(KC\.touch\) return\s+\/\/ 手指点开/.test(appJs)],
+    ['style.css:图区 touch-action:none、弹层不超屏宽',
+      /\.kc-box\{touch-action:none\}/.test(fs.readFileSync(path.join(DIR, 'style.css'), 'utf8')) &&
+      /\.kc-pop\{max-width:calc\(100vw - 16px\)/.test(fs.readFileSync(path.join(DIR, 'style.css'), 'utf8'))],
+  ]
+  for (const [name, ok] of sync) {
+    if (ok) console.log('PASS 会员额度 ·', name)
+    else { failed++; console.log('FAIL 会员额度 ·', name) }
+  }
+  vm.runInContext(`
+    KC.touch = true; var HINT_T = kcHint(); KC.touch = false; var HINT_M = kcHint()
+    kcEl(); KC.touch = true; KC.cur = 'X|'; kcClose(); var CLOSED = { touch: KC.touch, cur: KC.cur }
+  `, ctx, { filename: 'assert-touch' })
+  const tchecks = [
+    ['触屏时图例提示换成手势说明', /双指缩放/.test(ctx.HINT_T) && /滚轮/.test(ctx.HINT_M)],
+    ['kcClose 清掉触屏状态', ctx.CLOSED.touch === false && ctx.CLOSED.cur === null],
+  ]
+  for (const [name, ok] of tchecks) {
+    if (ok) console.log('PASS 触屏日K ·', name)
+    else { failed++; console.log('FAIL 触屏日K ·', name) }
+  }
+  MB.done.then(() => {
+    const as = [
+      ['单条测试带 probe:true(不扣扫描次数)', MB.probeBody && MB.probeBody.probe === true],
+      ['扫描后调用等待 5 秒', MB.runRevealed === 5],
+      ['等完才放结果', MB.runResult === 9],
+      ['返回的剩余次数记上', MB.runLeft === 11],
+      ['每用一次提示剩余', /本次扫描计 1 次,今天还剩 11 \/ 20 次/.test(MB.runToast)],
+      ['等待期间改了条件:不显示旧结果并说明', MB.mutResult === null && /等待期间条件改过了/.test(MB.mutErr || '')],
+      ['429 用完:显示原因并把剩余记成 0', /用完/.test(MB.q429Err || '') && MB.q429Left === 0],
+      ['401:切回未登录', MB.after401 === false],
+    ]
+    for (const [name, ok] of as) {
+      if (ok) console.log('PASS 会员额度 ·', name)
+      else { failed++; console.log('FAIL 会员额度 ·', name, JSON.stringify({ q: MB.q429Err, m: MB.mutErr })) }
+    }
+  }).catch((e) => { failed++; console.log('FAIL 会员额度异步断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e) })
+} catch (e) {
+  failed++
+  console.log('FAIL 会员额度定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
 // setImmediate:上面有一组断言挂在 async 函数的 await 链上(微任务),同步退出会跳过它们

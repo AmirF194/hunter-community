@@ -236,18 +236,113 @@ def _normalize_code(tv_symbol: str, market_key: str, name: str) -> str:
     return bare
 
 
+# ─── 上游保护(2026-09-14 · 魔法筛选器按 5000 会员放开)────────────────────
+# 估算:5000 人 × 每天最多 20 次,高峰按 1/5 的人同时在线、每人 5 分钟扫一次 ≈ 每秒 3 次扫描,
+# 美股一次 4 页 ≈ 每秒 13 个上游请求。上游是免费的非官方接口,没有 SLA、限流阈值不公开
+# (实测连打 30 次没限流,更高没测过),不能把这个量原样打过去。四层:
+#
+#   ① 快照缓存:同一市场 + 同一组列 + 同一过滤,90 秒内共用一份。上游本身延迟 15 分钟,
+#      再多 90 秒对「探索性初筛」没有实质影响。示例脚本 / 回溯快照这类列组合高度重复,命中率高。
+#   ② 同 key 合并(single-flight):缓存失效那一刻涌进来的 N 个相同请求,只有一个真去拉,其余等它。
+#   ③ 同时最多 3 路去上游(_UPSTREAM_SLOTS),排队超过 40 秒明说「人多」,不无限挂着。
+#   ④ 页与页之间全局至少隔 0.15 秒 —— 任何时刻打上游不超过每秒约 6~7 页。
+#
+# 失败也缓存 10 秒:上游挂了的时候,不让排队的人一个接一个再去撞一遍 25 秒超时。
+# 返回的是**行的副本**:run_script 会往行里补 RS / VCP 字段(screen_rs.inject),直接给缓存里那份会串到下一个请求。
+_ROWS_TTL = 90.0
+_ROWS_MAX_KEYS = 16
+_ROWS_FAIL_TTL = 10.0
+_QUEUE_WAIT_S = 40.0
+_PAGE_GAP_S = 0.15
+_UPSTREAM_SLOTS = threading.BoundedSemaphore(3)
+_rows_lock = threading.Lock()
+_rows_cache: dict[tuple, tuple[float, list[dict], int]] = {}
+_rows_fail: dict[tuple, tuple[float, str]] = {}
+_inflight: dict[tuple, threading.Event] = {}
+_page_lock = threading.Lock()
+_last_page = [0.0]
+ROWS_CACHE_NOTE = "同一市场、同一组字段 90 秒内的扫描共用一次取数(保护上游),数据本身仍是延迟 15 分钟的快照。"
+
+
+def _rows_copy(rows: list[dict]) -> list[dict]:
+    return [dict(r) for r in rows]
+
+
 def fetch_rows(market_key: str, columns: list[str], limit_scan: int = _MAX_ROWS,
                extra_filter: list | None = None) -> tuple[list[dict], int]:
     """拉全市场。→ (行, 上游 totalCount)
 
-    行是 dict:上游字段名 → 值,外加 `_symbol` / `_code`。
+    行是 dict:上游字段名 → 值,外加 `_symbol` / `_code`。缓存 / 合并 / 限流见上面那段注释。
     """
     md = _market(market_key)
     cols: list[str] = []
     for c in list(ALWAYS_COLS) + list(columns):
         if c not in cols:
             cols.append(c)
+    key = (md.key, tuple(sorted(cols)), int(limit_scan), repr(extra_filter or []))
 
+    deadline = time.monotonic() + _QUEUE_WAIT_S + _TIMEOUT * 2
+    while True:
+        now = time.monotonic()
+        with _rows_lock:
+            hit = _rows_cache.get(key)
+            if hit and now - hit[0] < _ROWS_TTL:
+                rows, total = hit[1], hit[2]
+                ev = None
+            else:
+                rows = None
+                fail = _rows_fail.get(key)
+                if fail and now - fail[0] < _ROWS_FAIL_TTL:
+                    raise ScreenError(fail[1])
+                ev = _inflight.get(key)
+                owner = ev is None
+                if owner:
+                    ev = threading.Event()
+                    _inflight[key] = ev
+        if rows is not None:
+            return _rows_copy(rows), total
+        if not owner:
+            # 别人正在拉同一份 —— 等它拉完再回头读缓存(或读到它的失败)
+            if not ev.wait(max(0.1, deadline - time.monotonic())):
+                raise ScreenError("扫描排队超时:现在用的人比较多,请稍后再试。")
+            continue
+        try:
+            if not _UPSTREAM_SLOTS.acquire(timeout=_QUEUE_WAIT_S):
+                raise ScreenError(f"现在扫描的人比较多,排队超过 {int(_QUEUE_WAIT_S)} 秒,请稍后再试。")
+            try:
+                rows, total = _fetch_upstream(md, market_key, cols, limit_scan, extra_filter)
+            finally:
+                _UPSTREAM_SLOTS.release()
+        except ScreenError as e:
+            with _rows_lock:
+                _rows_fail[key] = (time.monotonic(), str(e))
+            raise
+        else:
+            with _rows_lock:
+                t = time.monotonic()
+                _rows_cache[key] = (t, rows, total)
+                _rows_fail.pop(key, None)
+                for k in [k for k, v in _rows_cache.items() if t - v[0] >= _ROWS_TTL]:
+                    _rows_cache.pop(k, None)
+                while len(_rows_cache) > _ROWS_MAX_KEYS:
+                    _rows_cache.pop(min(_rows_cache, key=lambda k: _rows_cache[k][0]), None)
+            return _rows_copy(rows), total
+        finally:
+            with _rows_lock:
+                _inflight.pop(key, None)
+            ev.set()
+
+
+def _page_throttle() -> None:
+    with _page_lock:
+        wait = _PAGE_GAP_S - (time.monotonic() - _last_page[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_page[0] = time.monotonic()
+
+
+def _fetch_upstream(md: MarketDef, market_key: str, cols: list[str], limit_scan: int,
+                    extra_filter: list | None) -> tuple[list[dict], int]:
     rows: list[dict] = []
     seen: set[str] = set()
     total = 0
@@ -263,6 +358,7 @@ def fetch_rows(market_key: str, columns: list[str], limit_scan: int = _MAX_ROWS,
                 "sort": _SORT,
                 "range": [offset, min(offset + _PAGE, limit_scan)],
             }
+            _page_throttle()
             try:
                 r = cli.post(f"{_BASE}/{md.tv}/scan", json=body)
             except Exception as e:                                # noqa: BLE001
@@ -412,7 +508,7 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
         has.sort(key=lambda r: r.get(sort_by), reverse=descending)
         hits = has + [r for r in hits if r.get(sort_by) is None]
 
-    warnings = [DELAY_WARN] if as_of is None else []
+    warnings = [DELAY_WARN, ROWS_CACHE_NOTE] if as_of is None else []
     if md.note:
         warnings.append(md.note)
     if asof_info is not None:
@@ -549,7 +645,7 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
 
 
 def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
-                 user_id: str | None = None) -> dict:
+                 user_id: str | None = None, on_ai=None) -> dict:
     """只解析、不拉数 —— 界面上点「生成」走这条,把脚本变成可视化条件行。
 
     和 run_script 共用同一个编译器,所以**界面上看到的条件就是真正会跑的条件**。
@@ -588,6 +684,9 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
         if screen_nl.looks_like_script(script):
             if not allow_ai:
                 raise NeedsAI(str(script_err), kind="script") from script_err
+            # on_ai:真要调模型的这一刻才扣会员的 AI 次数(screen_quota)。用满了在这里抛,模型一次都不调
+            if on_ai:
+                on_ai()
             fixed = screen_nl.fix_script(script, str(script_err), md.label, meta.sma,
                                          meta.ema, meta.rsi, validate=_compile)
             script = fixed["script"]
@@ -621,6 +720,8 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
                 if not allow_ai:
                     # 不抛普通 ScreenError —— 路由要据此告诉前端"可以试试 AI"
                     raise NeedsAI(str(kw_err)) from kw_err
+                if on_ai:
+                    on_ai()
                 translated = screen_nl.translate(
                     script, md.label, meta.sma, meta.ema, meta.rsi, validate=_compile)
                 script = translated["script"]

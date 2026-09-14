@@ -911,6 +911,8 @@ const KC = { el: null, chart: null, cache: new Map(),
              seq: 0, showT: null, hideT: null, cur: null, bound: false,
              chartCode: null,      // 当前这张图是哪只票(同一只重画时沿用拖动 / 缩放区间)
              dragging: false,      // 左键正按着拖图:这期间不关弹层、不换票
+             touch: false,         // 这个弹层是手指点开的(手机 / 平板):不靠「移开」收起,靠 ✕ / 点空白处
+             lastTouch: 0,         // 最近一次触摸的时刻 —— 触摸之后浏览器会补发假的 mouseover / mouseout,要认出来忽略
              asOf: null,           // asOf: 回溯时只画到这天(screener 用)
              markOf: null }        // 页面可选:async (code, td) → 标记 | null(screener 用来标历史命中日)
 const KC_LIMIT = 250          // 一年大约 250 个交易日
@@ -922,6 +924,10 @@ const KC_BUY = '#1f9254', KC_SELL = '#c0392b'
 const KC_SCAN = 'rgba(46,134,222,.16)'    // 扫描命中:半透明蓝(色带,一根 K 线宽)
 const KC_SCAN_LINE = 'rgba(46,134,222,.55)' // 扫描命中:固定 2px 竖线(250 根挤在一起时色带看不见,靠它)
 const KC_HINT = '左键拖动平移 · 滚轮缩放 · 十字星读数'
+const KC_HINT_TOUCH = '单指拖动平移 · 双指缩放 · 点一下读数 · 点 ✕ 或空白处关闭'
+function kcHint() { return KC.touch ? KC_HINT_TOUCH : KC_HINT }
+// 触屏补发的假鼠标事件在触摸后几百毫秒内到达;800ms 足够盖住,又不会误伤真鼠标(混合设备上手指离开后再用鼠标)
+function kcRecentTouch() { return Date.now() - KC.lastTouch < 800 }
 
 function kcEsc(s) {
   return String(s == null ? '' : s)
@@ -946,13 +952,16 @@ function kcEl() {
   d.style.top = '0px'
   d.innerHTML =
     '<div class="kc-hd"><span class="sy" id="kc-sy"></span>' +
-    '<span class="nm" id="kc-nm"></span><span class="px" id="kc-px"></span></div>' +
+    '<span class="nm" id="kc-nm"></span><span class="px" id="kc-px"></span>' +
+    '<button class="kc-x" id="kc-x" type="button" aria-label="关闭日K">✕</button></div>' +
     '<div class="kc-box" id="kc-box"></div>' +
-    '<div class="kc-ft"><span id="kc-lg">' + KC_HINT + '</span><span class="r" id="kc-rg"></span></div>'
+    '<div class="kc-ft"><span id="kc-lg">' + kcHint() + '</span><span class="r" id="kc-rg"></span></div>'
   document.body.appendChild(d)
+  const x = d.querySelector('.kc-x')
+  if (x) x.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); kcClose() })
   // 鼠标进了弹层就别关 —— 用户要在里面拖动、滚轮缩放
   d.addEventListener('mouseenter', function () { clearTimeout(KC.hideT) })
-  d.addEventListener('mouseleave', kcHide)
+  d.addEventListener('mouseleave', function () { if (!KC.touch && !kcRecentTouch()) kcHide() })
   // 左键拖动平移(仿 TradingView,2026-09-14 用户要求)。拖的时候鼠标常常划出弹层、划过表格里别的代码,
   // 这期间既不能关弹层(kcHide 里判 dragging)、也不能换票(bindKChart 的 mouseover 里判);
   // 松手时鼠标已经不在弹层里,再按正常路径收起。都用捕获阶段,不指望 echarts 不拦冒泡。
@@ -978,6 +987,17 @@ function kcPlace(rect) {
   const el = kcEl()
   const W = el.offsetWidth || 560
   const H = el.offsetHeight || 320
+  // 触屏 / 窄屏:手指会挡住点的那一格,放到那一行的下方(放不下就上方),横向贴着那一格、不出屏
+  if (KC.touch || window.innerWidth < 640) {
+    const bottom = Number.isFinite(rect.bottom) ? rect.bottom : rect.top + rect.height
+    let ty = bottom + 8
+    if (ty + H > window.innerHeight - 8) ty = rect.top - H - 8
+    ty = Math.max(8, Math.min(ty, window.innerHeight - H - 8))
+    const tx = Math.max(8, Math.min(rect.left, window.innerWidth - W - 8))
+    el.style.left = Math.round(tx) + 'px'
+    el.style.top = Math.round(ty) + 'px'
+    return
+  }
   let x = rect.right + 14
   if (x + W > window.innerWidth - 8) x = rect.left - W - 14   // 右边放不下就翻到左边
   if (x < 8) x = 8
@@ -987,8 +1007,20 @@ function kcPlace(rect) {
   el.style.top = Math.round(y) + 'px'
 }
 
+// 立刻收起(触屏的 ✕ / 点空白处 / 再点一次同一只票)。kcHide 是鼠标移开的延时收起,两者别混
+function kcClose() {
+  clearTimeout(KC.showT)
+  clearTimeout(KC.hideT)
+  KC.seq++                       // 还在加载的那次响应回来也别再把弹层画出来
+  if (KC.el) { KC.el.classList.remove('on'); KC.el.classList.remove('touch') }
+  KC.cur = null
+  KC.touch = false
+  KC.dragging = false
+}
+
 function kcHide() {
   if (KC.dragging) return        // 拖动中划出弹层不算离开,松手时(endDrag)再判断
+  if (KC.touch) return           // 手指点开的弹层没有「移开」这回事,只认 ✕ / 点空白处
   clearTimeout(KC.showT)
   KC.hideT = setTimeout(function () {
     if (KC.el) KC.el.classList.remove('on')
@@ -1163,7 +1195,7 @@ function kcOption(rows, mark, zoom) {
 function kcLegend(rows, mark) {
   const lg = document.getElementById('kc-lg')
   if (!lg) return
-  if (!mark) { lg.textContent = KC_HINT; return }
+  if (!mark) { lg.textContent = kcHint(); return }
   const n = function (a) { return kcIndexOf(rows, a).length }
   const parts = []
   if (mark.error) {
@@ -1288,7 +1320,7 @@ function kcShow(td) {
     const px0 = document.getElementById('kc-px')
     if (px0) { px0.textContent = ''; px0.className = 'px' }
     const lg0 = document.getElementById('kc-lg')
-    if (lg0) lg0.textContent = KC_HINT
+    if (lg0) lg0.textContent = kcHint()
     const rg0 = document.getElementById('kc-rg')
     if (rg0) rg0.textContent = ''
     // 首次拉日线要 5~10 秒(上游接口),不说清楚用户会以为卡死了 —— 他没法区分
@@ -1312,7 +1344,7 @@ function kcShow(td) {
       try { m = await KC.markOf(code, td) } catch (e) { m = { error: '命中日没算出来:' + ((e && e.message) || e) } }
       if (seq !== KC.seq) return            // 等的这一两秒里鼠标换了票,别把上一只的标记画到这只上
       if (m) kcRender(code, td.dataset.kname, payload, m)
-      else if (lg) lg.textContent = KC_HINT
+      else if (lg) lg.textContent = kcHint()
     }
   }, 180)
 }
@@ -1320,11 +1352,36 @@ function kcShow(td) {
 function bindKChart() {
   if (KC.bound) return           // 表格每次都重渲染,所以委托绑在 document 上,只绑一次
   KC.bound = true
-  document.addEventListener('mouseover', function (e) {
+  // ── 触屏(2026-09-14 用户:「触屏看不了日K,需要支持手机与平板,实现鼠标相同效果」)──
+  // 手机没有悬停:点一下代码打开,弹层里单指拖动平移 / 双指缩放 / 点一下读数(echarts 原生支持触摸,
+  // 靠 .kc-box 的 touch-action:none 不让浏览器抢手势),点 ✕、点空白处或再点同一只票收起。
+  // 触摸之后浏览器还会补发 mouseover / mouseout,不认出来的话刚打开就被 mouseout 关掉。
+  document.addEventListener('touchstart', function (e) {
+    KC.lastTouch = Date.now()
+    const t = e.target
+    if (KC.el && t && KC.el.contains(t)) return            // 在弹层里拖图 / 捏合
+    const td = t && t.closest ? t.closest('[data-kchart]') : null
+    if (!td && KC.touch && KC.el && KC.el.classList.contains('on')) kcClose()   // 点空白处收起
+  }, { passive: true, capture: true })
+  document.addEventListener('click', function (e) {
+    if (!kcRecentTouch()) return                             // 真鼠标的点击不管,悬停已经处理了
     const td = e.target && e.target.closest ? e.target.closest('[data-kchart]') : null
+    if (!td) return
+    e.preventDefault()
+    const key = td.dataset.kchart + '|' + (td.dataset.kmark || '')
+    if (KC.touch && key === KC.cur && KC.el && KC.el.classList.contains('on')) { kcClose(); return }
+    KC.touch = true
+    kcEl().classList.add('touch')
+    kcShow(td)
+  }, true)
+  document.addEventListener('mouseover', function (e) {
+    if (kcRecentTouch()) return                              // 触摸补发的假事件
+    const td = e.target && e.target.closest ? e.target.closest('[data-kchart]') : null
+    if (td && KC.touch) { KC.touch = false; if (KC.el) KC.el.classList.remove('touch') }   // 混合设备:换回鼠标
     if (td && !KC.dragging) kcShow(td)     // 拖图时划过表格里别的代码,不换票
   })
   document.addEventListener('mouseout', function (e) {
+    if (kcRecentTouch() || KC.touch) return
     const td = e.target && e.target.closest ? e.target.closest('[data-kchart]') : null
     if (!td) return
     const to = e.relatedTarget
@@ -1334,6 +1391,8 @@ function bindKChart() {
   })
   // 页面滚动 / 窗口变化时位置会失效,直接收起比错位好
   window.addEventListener('scroll', function () {
+    // 触屏打开的弹层不跟着滚动收起:手指点开时页面常常带一点惯性滚动,一滚就关等于打不开;它有 ✕
+    if (KC.touch) return
     if (KC.el && KC.el.classList.contains('on')) { KC.cur = null; KC.el.classList.remove('on') }
   }, true)
 }

@@ -497,6 +497,13 @@ a{text-decoration:none;color:inherit}
   opacity:0;pointer-events:none;transition:opacity .12s
 }
 .kc-pop.on{opacity:1;pointer-events:auto}
+/* 手机 / 平板(2026-09-14):弹层不超过屏宽;图区关掉浏览器自己的滚动与双指缩放,手势全交给图表
+   (单指拖动平移、双指缩放、点一下读数)。✕ 只在点开的弹层上出现 —— 触屏没有「移开鼠标」这个动作 */
+.kc-pop{max-width:calc(100vw - 16px);box-sizing:border-box}
+.kc-box{touch-action:none}
+.kc-x{display:none;border:0;background:#f4f2ec;color:#5b5d57;border-radius:6px;
+  font-size:14px;line-height:1;padding:5px 8px;margin-left:4px;cursor:pointer;font-family:inherit}
+.kc-pop.touch .kc-x{display:inline-block}
 .kc-hd{display:flex;align-items:baseline;gap:8px;font-size:12.5px;margin-bottom:5px}
 .kc-hd .sy{font-family:ui-monospace,Menlo,monospace;font-weight:700;color:var(--brand-dark)}
 .kc-hd .nm{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -219,6 +219,22 @@
     .sc-fl span.sub{margin-left:2px;background:#F6F1FB}
 
     .sc-runbar{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:14px}
+    /* 会员(2026-09-14):没登录时顶上常驻一条登录 / 注册提示;登录后运行栏里常驻今日剩余次数 */
+    .sc-login{display:flex;flex-wrap:wrap;align-items:center;gap:10px;background:#fff6e3;
+      border:1px solid #e0b56a;color:#7a4b00;border-radius:10px;padding:10px 14px;font-size:13px}
+    .sc-login b{font-weight:700}
+    .sc-login a.btn,.sc-gate a.btn{text-decoration:none}
+    .sc-quota{font-size:12px;color:#5b5d57;background:#f4f2ec;border-radius:8px;padding:5px 10px}
+    .sc-quota b{color:#1f211f;font-variant-numeric:tabular-nums}
+    .sc-quota b.zero{color:#9B2C2C}
+    .sc-quota a{color:#2E86DE}
+    .sc-reveal{display:flex;align-items:center;gap:10px;font-size:13px;color:#5b5d57}
+    .sc-reveal b{font-size:20px;color:#2E86DE;font-variant-numeric:tabular-nums;min-width:1.2em;text-align:center}
+    .sc-gate{padding:20px 22px;max-width:420px;line-height:1.7}
+    .sc-gate h3{margin:0 0 6px;font-size:17px}
+    .sc-gate p{margin:0 0 6px;font-size:13.5px;color:#3d3f3a}
+    .sc-gate p.sm{font-size:12px;color:#777970}
+    .sc-gate .row{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
     /* 时间回溯:没开时是普通按钮;开了变成一枚醒目的琥珀色标签(整页此刻看的都是那天),
        两个小动作(改日期 / 回到今天)常驻在标签里 —— 退出入口不能藏 */
     .sc-asof{display:inline-flex;align-items:center;gap:8px;border:1px solid #e0b56a;background:#fff6e3;
@@ -323,6 +339,10 @@ const S = {
   // 用户隔天打开还停在过去某一天,而页面上又没有足够醒目的提示,会拿旧数据当今天的
   asOf: null,
   asOfRange: {},            // 市场 → /screener/history-range 的结果(能选的日期范围)
+  // 会员(2026-09-14):login null = 还不知道 · false = 没登录(弹登录 / 注册)· true
+  login: null,
+  quota: null,              // GET /screener/quota:{ scan: {remaining, limit, ...}, ai: {...} }
+  reveal: 0,                // 扫描完成后倒数显示结果的剩余秒数(0 = 没在倒数)
 }
 
 const LS = 'hunter_screener_script_v2'
@@ -487,7 +507,7 @@ function vMagic() {
           ? '<div class="sc-runbar" style="margin-top:9px">' +
               '<button class="btn small" id="mg-ai"' + (S.generating ? ' disabled' : '') + '>' +
                 (S.generating ? (S.aiKind === 'script' ? '修改中…' : '识别中…')
-                  : (S.aiKind === 'script' ? '✨ 用 AI 修脚本' : '✨ 用 AI 识别')) + '</button>' +
+                  : (S.aiKind === 'script' ? '✨ 用 AI 修脚本' : '✨ 用 AI 识别') + aiLeftText()) + '</button>' +
               '<span style="font-size:11.5px;color:#9B2C2C">' +
                 (S.aiKind === 'script'
                   ? '脚本里有识别不了的写法 · AI 只改报错涉及的句子,改了哪几句会逐条列出 · 会消耗 token,点了才调用'
@@ -958,13 +978,17 @@ function setAsOf(v) {
 
 function vRunBar() {
   const n = S.conditions.filter(function (c) { return c.is_bool && c.enabled }).length
+  const used = !!(S.quota && S.quota.scan && S.quota.scan.remaining === 0)
   return '<div class="sc-runbar">' +
-    '<button class="btn" id="sc-run"' + (S.conditions.length && !S.running ? '' : ' disabled') + '>' +
-      (S.running ? '扫描中…' : '<span class="hi hi-search"></span> 运行扫描') + '</button>' +
+    '<button class="btn" id="sc-run"' + (S.conditions.length && !S.running && !S.reveal && !used ? '' : ' disabled') + '>' +
+      (S.running ? '扫描中…'
+        : S.reveal ? '扫描完成 · <span id="sc-reveal-btn">' + S.reveal + '</span> 秒后显示'
+        : used ? '今天的扫描次数已用完'
+        : '<span class="hi hi-search"></span> 运行扫描') + '</button>' +
     '<button class="btn" id="sc-save"' + (S.conditions.length ? '' : ' disabled') +
       ' title="把当前的条件、开关状态、市场和排序存成一个扫描策略">' +
       '<span class="hi hi-save"></span> 保存扫描策略</button>' +
-    vAsOf() +
+    vAsOf() + vQuota() +
     (S.conditions.length && !n && S.combine !== 'custom'
       ? '<span class="sc-na" style="font-size:12px">一条都没启用,扫不出东西</span>' : '') +
     '</div>' +
@@ -972,6 +996,11 @@ function vRunBar() {
 }
 
 function vResult() {
+  if (S.reveal) {
+    return '<div class="panel" style="margin-top:14px"><div class="p-bd sc-reveal">' +
+      '<b id="sc-reveal-n">' + S.reveal + '</b><span>扫描已完成,结果稍后显示。' +
+      '每次扫描后等 ' + REVEAL_S + ' 秒再出结果 —— 数据源是免费通道,会员多了要一起省着用。</span></div></div>'
+  }
   if (!S.result) return ''
   const r = S.result
   const stats = [
@@ -1064,7 +1093,7 @@ function vHelp() {
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
 function render() {
-  const html = '<div class="sc-wrap">' + vMagic() + vConditions() + vRunBar() +
+  const html = '<div class="sc-wrap">' + vLoginBar() + vMagic() + vConditions() + vRunBar() +
     vResult() + vHelp() + '</div>'
   container.innerHTML = html
   bind()
@@ -1289,6 +1318,120 @@ function commitEdit(text) {
   rebuild()
 }
 
+// ─── 会员校验与额度(2026-09-14 用户定)──────────────────────────────
+// 规则在后端 services/quant/screen_quota.py:要登录;普通会员每天扫描 20 次、AI 识别 10 次;
+// 每次扫描后等 5 秒再显示结果。前端只负责三件事:
+//   · 没登录**立刻**提醒(打开页面就弹,不等用户点了按钮才说)
+//   · 每用一次提示剩余次数,运行栏里常驻今日剩余
+//   · 扫描结果倒数 5 秒再显示
+// 真正的拦截在接口层 —— 这里藏按钮拦不住任何人。
+const QUOTA_API = '/api/quant/screener/quota'
+const REVEAL_S = 5
+const LOGIN_BACK = '/strategies/screener.html'
+const LOGIN_MSG = '魔法筛选器是会员功能,登录或注册后即可使用。'
+
+function loginUrl(kind) {
+  return '/' + (kind === 'register' ? 'register' : 'login') + '?return_to=' + encodeURIComponent(LOGIN_BACK)
+}
+
+function needLogin(msg) {
+  S.login = false
+  render()
+  if (typeof openModal !== 'function') return
+  if (document.querySelector('.sc-gate')) return          // 已经弹着了,别叠第二层
+  openModal('<div class="sc-gate"><h3>登录后使用魔法筛选器</h3>' +
+    '<p>' + esc(msg || LOGIN_MSG) + '</p>' +
+    '<p class="sm">普通会员每天可扫描 20 次、AI 识别 10 次,零点(上海时间)重置。登录后会回到这个页面。</p>' +
+    '<div class="row"><a class="btn" href="' + loginUrl('login') + '">登录</a>' +
+    '<a class="btn small" href="' + loginUrl('register') + '">注册新账号</a>' +
+    '<button class="btn small" data-close>先看看</button></div></div>')
+}
+
+function vLoginBar() {
+  if (S.login !== false) return ''
+  return '<div class="sc-login"><span><b>还没登录</b> · ' + esc(LOGIN_MSG) +
+    ' 没登录可以看示例,生成条件和运行扫描要先登录。</span>' +
+    '<a class="btn small" href="' + loginUrl('login') + '">登录</a>' +
+    '<a class="btn small" href="' + loginUrl('register') + '">注册</a></div>'
+}
+
+async function loadQuota() {
+  let r
+  try { r = await fetch(QUOTA_API, { headers: apiHeaders(), cache: 'no-store' }) } catch (e) { return }
+  if (!r.ok) return                      // 查不到额度不挡使用,接口层照样会拦
+  let d = null
+  try { d = await r.json() } catch (e) { return }
+  if (!d || d.login === false) { needLogin(d && d.message); return }
+  S.login = true
+  S.quota = d
+  render()
+}
+
+function setQuota(q) {
+  if (!q || !q.kind) return
+  if (!S.quota) S.quota = { login: true }
+  S.quota[q.kind] = q
+  S.login = true
+}
+
+function toastQuota(q, what) {
+  if (!q) return
+  if (q.unlimited) { toast(what + ' · 管理员不限次数'); return }
+  if (!Number.isFinite(q.remaining)) return
+  toast(what + ',今天还剩 ' + q.remaining + ' / ' + q.limit + ' 次' +
+    (q.remaining === 0 ? ',明天 0 点重置' : ''), q.remaining <= 3 ? 'warn' : '')
+}
+
+function vQuota() {
+  if (S.login === false) {
+    return '<span class="sc-quota">未登录 · <a href="' + loginUrl('login') + '">登录</a> / ' +
+      '<a href="' + loginUrl('register') + '">注册</a> 后可用</span>'
+  }
+  const q = S.quota
+  if (!q || !q.scan || !q.ai) return ''
+  const one = function (x) {
+    if (x.unlimited) return x.label + ' 不限'
+    return x.label + ' <b' + (x.remaining === 0 ? ' class="zero"' : '') + '>' + x.remaining + '</b>/' + x.limit
+  }
+  return '<span class="sc-quota" title="' + esc((q.tier_label || '') + ' · ' + (q.reset_at || '') + ' 重置') + '">' +
+    '今日剩余 · ' + one(q.scan) + ' · ' + one(q.ai) + '</span>'
+}
+
+function aiLeftText() {
+  const a = S.quota && S.quota.ai
+  if (!a || a.unlimited || !Number.isFinite(a.remaining)) return ''
+  return '(今天还剩 ' + a.remaining + ' 次)'
+}
+
+// 401 → 弹登录;429 → 额度用完 / 点太快,把后端带回来的额度记上。返回 true = 已处理(调用方直接收工)
+function gateOf(r) {
+  if (!r) return false
+  if (r.status === 401) { needLogin(errOf(r, LOGIN_MSG)); return true }
+  if (r.status === 429) {
+    const det = r.data && r.data.detail
+    if (det && typeof det === 'object' && det.quota) setQuota(det.quota)
+  }
+  return false
+}
+
+// 扫描完成后倒数再放结果。每秒只改两处数字,不整页重画 —— 整页 render 会把生成框里正在打的字的光标弄丢
+function revealAfter(sec) {
+  return new Promise(function (resolve) {
+    S.reveal = sec
+    render()
+    const tick = function () {
+      S.reveal -= 1
+      if (S.reveal <= 0) { S.reveal = 0; resolve(); return }
+      ;['sc-reveal-n', 'sc-reveal-btn'].forEach(function (id) {
+        const el = document.getElementById(id)
+        if (el) el.textContent = String(S.reveal)
+      })
+      setTimeout(tick, 1000)
+    }
+    setTimeout(tick, 1000)
+  })
+}
+
 // ─── 与后端往返 ───────────────────────────────────────────────────
 async function post(url, body) {
   const r = await fetch(url, {
@@ -1335,6 +1478,7 @@ async function reparse(script) {
   }
   const r = await post(PARSE_API, { script: script, market: S.market })
   if (!r.ok) {
+    if (gateOf(r)) return
     S.genError = errOf(r, '解析失败 · HTTP ' + r.status)
     S.canTryAi = false
     render(); return
@@ -1351,6 +1495,7 @@ async function generate(allowAi) {
   // 所以正常点生成**一分钱都不花**:后端先试脚本、再试本地关键词。
   const text = allowAi ? (S.aiText || '') : (S.input || '').trim()
   if (!text) { S.genError = '生成框是空的。把筛选脚本粘进来,或者点一个示例。'; render(); return }
+  if (S.login === false || !getToken()) { needLogin(); return }
   const appending = (S.mode === 'append' && S.conditions.length > 0)
 
   // 自定义组合下不许追加 —— 现有 plot 是 `a and (b or c)` 这类表达式,
@@ -1370,6 +1515,13 @@ async function generate(allowAi) {
   const r = await post(PARSE_API, { script: text, market: S.market, allow_ai: !!allowAi })
   S.generating = false
   if (!r.ok) {
+    if (gateOf(r)) { render(); return }
+    // 模型已经调用、但结果用不了:后端照计 1 次(token 花掉了),把剩余次数告诉用户
+    const det = r.data && r.data.detail
+    if (det && typeof det === 'object' && det.quota && r.status === 400) {
+      setQuota(det.quota)
+      if (det.quota_note) toast(det.quota_note, 'warn')
+    }
     S.genError = errOf(r, '生成失败 · HTTP ' + r.status)
     // 后端说"本地两条路都不通,可以试 AI" → 把原文记下来,弹按钮等用户点
     S.canTryAi = canAi(r)
@@ -1378,6 +1530,11 @@ async function generate(allowAi) {
     render(); return
   }
   const d = r.data
+  // 只有真的调了模型,返回体才带 quota(本地识别成功不扣次数,也就不提示)
+  if (d && d.quota) {
+    setQuota(d.quota)
+    toastQuota(d.quota, (d.ai && d.ai.mode === 'fix' ? 'AI 修脚本' : 'AI 识别') + '计 1 次')
+  }
   if (appending && d.combine === 'custom') {
     S.genError = '新脚本的最终条件是自定义组合(' + (d.plot_expr || '') + '),' +
       '追加进来会丢掉这层组合关系。请切到「替换」。'
@@ -1443,21 +1600,35 @@ function mergeAppend(fresh) {
 async function runScan() {
   const script = buildScript()
   if (!script) { S.runError = '还没有条件'; render(); return }
-  S.running = true; S.runError = null; render()
+  if (S.running || S.reveal) return
+  if (S.login === false || !getToken()) { needLogin(); return }
+  const market = S.market, asOf = S.asOf || null
+  S.running = true; S.runError = null; S.result = null; render()
   const r = await post(RUN_API, {
-    script: script, market: S.market, limit: 100,
+    script: script, market: market, limit: 100,
     sort_by: S.sortBy || null, descending: S.desc,
-    as_of: S.asOf || null,
+    as_of: asOf,
   })
   S.running = false
   if (!r.ok) {
-    S.runError = (r.data && (r.data.detail || r.data.error)) || ('扫描失败 · HTTP ' + r.status)
+    if (gateOf(r)) { render(); return }
+    S.runError = errOf(r, '扫描失败 · HTTP ' + r.status)
     S.result = null; render(); return
   }
-  S.result = r.data
+  const d = r.data
+  if (d && d.quota) { setQuota(d.quota); toastQuota(d.quota, '本次扫描计 1 次') }
+  // 每次扫描后等 5 秒再显示结果(2026-09-14 用户定 · 按 5000 会员保护上游)
+  await revealAfter(REVEAL_S)
+  // 倒数的这几秒里条件 / 市场 / 回溯日被改过,这张表就不是当前条件的结果了 —— 不能拿来骗人
+  if (buildScript() !== script || S.market !== market || (S.asOf || null) !== asOf) {
+    S.result = null
+    S.runError = '等待期间条件改过了,这次的结果不再显示(已计 1 次)。请重新运行扫描。'
+    render(); return
+  }
+  S.result = d
   // 悬停日K 要标「这份脚本过去一年哪些天命中」—— 用的必须是**跑出这张结果表的那份脚本**,
   // 不是条件区此刻的样子(用户跑完可能又改了条件还没重跑)
-  S.resultScan = { script: script, market: S.market, asOf: S.asOf || null }
+  S.resultScan = { script: script, market: market, asOf: asOf }
   render()
 }
 
@@ -1480,7 +1651,9 @@ async function hitDaysOf(code) {
             unknown: Number.isFinite(d.unknown) ? d.unknown : 0, note: d.note || null }
     if (d.note && !d.evaluated) out = { error: d.note }
   } else {
-    out = { error: '命中日没算出来:' + ((r.data && (r.data.detail || r.data.error)) || ('HTTP ' + r.status)) }
+    out = { error: r.status === 401 ? '登录后才能看这份脚本的历史命中日'
+      : '命中日没算出来:' + errOf(r, 'HTTP ' + r.status) }
+    if (r.status === 401) { HITS.delete(key); return out }     // 登录之后要能重算,不缓存
   }
   HITS.set(key, out)
   return out
@@ -1494,7 +1667,10 @@ async function probeOne(c) {
     if (o.expr) lines.push('def ' + o.name + ' = ' + o.expr + ';')
   })
   lines.push('plot ' + S.plotName + ' = ' + c.name + ';')
-  const r = await post(RUN_API, { script: lines.join('\n'), market: S.market, limit: 1, as_of: S.asOf || null })
+  // probe:true —— 单条测试不扣扫描次数,后端只回命中数(见 screen_quota 文件头)
+  const r = await post(RUN_API, { script: lines.join('\n'), market: S.market, limit: 1, as_of: S.asOf || null, probe: true })
+  if (gateOf(r)) return
+  if (r.status === 429) toast(errOf(r, '单条测试太频繁'), 'warn')
   S.probe[c.name] = (r.ok && r.data && Number.isFinite(r.data.matched)) ? r.data.matched : null
   render()
 }
@@ -1516,6 +1692,7 @@ async function searchFields() {
     r = await fetch(FIELD_API + '?market=' + encodeURIComponent(S.market) +
       '&q=' + encodeURIComponent(kw) + '&limit=60', { headers: apiHeaders() })
   } catch (e) { list.innerHTML = '<span class="sc-na">搜索请求没发出去</span>'; return }
+  if (r.status === 401) { list.innerHTML = '<span class="sc-na">登录后才能搜索字段</span>'; needLogin(); return }
   if (!r.ok) { list.innerHTML = '<span class="sc-na">搜索失败 HTTP ' + r.status + '</span>'; return }
   let d
   try { d = await r.json() } catch (e) { list.innerHTML = '<span class="sc-na">返回的不是合法 JSON</span>'; return }
@@ -1587,6 +1764,9 @@ async function boot() {
     if (m) S.market = m
   } catch (e) { /* 隐私模式 */ }
   render()                                   // 先把骨架画出来,不等网络
+  // 没有令牌 = 肯定没登录,不等网络**立刻**提醒;有令牌再问后端(可能过期 / 被当成匿名)并拿今日剩余次数
+  if (!getToken()) needLogin()
+  else loadQuota()
 
   let r
   try {

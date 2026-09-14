@@ -27,6 +27,15 @@ function RegisterInner() {
   const router = useRouter()
   const search = useSearchParams()
   const isSetup = search.get('setup') === '1'
+  // return_to:从策略中心静态页(魔法筛选器)点「注册」过来,注册完回到原页面。
+  // 只认站内路径(以 / 开头、不是 //),防开放跳转;.html 是 public 下的静态页,不走 Next 路由,整页跳
+  const rawRet = search.get('return_to')
+  const ret = rawRet && rawRet.startsWith('/') && !rawRet.startsWith('//') ? rawRet : ''
+  const loginHref = ret ? `/login?return_to=${encodeURIComponent(ret)}` : '/login'
+  const goBack = () => {
+    if (ret.endsWith('.html')) window.location.replace(ret)
+    else router.replace(ret || '/')
+  }
 
   const [status, setStatus] = useState<AuthStatus | null>(null)
   const [email, setEmail] = useState('')
@@ -40,7 +49,7 @@ function RegisterInner() {
   useEffect(() => {
     // 单用户模式(开源版默认)根本不需要注册 —— 换到 token 就直接进主页
     ensureLocalSession().then((token) => {
-      if (token) { router.replace('/'); return }
+      if (token) { goBack(); return }
       fetch(`${API}/api/auth/status`).then(r => r.json()).then(setStatus).catch(() => setStatus({}))
     })
   }, [router])
@@ -73,7 +82,7 @@ function RegisterInner() {
       if (r.ok && (d.access_token || d.token)) {
         localStorage.setItem('hunter_token', d.access_token || d.token)
         if (d.refresh_token) localStorage.setItem('hunter_refresh', d.refresh_token)
-        router.replace('/')
+        goBack()
       } else {
         setError(d.detail || d.error || '注册失败')
       }
@@ -92,7 +101,7 @@ function RegisterInner() {
         </p>
         <div style={{ marginTop: 20, textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
           已有账号？{' '}
-          <Link href="/login" style={{ color: 'var(--blue)', textDecoration: 'none' }}>去登录 →</Link>
+          <Link href={loginHref} style={{ color: 'var(--blue)', textDecoration: 'none' }}>去登录 →</Link>
         </div>
       </CardShell>
     )
@@ -180,7 +189,7 @@ function RegisterInner() {
       {!isSetup && !isFirst && (
         <div style={{ marginTop: 20, textAlign: 'center', fontSize: 13, color: 'var(--text-muted)' }}>
           已有账号？{' '}
-          <Link href="/login" style={{ color: 'var(--blue)', textDecoration: 'none' }}>去登录 →</Link>
+          <Link href={loginHref} style={{ color: 'var(--blue)', textDecoration: 'none' }}>去登录 →</Link>
         </div>
       )}
     </CardShell>
