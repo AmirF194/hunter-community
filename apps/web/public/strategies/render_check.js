@@ -842,6 +842,37 @@ try {
   }
 }
 
+// ─── 悬停日K:命中日要「看得见」,不只是「画进去了」(2026-09-14)──────────────
+// 用户报「有些命中的票图上没有蓝线」。数据和标记都对(ZD 命中 09-04 / 09-11,markArea 下标 245 / 249),
+// 但 250 根挤在约 470px 里,一根 K 线宽、16% 透明度的色带肉眼看不见 —— 命中天数少又不连着的票就像没标。
+// 现在每个命中日另加一条固定 2px 的竖线;色带和竖线都压在 K 线下面(z 小于蜡烛图的默认 2)。
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  vm.runInContext(
+    "var KV_ROWS = []; for (var i = 0; i < 250; i++) KV_ROWS.push({ ts: 'D' + String(i).padStart(9, '0'), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 });" +
+    "var KV_S = kcMarkSeries(KV_ROWS, { scan: [KV_ROWS[245].ts, KV_ROWS[249].ts, '2099-01-01'] });" +
+    "var KV_E = kcMarkSeries(KV_ROWS, { scan: [] });",
+    ctx, { filename: 'assert-kc-visible' })
+  const s = ctx.KV_S.filter(function (x) { return x.markArea || x.markLine })[0]
+  const kv = [
+    ['命中日有一条带色带和竖线的标记序列', !!(s && s.markArea && s.markLine)],
+    ['竖线固定 ≥ 2px(不随缩放变细)', !!(s && s.markLine.lineStyle && s.markLine.lineStyle.width >= 2)],
+    ['竖线落在命中日的下标上,对不上 K 线的日子丢掉', !!(s && JSON.stringify(s.markLine.data.map(function (d) { return d.xAxis })) === '[245,249]')],
+    ['色带与竖线一一对应', !!(s && s.markArea.data.length === s.markLine.data.length)],
+    ['标记压在 K 线下面(z < 2),不挡读数', !!(s && s.z < 2)],
+    ['竖线不画端点箭头和标签', !!(s && s.markLine.symbol && s.markLine.symbol[0] === 'none' && s.markLine.label && s.markLine.label.show === false)],
+    ['没有命中日时不出标记序列', ctx.KV_E.length === 0],
+  ]
+  for (const [name, ok] of kv) {
+    if (ok) console.log('PASS 命中日可见 ·', name)
+    else { failed++; console.log('FAIL 命中日可见 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 命中日可见断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 悬停日K:dispose 必须在清容器之前(app.js)────────────────────────
 // 2026-09-12 线上 bug:kcRender 先 box.innerHTML='' 再 chart.dispose(),
 // echarts 去 removeChild 自己那个已经被摘走的根节点 → TypeError 把 kcRender 打断,

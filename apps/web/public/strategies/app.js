@@ -917,7 +917,8 @@ const KC_UP = '#a4332b', KC_DN = '#3f6b40'
 // 买卖标记反过来用国际习惯的绿买红卖 —— 它标的是「我的动作」不是「涨跌」,
 // 和 K 线的红绿不是一回事,用户 2026-09-12 明确指定了颜色
 const KC_BUY = '#1f9254', KC_SELL = '#c0392b'
-const KC_SCAN = 'rgba(46,134,222,.16)'    // 扫描命中:半透明蓝
+const KC_SCAN = 'rgba(46,134,222,.16)'    // 扫描命中:半透明蓝(色带,一根 K 线宽)
+const KC_SCAN_LINE = 'rgba(46,134,222,.55)' // 扫描命中:固定 2px 竖线(250 根挤在一起时色带看不见,靠它)
 
 function kcEsc(s) {
   return String(s == null ? '' : s)
@@ -1014,14 +1015,25 @@ function kcMarkSeries(rows, mark) {
   const scan = kcIndexOf(rows, mark.scan)
   const buy = kcIndexOf(rows, mark.buy)
   const sell = kcIndexOf(rows, mark.sell)
-  // 扫描命中:一根 K 线宽的竖向色带。用 markArea 而不是 markLine ——
-  // 竖线只有 1px,几十个命中日挤在一起看不出哪根是哪根
+  // 扫描命中:一根 K 线宽的竖向色带 + 一条固定 2px 的竖线,两样都要。
+  // 只有色带时(2026-09-14 用户报「有些命中的票图上没有蓝线」):弹层画图区约 470px 放 250 根,
+  // 一根 K 线不到 2px,16% 透明度的色带肉眼看不见 —— 一年只命中两三天、又不连着的票(实测 ZD 2 天)
+  // 整张图像没标;命中天数多、连成片的(STT 24 天)才看得出来,于是表现成「偶现」。
+  // 色带管放大后看清是哪一根,竖线管不缩放也看得见。z 压在 K 线下面,不挡十字星读数。
   if (scan.length) {
     out.push({
-      type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: [], silent: true,
+      type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: [], silent: true, z: 1,
       markArea: {
+        silent: true,
         itemStyle: { color: KC_SCAN },
         data: scan.map(function (i) { return [{ xAxis: i - 0.5 }, { xAxis: i + 0.5 }] }),
+      },
+      markLine: {
+        silent: true, symbol: ['none', 'none'], animation: false,
+        label: { show: false },
+        lineStyle: { color: KC_SCAN_LINE, width: 2, type: 'solid' },
+        emphasis: { disabled: true },
+        data: scan.map(function (i) { return { xAxis: i } }),
       },
     })
   }
