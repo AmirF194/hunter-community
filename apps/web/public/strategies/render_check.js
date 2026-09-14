@@ -665,7 +665,7 @@ try {
 //   ② 封存卡有「打开看板」「解除封存」;还没引擎的立项卡写明「还没有引擎」,不画数字格;
 //   ③ 对照表只列跑出数据的线,被引用为对照组的那条带「对照组」;净值图每条有净值的线一条 path + 基准一条;
 //   ④ 全 null / 后端 404 骨架:四列照画、数据位 —,不出现 NaN / undefined / null 字面量;
-//   ⑤ 看板视图顶上有分页 + 面包屑,封存的线常驻提示条带「解除封存」(新功能入口不许藏 hover);
+//   ⑤ 看板视图顶上只有分页(面包屑 2026-09-14 用户要求去掉),封存的线常驻提示条带「解除封存」(新功能入口不许藏 hover);
 //   ⑥ 新建表单:淘汰线在表单里写出来并声明「提交后锁定」。
 try {
   const ctx = vm.createContext(makeContext('agent.html'))
@@ -759,7 +759,9 @@ try {
     ['新建表单写出淘汰线并声明提交后锁定', ctx.H_RSFORM.indexOf('id="rs-f-submit"') >= 0 && ctx.H_RSFORM.indexOf('提交后这一栏锁定') >= 0
       && ctx.H_RSFORM.indexOf('每笔平均净损益 &lt; 0') >= 0],
     ['看板视图:分页里「运行看板」高亮', /data-go="dash" class="on"/.test(ctx.H_DASH)],
-    ['看板视图:面包屑 研究台 › VCP 波段线 › 方向 C', /data-go="research">研究台<\/a><i>›<\/i><b>VCP 波段线<\/b><i>›<\/i>方向 C · 三段式/.test(ctx.H_DASH)],
+    // 用户 2026-09-14 要求去掉面包屑(和分页、方向卡、提示条重复)
+    ['看板视图:分页右边没有面包屑', ctx.H_DASH.indexOf('rs-crumb') < 0 && !/<a href="#view=research"/.test(ctx.H_DASH)],
+    ['看板视图:研究线状态仍由提示条给出', /rs-lb cool"><span class="rs-chip cool">封存/.test(ctx.H_DASH)],
     ['看板视图:封存提示条常驻,带「解除封存」', /rs-lb cool/.test(ctx.H_DASH) && /id="ag-unarchive" data-line="vcp"/.test(ctx.H_DASH)],
     ['看板视图:分页在状态条之前', ctx.H_DASH.indexOf('rs-seg') >= 0 && ctx.H_DASH.indexOf('rs-seg') < ctx.H_DASH.indexOf('ag-status')],
     ['看板 404 骨架:有分页、没有凭空的面包屑状态', ctx.H_DASHSKEL.indexOf('rs-seg') >= 0 && ctx.H_DASHSKEL.indexOf('rs-lb') < 0 && clean(ctx.H_DASHSKEL)],

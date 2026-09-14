@@ -294,10 +294,6 @@
     .rs-seg button{border:0;background:transparent;border-radius:7px;padding:5px 16px;font:inherit;font-size:13px;color:var(--muted);cursor:pointer}
     .rs-seg button.on{background:#fff;color:var(--brand-dark);font-weight:650;box-shadow:0 1px 3px rgba(0,0,0,.06)}
     .rs-seg button:focus-visible,.rs-card .btn:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
-    .rs-crumb{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);flex-wrap:wrap}
-    .rs-crumb a{color:var(--muted);text-decoration:none;border-bottom:1px dotted var(--line-strong)}
-    .rs-crumb a:hover{color:var(--brand-dark)}
-    .rs-crumb b{color:var(--text)} .rs-crumb i{font-style:normal;color:var(--soft)}
     .rs-chip{display:inline-block;font-size:11px;border-radius:5px;padding:0 7px;line-height:19px;white-space:nowrap;font-weight:500}
     .rs-chip.cool{background:var(--tag-cool-bg);color:var(--tag-cool-fg)}
     .rs-chip.ok{background:var(--tag-ok-bg);color:var(--tag-ok-fg)}
@@ -503,20 +499,13 @@ const RS_COLORS = ['#b56b2d', '#6a4c93', '#2a7f8f', '#8a6d3b', '#777970']
 const RS_LAST_KEY = 'hunter_agent_last_branch'
 const RS = { form: false, busy: false, data: null }
 
-function vTopNav(view, d) {
-  let crumb = ''
-  if (view === 'dash') {
-    const ln = d && d.line
-    const bl = (Array.isArray(d && d.branches) ? d.branches : []).filter(function (b) { return b && b.active })[0]
-    crumb = '<span class="rs-crumb"><a href="#view=research" data-go="research">研究台</a><i>›</i>' +
-      '<b>' + txt(ln && ln.label) + '</b>' + (bl ? '<i>›</i>' + txt(bl.label) : '') +
-      (ln && ln.status ? '<span class="rs-chip ' + (RS_CHIP[ln.status] || '') + '">' + txt(ln.status_text) + '</span>' : '') +
-      '</span>'
-  }
+// 看板视图原来在分页右边还有一条面包屑「研究台 › 研究线 › 方向 + 状态」,2026-09-14 用户要求去掉:
+// 「研究台」和左边分页重复,研究线 / 方向在下面的方向卡和策略卡里有,状态在紧接着的提示条里有。
+function vTopNav(view) {
   return '<div class="rs-top"><div class="rs-seg" role="tablist" aria-label="小鹿智能体视图">' +
     '<button type="button" role="tab" data-go="research" class="' + (view === 'research' ? 'on' : '') + '" aria-selected="' + (view === 'research') + '">研究台</button>' +
     '<button type="button" role="tab" data-go="dash" class="' + (view === 'dash' ? 'on' : '') + '" aria-selected="' + (view === 'dash') + '">运行看板</button>' +
-    '</div>' + crumb + '</div>'
+    '</div></div>'
 }
 
 // 看板顶上的研究线状态条:封存的线常驻一条提示(不是灰掉整页 —— 封存的线仍是活的对照组)
@@ -1521,7 +1510,7 @@ function render(d, notice) {
   LAST_D = d || {}
   if (d && d.branch) { try { localStorage.setItem(RS_LAST_KEY, String(d.branch)) } catch (e) { /* 存不了就算了 */ } }
   // 返回 html 而不只是写进 container:render_check.js 靠这个返回值断言区块顺序
-  const html = '<div class="ag-wrap">' + vBanner(notice) + vTopNav('dash', d) + vLineBanner(d) +
+  const html = '<div class="ag-wrap">' + vBanner(notice) + vTopNav('dash') + vLineBanner(d) +
     vStatus(d) + vBranches(d) + vStrategy(d) + vGuard(d) + vPipeline(d) + vKpi(d) + vNav(d) +
     vRules(d) +
     '<div class="ag-two"><div class="ag-col" id="ag-col">' + vHoldings(d) + vHistory(d) + '</div>' + vWatch(d) + '</div>' +
