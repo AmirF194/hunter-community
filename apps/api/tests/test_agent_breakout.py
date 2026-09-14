@@ -85,7 +85,7 @@ check("P-01 · 不足 200 根 → 算不出(above = None,不当成转弱)", not 
 SCREEN_OK = {"sma150": 90.0, "sma200": 85.0, "hi252": 110.0, "av30": 900_000.0,
              "rng3m": 0.20, "rng1m": 0.08, "rng5d": 0.04, "low21": 96.0, "low63": 90.0}
 # 突破日当天的筛选字段被突破撑坏(1 月振幅 15%、5 日振幅大),照字面同一天判断就过不了
-SCREEN_BROKEN = dict(SCREEN_OK, rng1m=0.15, rng5d=0.12)
+SCREEN_BROKEN = dict(SCREEN_OK, rng1m=0.18, rng5d=0.12)       # 18%:v4 把 4b 上限放到 15% 之后仍算撑坏
 
 
 def good(prev=None, **kw):
@@ -120,6 +120,11 @@ check("P-03 · 前一天均线没排好不买", not ab.entry_ok(good(prev={"sma5
 check("P-04 · 前一天 5 日振幅没收紧(0.06 > 0.08 × 0.65)不买", not ab.entry_ok(good(prev={"screen": {"rng5d": 0.06}}), P, 90, UP))
 check("P-04 · 前一天 1 月振幅没收缩到 3 月 0.55 倍不买", not ab.entry_ok(good(prev={"screen": {"rng1m": 0.12}}), P, 90, UP))
 check("P-04 · 前一天低点没抬高不买", not ab.entry_ok(good(prev={"screen": {"low21": 90.5}}), P, 90, UP))
+# v4:4b 上限 15%。1 月振幅 14%(3 月 30%,收缩比 0.47 仍 ≤ 0.55;5 日 8% ≤ 14% × 0.65)→ 过;16% → 不过
+check("P-04 · v4 1 月振幅 14% 算过(上限 15%)",
+      ab.entry_ok(good(prev={"screen": {"rng1m": 0.14, "rng3m": 0.30, "rng5d": 0.08}}), P, 90, UP))
+check("P-04 · v4 1 月振幅 16% 超过上限不买",
+      not ab.entry_ok(good(prev={"screen": {"rng1m": 0.16, "rng3m": 0.34, "rng5d": 0.08}}), P, 90, UP))
 check("P-05 · 前一天 10 日均量放大(≥ 50 日均量)不买", not ab.entry_ok(good(prev={"av10": 1_050_000.0}), P, 90, UP))
 check("P-05 · v3 缩量门槛 1.0:10 日均量 0.95 倍也算过", ab.entry_ok(good(prev={"av10": 950_000.0}), P, 90, UP))
 check("P-05 · 前一天离枢轴超过 −4% 不买", not ab.entry_ok(good(prev={"close": 97.0}), P, 90, UP))
