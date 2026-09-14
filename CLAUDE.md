@@ -352,6 +352,13 @@ https://github.com/tjdwls101010/IBD-RS-Rating(MIT,Copyright (c) 2026 성진)。
 ② `run_script(keep_all=True)` 带回的 `_all_picks` 路由必须 pop 掉,不能进响应(几千行);
 ③ 缓存在进程内,api 是单进程 uvicorn 才成立 —— 改多 worker 要换共享存储,否则重排会随机「过期」。
 
+**官方示例原样运行不扣扫描次数(同日用户要求)**:`screen_source.official_preset_of` 判「原样」,`/screener/run` 据此记 `preset`
+计数(每天 300 次防刷)而不是 `scan`,不回 quota、回 `official_preset`;`/screener/parse` 也带它,前端只拿来提示和放开按钮。三条别改坏:
+① **按条件语义比,不按原文比**:界面加载示例后会重拼脚本(注释没了、一句一行、plot 顺序可能变),逐字比会让没改过的也扣次数。
+   比的是 def 名字 → 表达式节点(数字节点去掉源码位置)+ plot 纯 and 链的名字集合 + 市场。
+② **判不出来一律当改过**(编译不过返回 None),宁可扣也不能漏;前端的判断不算数,run 里重新判。
+③ 5 秒间隔、扫描后等 5 秒对官方示例照旧 —— 那是保护上游,不是计费。
+
 ## 策略中心静态页的标签页图标
 
 静态页不走 Next 的 `app/icon.png`,不写 `<link rel="icon" href="/icon.png">` 浏览器就是空白图标(2026-09-14 第一轮评审 GN-001)。
