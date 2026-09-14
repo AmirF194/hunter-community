@@ -163,6 +163,23 @@ v9 一年:+3.35%、回撤 -8.56%、50 笔、每笔 +65、盈亏比 1.23。
 同一批事件:S 154 次 20 天均值 +4.0%、涨过 10% 40%;D 531 次 -0.3%、26%;S+A 对 C+D 均值差 +1.0、涨过 10% 差 +3 个百分点(原口径 -0.4 / +1)。
 **中间档(A / B / C)仍然分不开,C 反而比 A、B 好** —— 能说清楚的只有两头。门槛是在同一年上挑的,有贴合这一年的风险;
 评分只记录、不影响买卖(v8 起),所以这次改动不改变任何成交,只改成交记录里的档位。
+
+## v11(2026-09-14 用户:「针对抗跌这条规则也按历史数据优化评分」)—— 只改第 3 项怎么定档,不影响买卖
+
+原口径(63 天里标普下跌日这只票不跌的次数 > 15 S · > 10 A · > 5 B · > 2 C)拿同一批 1,654 次突破验证:**两头差、中间好** ——
+S 203 次突破后 20 天中位 -0.8%、涨过 10% 只有 26%;成交里 S 9 笔平均 -256、B 16 笔 +412。不跌次数与 beta 相关 -0.53:
+「抗跌强」很大程度就是低波动、不跟大盘动的防御股,突破后没人跟进。试了全部下跌日比例 / 下跌捕获率 / 下跌日超额收益 /
+上涨捕获率 / beta / 波动率 / 21 天窗口,最有区分度的是**只看标普大跌日(≤ -1%)不跌的比例,而且是倒 U 形**:
+最低 20%(≤ 11%)20 天中位 -2.0%、先跌 5% 57%;17~33% 中位 +2.4%、先跌 5% 41%;最高 20%(> 50%)中位 -0.9%、涨过 10% 只有 20%。
+大跌日能扛住一部分是强势;每次大跌都不跌的,是防御股。
+
+**新口径(`def_stats` + `def_tier`)**:
+- 近 63 天标普大跌日 ≥ 3 天:大跌日不跌比例 17%~34% S · 34%~51% A · 10%~17% B · > 51% C · < 10% D;
+- 大跌日不足 3 天(行情平静,约 14% 的突破):改看全部下跌日不跌比例 38%~52% S · 32%~38% A · ≥ 52% B · 25%~32% C · < 25% D。
+同一批事件:S 479 / A 326 / B 374 / C 247 / D 228 次,20 天中位 +1.5 / +0.2 / +0.1 / -0.6 / -3.5%(单调),先跌 5% 42% → 59%;
+S+A 对 C+D 中位差 +2.7、先跌 5% 比例差 -12 个百分点(原口径中位差 +1.6、均值差 -1.1)。v9/v10 成交:S 18 笔 +330、C 8 笔 -270、D 5 笔 -278。
+另一套「平静行情一律记 C」在事件上两头更开(中位差 +3.2),但成交上不单调,且把 229 次平静行情硬归一档,没选。
+比例是小分数(大跌日中位 7 天):1/6 = 16.7% 落 B、1/3 落 S、1/2 落 A —— 边界故意避开这些值的正中。门槛在同一年上挑,有贴合风险。
 """
 from __future__ import annotations
 
@@ -202,6 +219,8 @@ CHASE_MAX = {"S": 1.0, "A": 2.0, "B": 3.0, "C": 4.0}   # v8 第 4 项:收盘高�
 VP_BIG = 1.2          # v10 第 2 项:放量 = 成交量 > 50 日均量 × 1.2
 VP_HOT_UDV = 1.7      # v10:近 63 天上涨日总量 ÷ 下跌日总量 > 1.7 → 过热降一档
 VP_HOT_AD = 8         # v10:近 63 天放量上涨 − 放量下跌 ≥ 8 → 过热降一档
+DEF_BIG_DROP = -0.01  # v11 第 3 项:标普当天跌 ≥ 1% 算大跌日
+DEF_MIN_BIG = 3       # v11:大跌日不足 3 天(平静行情)改看全部下跌日
 GRADE_RULE = "P-20"
 ENTRY_RULE = "P-06"
 ADD_RULE = "P-08"
@@ -242,7 +261,7 @@ RULES = [
     {"id": "P-17", "kind": "sell", "condition": "+20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)"},
     {"id": "P-18", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA10 卖出余仓一半(一次)"},
     {"id": "P-19", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA20 清仓"},
-    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 量价配合(近 21 天放量上涨 − 放量下跌 ≥4 S · 3 A · 2 B · 1 C · ≤0 D,3 个月过热降一档) · 近 3 月标普下跌日抗跌 · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
+    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 量价配合(近 21 天放量上涨 − 放量下跌 ≥4 S · 3 A · 2 B · 1 C · ≤0 D,3 个月过热降一档) · 抗跌(近 63 天标普跌 ≥1% 的日子不跌比例 17~34% S · 34~51% A · 10~17% B · >51% C · <10% D;大跌日不足 3 天改看全部下跌日) · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
     {"id": "P-21", "kind": "risk", "condition": "空间受限:走廊(上方 252 日强阻力 − 收盘)÷ R 不足 1R,达到买点也不进"},
 ]
 RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Base 低点", "P-10": "固定 6% 止损",
@@ -485,6 +504,44 @@ def vp_tier(vs: dict | None) -> tuple[str | None, str]:
     return t, txt
 
 
+def def_stats(bars: list[tuple], bench: dict | None, look: int = 63) -> dict | None:
+    """第 3 项 · 抗跌口径(v11)→ {dn, cnt, ratio, big, big_ok, bigok};没有基准、日线不足、下跌日不足 3 天 → None。
+    最近 look 根里,标普下跌的日子这只票收盘不跌(≥ 前收)算一次;标普跌 ≥ 1% 的另记大跌日。"""
+    if not bench or len(bars) < look + 1:
+        return None
+    dn = cnt = big = big_ok = n = 0
+    for k in range(len(bars) - look, len(bars)):
+        b0, b1 = bench.get(bars[k - 1][0]), bench.get(bars[k][0])
+        if b0 is None or b1 is None or not bars[k - 1][1]:
+            continue
+        n += 1
+        ir = b1 / b0 - 1
+        ok = bars[k][1] >= bars[k - 1][1]
+        if ir < 0:
+            dn += 1
+            cnt += ok
+            if ir <= DEF_BIG_DROP:
+                big += 1
+                big_ok += ok
+    if n < look * 0.8 or dn < 3:
+        return None
+    return {"dn": dn, "cnt": cnt, "ratio": cnt / dn, "big": big, "big_ok": big_ok, "bigok": (big_ok / big) if big else None}
+
+
+def def_tier(ds: dict | None) -> tuple[str | None, str]:
+    """v11 第 3 项定档 → (档位, 说明)。倒 U 形:大跌日扛住一部分最好,每次都不跌(防御股)和每次都跟跌都差。"""
+    if not ds:
+        return None, "没有基准日线或日线不足,算不出"
+    if ds["big"] >= DEF_MIN_BIG:
+        r = ds["bigok"]
+        t = "S" if 0.17 <= r < 0.34 else "A" if 0.34 <= r <= 0.51 else "B" if 0.10 <= r < 0.17 else "C" if r > 0.51 else "D"
+        note = {"S": "扛住一部分,最好", "A": "扛住一半左右", "B": "偶尔扛住", "C": "大跌日几乎都不跌,防御性太强", "D": "大跌日基本跟着跌"}[t]
+        return t, f"近 63 天标普跌 ≥1% 的 {ds['big']} 天里 {ds['big_ok']} 天不跌({r * 100:.0f}%,{note})"
+    r = ds["ratio"]
+    t = "S" if 0.38 <= r < 0.52 else "A" if 0.32 <= r < 0.38 else "B" if r >= 0.52 else "C" if r >= 0.25 else "D"
+    return t, (f"近 63 天标普跌 ≥1% 只有 {ds['big']} 天(行情平静),改看全部下跌 {ds['dn']} 天里 {ds['cnt']} 天不跌({r * 100:.0f}%)")
+
+
 def grade_features(bars: list[tuple], ind: dict, bench: dict | None, p: dict = PARAMS) -> dict:
     c = [b[1] for b in bars]
     v = [b[4] for b in bars]
@@ -496,7 +553,8 @@ def grade_features(bars: list[tuple], ind: dict, bench: dict | None, p: dict = P
         "sup": supports(bars, stop, p),
         "vp": c3._vp_net(c, v) if len(v) >= need and all(x is not None for x in v[-need:]) else None,   # 原口径,留作对照
         "vps": vp_stats(bars),                                                                          # v10 定档用
-        "def": c3._defense(bars, bench),
+        "def": c3._defense(bars, bench),                                                                # 原口径,留作对照
+        "defs": def_stats(bars, bench),                                                                 # v11 定档用
         "macd_d": c3._macd_cross(c, c3.MACD_DAILY_WITHIN),
         "macd_w": c3._macd_cross(c3._weekly_closes(bars), c3.MACD_WEEKLY_WITHIN),
         "res": c3.res_above(bars, px, atr),
@@ -526,9 +584,8 @@ def grade(ind: dict, stop: float, score=None, p: dict = PARAMS) -> dict:
                   sup["text"] if sup else f"日线不足 {int(p['sup_look']) + 52} 根,算不出"))
     vp_t, vp_txt = vp_tier(gf.get("vps"))
     items.append(("量价配合", vp_t, vp_txt))
-    df = gf.get("def")
-    items.append(("抗跌", c3._tier(df[0], c3.DEF_MIN) if df else None,
-                  f"标普下跌 {df[1]} 天里 {df[0]} 天不跌" if df else "没有基准日线,算不出"))
+    df_t, df_txt = def_tier(gf.get("defs"))
+    items.append(("抗跌", df_t, df_txt))
     pv = ind.get("pivot")
     ch_pct = (ind["close"] / pv - 1) * 100 if pv else None
     ch_tier = None if ch_pct is None else next((k for k in ("S", "A", "B", "C") if ch_pct <= CHASE_MAX[k]), "D")
