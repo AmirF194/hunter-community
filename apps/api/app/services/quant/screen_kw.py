@@ -419,6 +419,7 @@ def _check_comparable(a: tuple, b: tuple, notes: list | None = None) -> tuple[tu
 # 现在专门认,但只认**骨架完全对得上**的:一个字段在前、后面恰好两个数、数字之间只有连接词。
 # 骨架对不上一律返回 None,交给后面的拒绝逻辑 —— 宁可认不出,也不能认一半。
 _OP_EXACT = {w: op for w, op in _OP_WORDS}
+_NUM_STRICT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*(万亿|亿|万|[kmb](?![a-z])|%|％)?", re.I)
 _RANGE_SKEL = re.compile(r"(?:在|从|介于|位于|处于)?#(?:到|至|和|与|~|-|—)#(?:之间|区间内|区间|范围内|范围)?")
 
 
@@ -437,7 +438,12 @@ def _range_expr(t: str, fs: list) -> str | None:
     if _unit(fld) == "天数" or re.search(r"\d", t[:start]):
         return None
     tail = t[end:]
-    nums = list(_NUM_RE.finditer(tail))
+    # 英文整词单位(10 billion)在这里不猜 —— 通用分支里 _NUM_RE 会把它当 b 算,区间里两边单位就对不齐了
+    if re.search(r"\d\s*(?:billion|million|thousand|bn|mn)", tail, re.I):
+        return None
+    # 严格版数字:k/m/b 后面紧跟字母时不是单位 ——「price above 10 below 20」里 10 后面的 b 是 below 的 b,
+    # 用 _NUM_RE 会被读成 10 billion(2026-09-14 补英文用例时发现)
+    nums = list(_NUM_STRICT_RE.finditer(tail))
     if len(nums) != 2:
         return None
     for m in nums:
@@ -712,7 +718,17 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
     return f"{left[2]} {op[0]} {_fmt(_parse_number(mnum))}"
 
 
+# 「收盘价不低于10且不高于20」—— 后半句省略了主语,只剩「比较词 + 数字」。
+# 单独一句「不高于20」永远认不出(没有字段),原来整句因此被拒;现在拼回前一句,交给 _range_expr 判区间。
+# 前一句必须以「比较词 + 数字」结尾:「RS线连涨超过50天」「收盘价大于50日均线」这类不拼(天数 / 两字段,「小于20」不知道比谁)。
+_CMP_WORDS = "|".join(re.escape(w) for w, _op in _OP_WORDS)
+_CMP_NUM = r"\s*-?\d+(?:\.\d+)?\s*(?:万亿|亿|万|[kmb]|%)?\s*元?"
+_BARE_CMP_RE = re.compile(rf"(?:{_CMP_WORDS}){_CMP_NUM}", re.I)
+_ENDS_CMP_RE = re.compile(rf"(?:{_CMP_WORDS}){_CMP_NUM}$", re.I)
+
+
 def _split(text: str) -> list[str]:
+    """切句。**translate / candidate_keys / learn_entries 都用它** —— 对照表的 key 必须和识别同一套切分。"""
     parts: list[str] = []
     for seg in _SPLIT_RE.split(text or ""):
         if not seg:
@@ -721,7 +737,13 @@ def _split(text: str) -> list[str]:
             sub = sub.strip(" 　的了呢吧啊·、")
             if sub:
                 parts.append(sub)
-    return parts
+    merged: list[str] = []
+    for p in parts:
+        if merged and _BARE_CMP_RE.fullmatch(p) and _ENDS_CMP_RE.search(merged[-1]):
+            merged[-1] = merged[-1] + " " + p       # 空格:英文「above 10」「below 20」不粘在一起
+        else:
+            merged.append(p)
+    return merged
 
 
 # ═══════════════════════════════════════════════════════════════

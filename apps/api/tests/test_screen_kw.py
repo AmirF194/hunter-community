@@ -321,6 +321,28 @@ SHOULD_REJECT += [
 SHOULD_MATCH += [
     ("市盈率10%到20%", "price_earnings_ttm >= 10 and price_earnings_ttm <= 20"),
     ("市盈率从10到20", "price_earnings_ttm >= 10 and price_earnings_ttm <= 20"),
+    # ── 2026-09-14 · 用「且」等连接的双边比较(后半句省略了主语)· 按连接词类别 ─────────
+    ("收盘价不低于10且不高于20", "close >= 10 and close <= 20"),
+    ("股价大于10并且小于20", "close > 10 and close < 20"),
+    ("市盈率大于10而且小于20", "price_earnings_ttm > 10 and price_earnings_ttm < 20"),
+    ("收盘价大于10，小于20", "close > 10 and close < 20"),
+    ("股价小于20且大于10", "close < 20 and close > 10"),
+    ("成交量大于100万且小于200万", "volume > 1000000 and volume < 2000000"),
+    ("收盘价大于10元且小于20元", "close > 10 and close < 20"),
+    ("price above 10 and below 20", "close > 10 and close < 20"),
+    ("收盘价大于10且小于20，市盈率低于15", "close > 10 and close < 20 AND price_earnings_ttm < 15"),
+    ("市盈率低于15，收盘价大于10且小于20", "price_earnings_ttm < 15 AND close > 10 and close < 20"),
+    ("收盘价大于10且市盈率小于20", "close > 10 AND price_earnings_ttm < 20"),   # 后半句有字段:照旧两个条件
+]
+SHOULD_REJECT += [
+    "收盘价大于20且小于10",             # 空区间
+    "收盘价大于10且大于20",             # 同向
+    "成交量大于10且小于20万",           # 单位不一致
+    "收盘价大于10且小于",               # 后半句没有数字
+    "收盘价大于50日均线且小于20",       # 前半句是两字段比较,「小于20」不知道比谁
+    "RS线连涨超过50天且少于100",        # 天数类不拼
+    "收盘价大于10且小于20且大于15",     # 三个比较不是区间
+    "price above 10 billion and below 20",   # 英文整词单位在区间里不猜
 ]
 
 
