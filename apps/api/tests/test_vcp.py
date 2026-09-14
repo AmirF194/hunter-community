@@ -231,7 +231,21 @@ check("窗口 · rs_history 读库用的列表与 vcp.WINDOW_FIELDS 一致", tup
 sel = rh._SELECT_STATS
 check("读库 · ⭐SELECT 只有一个、列数对得上 load_stats 的下标(相邻字面量丢了 + 会把整段 SQL 当分隔符)",
       sel.startswith("SELECT code, as_of") and sel.count("SELECT") == 1 and sel.count("FROM") == 1
-      and len(sel.split(" FROM ")[0].replace("SELECT ", "").split(",")) == 19 + len(rh._WIN), sel[:120])
+      and len(sel.split(" FROM ")[0].replace("SELECT ", "").split(",")) == 19 + len(rh._WIN) + len(rh._ACC), sel[:120])
+
+# 资金逆势买入两个字段(2026-09-14):vcp.FIELDS 里挂着、rs_history 写库读库、accum.py 算,三处名字必须一致
+_spec3 = importlib.util.spec_from_file_location(
+    "accum", os.path.join(os.path.dirname(_HERE), "app", "services", "quant", "accum.py"))
+accum = importlib.util.module_from_spec(_spec3)
+_spec3.loader.exec_module(accum)
+check("资金逆势买入 · vcp.ACC_FIELDS = rs_history._ACC = accum.FIELDS", tuple(vcp.ACC_FIELDS) == tuple(rh._ACC) == tuple(accum.FIELDS),
+      f"{vcp.ACC_FIELDS} {rh._ACC} {accum.FIELDS}")
+check("资金逆势买入 · 两个字段在 vcp.FIELDS 里(白名单 / 补字段走同一条路)", all(f in vcp.FIELDS for f in accum.FIELDS))
+check("资金逆势买入 · SELECT 里带上这两列,放在窗口列之后", sel.index("acc_dn_days_42d") > sel.index("low_63d"))
+rows = [{"_code": "AAA"}]
+vcp.inject(rows, {"AAA": {"as_of": date(2026, 3, 2), "acc_dn_days_42d": 2, "acc_dn_excess_42d": 0.4}}, stale=False,
+           used=["acc_dn_days_42d"])
+check("资金逆势买入 · 补字段按落库统计给值", rows[0]["acc_dn_days_42d"] == 2 and rows[0]["acc_dn_excess_42d"] == 0.4, str(rows[0]))
 
 total = passed + len(fails)
 print(f"VCP 用例 {total} 条")

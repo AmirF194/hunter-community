@@ -85,6 +85,9 @@ def need_bars(field: str) -> int | None:
         return _NEED[field]
     from app.services.quant import vcp
     if field in vcp.FIELDS or field == vcp.DISPLAY:
+        if field in vcp.ACC_FIELDS:
+            from app.services.quant import accum
+            return accum.NEED
         m = re.match(r"^(?:high|low)_([0-9]+)d$", field)
         if m:
             return int(m.group(1))
@@ -398,6 +401,9 @@ def build_rows(market_key: str, as_of: date, fields: list[str],
     uses_vcp_core = any(f.startswith("vcp_") for f in vcp_used)
     uses_pv = any(f in ("up_days_20d", "down_days_20d", "ud_vol_ratio_20d") for f in vcp_used)
     uses_win = any(f in vcp.WINDOW_FIELDS for f in vcp_used)
+    uses_acc = any(f in vcp.ACC_FIELDS for f in vcp_used)
+    if uses_acc:
+        from app.services.quant import accum
 
     snap = {r["_code"]: r for r in snap_rows}
     rows: list[dict] = []
@@ -433,6 +439,8 @@ def build_rows(market_key: str, as_of: date, fields: list[str],
             row["ud_vol_ratio_20d"] = pv["ud_vol_ratio"]
         if uses_win:
             row.update(vcp.window_stats(bars))
+        if uses_acc:
+            row.update(accum.fields(bars, bench_cut))      # 要基准:截到回溯日的标普收盘
         if uses_rating:
             in_pool = bool(s) and screen_rs.in_population(s, market_key)
             if in_pool:

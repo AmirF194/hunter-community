@@ -111,7 +111,7 @@ def good(prev=None, gf=None, **kw):
          "ema8": 101.0, "ema21": 99.0, "sma50": 95.0, "screen": dict(SCREEN_BROKEN),
          "ema10": 101.5, "ema20": 99.5, "atr20": 3.0, "gf": dict(GF_S, **(gf or {}))}
     pv = {"close": 101.8, "pivot": 102.0, "av10": 800_000.0, "av50": 1_000_000.0, "sma50": 95.0,
-          "screen": dict(SCREEN_OK)}
+          "screen": dict(SCREEN_OK), "acc": ACC_B}
     prev = dict(prev or {})
     if "screen" in prev:
         sc = prev.pop("screen")
@@ -152,6 +152,18 @@ g0 = good()
 g0["prev"] = None
 check("前一天字段整个缺 → 不买", not ab.entry_ok(g0, P, 90, UP))
 check("接口 · 规则文案写明看前一天收盘", "前一天收盘" in ab.RULES[3]["condition"] and "当天" in ab.RULES[5]["condition"])
+# ── v13 P-22 资金逆势买入(前一天收盘)────────────────────────
+chk = {c["rule"]: c for c in ab.entry_checks(good(), P, 90, UP)}
+check("P-22 · 买入条件里有 P-22,排在突破触发之前", list(chk)[-2:] == ["P-22", "P-06"] and chk["P-22"]["ok"], str(list(chk)))
+check("P-22 · 昨收时没有资金逆势买入痕迹 → 不买并写明", not ab.entry_ok(good(prev={"acc": ACC_D}), P, 90, UP)
+      and "没有资金逆势买入痕迹" in ab.accum_check({"acc": ACC_D})["text"])
+check("P-22 · 昨收时扣 beta 平均跑输 → 不买", not ab.entry_ok(good(prev={"acc": acc(3, -0.2)}), P, 90, UP))
+check("P-22 · 算不出(日线 / 基准不足)→ 不买", not ab.entry_ok(good(prev={"acc": None}), P, 90, UP))
+check("P-22 · 1 天、平均超额 0 → 买", ab.entry_ok(good(prev={"acc": acc(1, 0.0)}), P, 90, UP))
+check("P-22 · 开关 acc_filter 关掉 → 回到 v12 买卖", ab.entry_ok(good(prev={"acc": ACC_D}), dict(P, acc_filter=False), 90, UP))
+check("P-22 · 预筛池脚本带上两个字段", "acc_dn_days_42d >= 1" in ab.POOL_SCRIPT and "acc_dn_excess_42d >= 0" in ab.POOL_SCRIPT
+      and "c_acc;" in ab.POOL_SCRIPT)
+check("P-22 · 规则表里有 P-22", any(r["id"] == "P-22" for r in ab.RULES))
 
 r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
                ind_of=lambda c: UP if c == ab.MARKET_KEY else good())
@@ -277,6 +289,16 @@ check("accum_stats · 放量的 2 天算、没放量的 1 天不算 → an = 2",
 check("accum_stats · beta ≈ 1、下跌日 21 天、平均超额为正 → B", as_ and abs(as_["beta"] - 1) < 0.1 and as_["dn"] == 21
       and as_["exc"] > 0 and ab.acc_tier(as_)[0] == "B", str(as_))
 check("accum_stats · 没有基准 / 日线不足 → None", ab.accum_stats(abars, None) is None and ab.accum_stats(abars[-100:], bench_d) is None)
+fa_ = ab.accum.fields(abars, bench_d)
+check("accum.fields · 筛选器字段与引擎同一份算法(天数 2、超额与引擎一致)",
+      fa_["acc_dn_days_42d"] == 2 and abs(fa_["acc_dn_excess_42d"] - round(as_["exc"], 3)) < 1e-9, str(fa_))
+check("accum.fields · 算不出 → 两个都是 None(不是 0)", ab.accum.fields(abars[-100:], bench_d) == {"acc_dn_days_42d": None, "acc_dn_excess_42d": None})
+bench_gap = dict(bench_d)
+bench_gap.pop(dts[n_ - 5])
+check("accum.stats · 窗口里基准缺一天 → None(不拿错位的日子算)", ab.accum.stats(abars, bench_gap) is None)
+vol_gap = list(abars)
+vol_gap[n_ - 21] = (vol_gap[n_ - 21][0], vol_gap[n_ - 21][1], vol_gap[n_ - 21][2], vol_gap[n_ - 21][3], None)
+check("accum.stats · 放量那天成交量缺 → 那天不计入(an 2 → 1),超额照算", ab.accum.stats(vol_gap, bench_d)["an"] == 1)
 ls_ = ab.lead_stats(abars, bench_d)
 check("lead_stats · 算得出四项,说明里有四项", ls_ is not None and all(k in ab.lead_text(ls_) for k in ("5 日线", "斜率", "早见底", "站上 20 日线")),
       str(ls_))

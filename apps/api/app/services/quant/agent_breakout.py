@@ -197,11 +197,22 @@ S+A 对 C+D 中位差 +2.7、先跌 5% 比例差 -12 个百分点(原口径中�
 **现口径(`acc_tier`)**:an ≥ 1 且 exc ≥ 0 → B;否则 D(不设 S / A,数据不支持)。
 均线领先大盘四项由 `lead_stats` 算出,**只写进第 3 项说明,不参与定档**,方便对照交易清单。领先同板块引擎里拿不到板块指数,没写。
 第 3 项满分从 100 变 60,汇总档普遍下移。评分只记录、不影响买卖。
+
+## v13(2026-09-14 用户:「把资金逆势买入加进即将突破筛选器,重跑一年」)—— 这次**改变买卖**
+
+依据:全市场选股层面(38 个抽样日 × 过 P-02 的 59,234 条),RS ≥ 70 里满足的 20 天超额中位 +0.9、不满足 -0.0,上下半年都为正;
+均线领先大盘几条在同一层面无效或略反,所以只加资金逆势买入。
+- 算法挪到 `accum.py`(本引擎、每晚落库、时间回溯共用一份),筛选器新字段 `acc_dn_days_42d` / `acc_dn_excess_42d`;
+- 预筛池脚本(POOL_SCRIPT)加 `acc_dn_days_42d >= 1 and acc_dn_excess_42d >= 0`(按当天收盘圈池);
+- 引擎加 **P-22**:按**前一天收盘**核对同一条件(与 P-02 ~ P-05 同一口径,突破当天那根放量不算进去),算不出不买;
+  开关 `acc_filter`(关掉 = 回到 v12 买卖);
+- 用户保存的「即将突破」(user_screen_preset)同步加这条。
 """
 from __future__ import annotations
 
 import math
 
+from app.services.quant import accum
 from app.services.quant import agent_vcp as av
 from app.services.quant import agent_vcp3 as c3
 
@@ -225,6 +236,7 @@ PARAMS = {
     "size_by_grade": False,                                                            # v8:关 = 统一仓位(v5),评分只记录
     "corr_min": 1.0, "sup_look": 63, "rej_close_pos": 0.6, "key_vol": 2.0,             # v9:空间受限 2R → 1R;支撑结构口径
     "chase_block": 4.0, "block_d": False,                                              # v9:追高 > 4% 不买;D 级不再拦人
+    "acc_filter": True,                                                                # v13:P-22 前一天收盘要有资金逆势买入
     "partial_profit": 8.0, "partial_frac": 0.20,
     "exit_ema21_profit": 10.0, "exit_sma50_profit": 20.0,
     "unit_pct": 0.20, "initial_frac": 0.50, "add1_frac": 0.30, "add2_frac": 0.20, "max_holdings": 5,
@@ -236,10 +248,7 @@ CHASE_MAX = {"S": 1.0, "A": 2.0, "B": 3.0, "C": 4.0}   # v8 第 4 项:收盘高�
 VP_BIG = 1.2          # v10 第 2 项:放量 = 成交量 > 50 日均量 × 1.2
 VP_HOT_UDV = 1.7      # v10:近 63 天上涨日总量 ÷ 下跌日总量 > 1.7 → 过热降一档
 VP_HOT_AD = 8         # v10:近 63 天放量上涨 − 放量下跌 ≥ 8 → 过热降一档
-ACC_LOOK = 42         # v12 第 3 项:资金逆势买入看近 42 个交易日(约两个月)
-ACC_BETA_LOOK = 126   # v12:beta 用近 126 天日收益估
-ACC_EXC = 0.01        # v12:扣 beta 后多涨 > 1% 才算
-ACC_VOL = 1.2         # v12:成交量 > 50 日均量 × 1.2 才算
+ACC_LOOK = accum.LOOK   # v12 第 3 项 / v13 P-22:资金逆势买入口径全在 accum.py
 GRADE_RULE = "P-20"
 ENTRY_RULE = "P-06"
 ADD_RULE = "P-08"
@@ -247,7 +256,7 @@ WATCH_POOL_DAYS = 1                  # 突破是当天的事;筛选条件由引�
 
 POOL = "breakout"
 POOL_LIMIT = 800
-POOL_LABEL = "突破买入预筛池(收盘 > 20 · 30 日均量 > 20 万 · 均线多头 · 距 52 周高点 20% 以内 · RS ≥ 70)"
+POOL_LABEL = "突破买入预筛池(收盘 > 20 · 30 日均量 > 20 万 · 均线多头 · 距 52 周高点 20% 以内 · RS ≥ 70 · 近两个月有资金逆势买入)"
 POOL_SCRIPT = """# ===== 突破买入预筛池(小鹿 · 突破买入线)=====
 # 整理形态 / 枢轴 / 50 日均量 / 突破由引擎用日线精确算;这里只圈脚本里扫描源能算的那几条
 def c_price = close > 20;
@@ -255,8 +264,10 @@ def c_liq   = average_volume_30d_calc > 200000;
 def c_trend = close > SMA50 and SMA50 > SMA150 and SMA150 > SMA200;
 def c_near  = close > price_52_week_high * 0.80;
 def c_rs    = rs_rating >= 70;
+# v13:近 42 天大盘下跌时,扣 beta 后逆势放量超额上涨至少 1 天,且下跌日平均超额不为负(口径见 accum.py)
+def c_acc   = acc_dn_days_42d >= 1 and acc_dn_excess_42d >= 0;
 
-plot scan = c_price and c_liq and c_trend and c_near and c_rs;
+plot scan = c_price and c_liq and c_trend and c_near and c_rs and c_acc;
 """
 EXEC_NOTE = "纸上交易 · 日线收盘价成交(筛选看前一天收盘、突破看当天;没有开盘价,阳线条件未实现)"
 
@@ -280,6 +291,7 @@ RULES = [
     {"id": "P-17", "kind": "sell", "condition": "+20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)"},
     {"id": "P-18", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA10 卖出余仓一半(一次)"},
     {"id": "P-19", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA20 清仓"},
+    {"id": "P-22", "kind": "buy", "condition": "资金逆势买入(前一天收盘):近 42 天标普下跌日里,个股上涨、扣 beta 后多涨 > 1%、成交量 > 50 日均量 × 1.2 至少 1 天,且这些下跌日扣 beta 平均超额 ≥ 0;算不出不买"},
     {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 量价配合(近 21 天放量上涨 − 放量下跌 ≥4 S · 3 A · 2 B · 1 C · ≤0 D,3 个月过热降一档) · 抗跌 = 资金逆势买入(近 42 天标普下跌日,个股上涨、扣 beta 后多涨 >1%、放量 1.2 倍,有 ≥1 天且下跌日平均超额 ≥0 记 B,否则 D;均线领先大盘只记录) · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
     {"id": "P-21", "kind": "risk", "condition": "空间受限:走廊(上方 252 日强阻力 − 收盘)÷ R 不足 1R,达到买点也不进"},
 ]
@@ -410,6 +422,7 @@ def indicators(bars: list[tuple], p: dict = PARAMS, bench: dict | None = None) -
         prev = _core(bars[:-1])
         if prev is not None:
             prev.pop("prev", None)
+            prev["acc"] = accum.stats(bars[:-1], bench)        # v13 P-22 看前一天收盘
         ind["prev"] = prev
         ind["gf"] = None
         if ind.get("atr20") and trigger_check(ind, p)["ok"]:
@@ -537,38 +550,16 @@ def _bench_aligned(bars: list[tuple], bench: dict | None, n: int) -> list[float]
 
 
 def accum_stats(bars: list[tuple], bench: dict | None) -> dict | None:
-    """第 3 项 · 资金逆势买入(v12)→ {beta, an, exc, dn};日线 / 基准不够 → None。
-    beta:近 126 天日收益对标普回归。近 42 天标普下跌日里,个股上涨、扣 beta 后多涨 > 1%、量 > 50 日均量 × 1.2 记一天(an);
-    exc = 这些下跌日扣 beta 后的平均超额(%),下跌日不足 3 天 → None。"""
-    need = max(ACC_BETA_LOOK, ACC_LOOK + 50) + 1
-    r = _bench_aligned(bars, bench, need)
-    if r is None:
-        return None
-    s = [b[1] for b in bars[-need:]]
-    v = [b[4] for b in bars[-need:]]
-    sr = [s[k] / s[k - 1] - 1 for k in range(need - ACC_BETA_LOOK, need)]
-    br = [r[k] / r[k - 1] - 1 for k in range(need - ACC_BETA_LOOK, need)]
-    mb, ms = sum(br) / len(br), sum(sr) / len(sr)
-    var = sum((x - mb) ** 2 for x in br)
-    if not var:
-        return None
-    beta = sum((x - mb) * (y - ms) for x, y in zip(br, sr)) / var
-    an = dn = 0
-    exc = 0.0
-    for k in range(need - ACC_LOOK, need):
-        m = r[k] / r[k - 1] - 1
-        if m >= 0:
-            continue
-        st = s[k] / s[k - 1] - 1
-        dn += 1
-        res = st - beta * m
-        exc += res
-        vol50 = v[k - 50:k]
-        if v[k] is None or any(x is None for x in vol50):
-            continue
-        if res > ACC_EXC and st > 0 and v[k] > sum(vol50) / 50 * ACC_VOL:
-            an += 1
-    return {"beta": beta, "an": an, "exc": exc / dn * 100 if dn >= 3 else None, "dn": dn}
+    """第 3 项 / P-22 · 资金逆势买入 → {beta, an, exc, dn};日线 / 基准不够 → None。口径与筛选器同一份,见 accum.py。"""
+    return accum.stats(bars, bench)
+
+
+def accum_check(sp: dict | None, p: dict = PARAMS) -> dict:
+    """P-22(v13):按前一天收盘核对资金逆势买入 → {rule, ok, text}。算不出不买。"""
+    if not p.get("acc_filter", True):
+        return {"rule": "P-22", "ok": True, "text": "资金逆势买入这条已关(acc_filter)"}
+    t, txt = acc_tier((sp or {}).get("acc"))
+    return {"rule": "P-22", "ok": t == "B", "text": ("昨收时" + txt) if t else txt}
 
 
 def acc_tier(acc: dict | None) -> tuple[str | None, str]:
@@ -777,7 +768,7 @@ def entry_checks(ind: dict, p: dict = PARAMS, score=None, market: dict | None = 
     """→ [{rule, ok, text}] 按 P-01 ~ P-06:市场与突破看今天,P-02 ~ P-05 看前一天收盘。"""
     mk_ok = bool(market and market.get("ok"))
     return ([{"rule": "P-01", "ok": mk_ok, "text": market["text"] if market else "没有基准日线"}]
-            + screen_checks(ind.get("prev"), p, score) + [trigger_check(ind, p)])
+            + screen_checks(ind.get("prev"), p, score) + [accum_check(ind.get("prev"), p), trigger_check(ind, p)])
 
 
 def entry_ok(ind: dict, p: dict = PARAMS, score=None, market: dict | None = None) -> bool:
@@ -797,7 +788,7 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
     if held:
         it["gap"] = "已持仓 · 等加仓 / 出场信号"
     elif not fails:
-        it["gap"] = "六条全满足 —— 今日收盘触发买入"
+        it["gap"] = "买入条件全满足 —— 今日收盘触发买入"
     else:
         it["gap"] = f"{passed}/{len(checks)} 满足 · 还差:" + ";".join(f"{c['rule']} {c['text']}" for c in fails)
     if blocked_reason:

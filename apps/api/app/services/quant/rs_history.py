@@ -153,6 +153,9 @@ ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS high_21d           DOUBLE PREC
 ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS low_21d            DOUBLE PRECISION;
 ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS high_63d           DOUBLE PRECISION;
 ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS low_63d            DOUBLE PRECISION;
+-- 2026-09-14 资金逆势买入(口径见 accum.py)
+ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS acc_dn_days_42d    INT;
+ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS acc_dn_excess_42d  DOUBLE PRECISION;
 """
 
 
@@ -676,10 +679,11 @@ def compute_market(market: str) -> dict:
         if st["as_of"] == bench_last:
             fresh += 1
         bars = adjust_bars(raw, series)
-        from app.services.quant import vcp     # 函数内 import:本文件的惯例,tests/ 能不带 app 包单独加载
+        from app.services.quant import vcp, accum     # 函数内 import:本文件的惯例,tests/ 能不带 app 包单独加载
         vs = vcp.vcp_stats(bars) or {}
         pv = vcp.pv_stats(bars)                # 只要收盘就能数涨跌天数,不跟着形态一起为空
         ws = vcp.window_stats(bars)
+        ac = accum.fields(bars, bench)
         rows.append((market, code, st["as_of"], st["n_days"], st["rs_line"],
                      st["rs_ma21"], st["up_days"], st["up_days_censored"],
                      rs_raw_exact([c for _, c in series]),
@@ -687,7 +691,7 @@ def compute_market(market: str) -> dict:
                      vs.get("last_depth"), vs.get("vol_declining"), vs.get("last_vol_ratio"),
                      vs.get("pivot"), vs.get("pivot_dist"), vs.get("base_days"),
                      vs.get("low_vol_ratio"), pv["up_days"], pv["down_days"], pv["ud_vol_ratio"])
-                    + tuple(ws[w] for w in _WIN))
+                    + tuple(ws[w] for w in _WIN) + tuple(ac[f] for f in _ACC))
         split["vcp"] += vs.get("contractions") is not None
 
     # 服务端游标逐只流式算 —— 美股一个市场就是 4000 只 × 320 天 ≈ 130 万行,
@@ -720,7 +724,7 @@ def compute_market(market: str) -> dict:
                        "vcp_first_depth, vcp_last_depth, vcp_vol_declining, vcp_last_vol_ratio, "
                        "vcp_pivot, vcp_pivot_dist, vcp_base_days, vcp_low_vol_ratio, up_days_20d, "
                        "down_days_20d, ud_vol_ratio_20d, "
-                       + ", ".join(_WIN) + ") VALUES %s", rows)
+                       + ", ".join(_WIN) + ", " + ", ".join(_ACC) + ") VALUES %s", rows)
     conn.commit()
     cur.close()
     conn.close()
@@ -740,6 +744,8 @@ _ddl_checked = False
 # compute_market 的写库语句和 load_stats 都拿不到它 —— 2026-09-11 在写库那行用了 vcp.WINDOW_FIELDS,
 # 部署后重算当场 NameError(每晚任务会整轮失败,RS 线天数跟着过期)
 _WIN = ("high_5d", "low_5d", "high_21d", "low_21d", "high_63d", "low_63d")
+# 与 vcp.ACC_FIELDS / accum.FIELDS 一致(test_vcp 盯着),同样写在模块级
+_ACC = ("acc_dn_days_42d", "acc_dn_excess_42d")
 # 读统计的 SELECT 放模块级,test_vcp 不连库也能检查它。
 # ⚠ 拼接一律写显式 `+`:相邻的字符串字面量会被 Python 直接连成一个 —— 2026-09-11 删一个字段时
 # 丢了 `+`,`"…, " ", ".join(_WIN)` 把整段 SQL 当成了 join 的分隔符,
@@ -748,7 +754,8 @@ _SELECT_STATS = ("SELECT code, as_of, up_days, up_days_censored, rs_raw_exact, r
                  + "vcp_contractions, vcp_depths, vcp_first_depth, vcp_last_depth, "
                  + "vcp_vol_declining, vcp_last_vol_ratio, vcp_pivot_dist, vcp_base_days, "
                  + "vcp_low_vol_ratio, up_days_20d, down_days_20d, ud_vol_ratio_20d, "
-                 + ", ".join(_WIN)
+                 + ", ".join(_WIN) + ", "
+                 + ", ".join(_ACC)
                  + " FROM rs_line_stat WHERE market=%s")
 
 
@@ -774,7 +781,8 @@ def load_stats(market: str) -> tuple[dict, dict]:
                       "vcp_last_vol_ratio": r[12], "vcp_pivot_dist": r[13], "vcp_base_days": r[14],
                       "vcp_low_vol_ratio": r[15], "up_days_20d": r[16], "down_days_20d": r[17],
                       "ud_vol_ratio_20d": r[18],
-                      **dict(zip(_WIN, r[19:19 + len(_WIN)]))}
+                      **dict(zip(_WIN, r[19:19 + len(_WIN)])),
+                      **dict(zip(_ACC, r[19 + len(_WIN):19 + len(_WIN) + len(_ACC)]))}
                for r in cur.fetchall()}
         cur.close()
         conn.close()

@@ -88,9 +88,12 @@ WINDOWS = (5, 21, 63)    # 精确交易日窗口的最高 / 最低
 
 # 能直接筛选的字段(数字)。vcp_depths 是展示用的文字(「24.1→11.3→5.0」),不能拿来比大小
 WINDOW_FIELDS = tuple(f"{hl}_{n}d" for n in WINDOWS for hl in ("high", "low"))
+# 资金逆势买入两个字段(accum.py 算,要基准日线)也挂在这组里:白名单、每晚落库、补字段、过期判断走同一条路。
+# 这里写死字符串,不 import accum —— 本模块要能被 tests/ 单独加载;test_vcp 有用例盯着两边一致
+ACC_FIELDS = ("acc_dn_days_42d", "acc_dn_excess_42d")
 FIELDS = ("vcp_contractions", "vcp_first_depth", "vcp_last_depth", "vcp_vol_declining",
           "vcp_last_vol_ratio", "vcp_pivot_dist", "vcp_base_days", "vcp_low_vol_ratio",
-          "up_days_20d", "down_days_20d", "ud_vol_ratio_20d") + WINDOW_FIELDS
+          "up_days_20d", "down_days_20d", "ud_vol_ratio_20d") + WINDOW_FIELDS + ACC_FIELDS
 DISPLAY = "vcp_depths"
 
 # 扫描结果里给用户看的口径说明 —— 字段是算出来的,用户得知道它是怎么数的才能判断信不信
