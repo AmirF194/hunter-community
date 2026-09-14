@@ -103,6 +103,57 @@ def reconstructable(field: str) -> bool:
     return field in STATIC_COLS or need_bars(field) is not None
 
 
+def volume_factor(market_key: str, code: str) -> int:
+    """rs_daily 里的成交量 → 「股」要乘几。
+
+    腾讯日线对 A 股给的是「手」,只有科创板(688 / 689)给「股」。2026-09-14 按代码前缀逐组核对
+    (自算 30 日均量 ÷ 扫描源 30 日均量):000/001/002/003/300/301/302/600/601/603/605 全部 ≈0.01,
+    688 共 607 只全部 ≈1.00。美股、港股与扫描源同单位(比值 1.00)。
+    不归一的话 A 股回溯里「成交量大于 100 万」差 100 倍;只用比值的字段(量比、VCP 量能)不受影响。
+    与仓内 CLAUDE.md「klines.volume 单位按板块不同」同一个坑。
+    """
+    if market_key == "a" and not str(code).startswith(("688", "689")):
+        return 100
+    return 1
+
+
+def inject_avg_volume(rows: list[dict], market_key: str, fields: list[str], perf: dict,
+                      today=None) -> dict:
+    """今天的扫描:扫描源没有的 N 日均量(Average(volume, 50) 这类)用自家日线算好,补进每一行。
+
+    窗口 = 最近一次每晚更新的 N 根日线,**不含今天**(扫描源的 10/30/60/90 天均量盘中含当天,
+    这里做不到,返回体里写明截至哪天)。当天没有收盘的票(停牌 / 不在日线池)给空;
+    日线超过 HIST_STALE_DAYS 天没更新整批给空 —— 不拿一周前的量当现在的均量。
+    → {as_of, stale, n(条件用到的均量全部有值的只数)}
+    """
+    import numpy as np
+    from datetime import date as _date
+    from app.services.quant import screen_dsl, screen_rs
+
+    ks = {f: screen_dsl.own_avgvol_days(f) for f in fields}
+    ks = {f: k for f, k in ks.items() if k}
+    store = get_store(market_key, perf)
+    last = store.get("last")
+    stale = last is None or ((today or _date.today()) - last).days > screen_rs.HIST_STALE_DAYS
+    vals: dict = {}
+    if not stale:
+        for code, (dates, arr) in store["codes"].items():
+            if not dates or dates[-1] != last:
+                continue
+            got = {}
+            for f, k in ks.items():
+                seg = arr[-k:, 3] if len(dates) >= k else None
+                got[f] = None if seg is None or np.isnan(seg).any() else float(seg.mean())
+            vals[code] = got
+    n = 0
+    for r in rows:
+        got = vals.get(r.get("_code")) or {}
+        for f in ks:
+            r[f] = got.get(f)
+        n += all(r[f] is not None for f in ks)
+    return {"as_of": last, "stale": stale, "n": n}
+
+
 # ═══════════════════════════════════════════════════════════════
 # 纯计算(tests/test_screen_asof.py 直接测)
 # ═══════════════════════════════════════════════════════════════
@@ -245,6 +296,9 @@ def _load_store(market_key: str, perf: dict) -> dict:
         arr = np.array([[b[1], b[2] if b[2] is not None else np.nan,
                          b[3] if b[3] is not None else np.nan,
                          b[4] if b[4] is not None else np.nan] for b in bars], dtype=float)
+        vf = volume_factor(market_key, code)       # A 股「手」→「股」,见 volume_factor
+        if vf != 1:
+            arr[:, 3] *= vf
         codes[code] = (dates, arr)
 
     for code, d, c, h, lo, v in scan:

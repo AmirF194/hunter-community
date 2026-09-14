@@ -318,6 +318,23 @@ _LOW_WINDOWS = [
 # Average(volume, N) 能映射的天数 —— 扫描源只有这四个
 _VOL_AVG_DAYS = (10, 30, 60, 90)
 
+# 扫描源只有上面四个均量周期;其余周期(2026-09-14 用户:「只有 50 天均量而已,自己实现」)
+# 由自家日线(rs_daily)算,字段名沿用 average_volume_{N}d_calc,时间回溯 / 命中日那条路本来就按任意 N 算。
+# 上限 250:A 股日线只保留约 365 根,再长就有一大批票算不出。
+# 这不是「拿近似周期顶替」—— 50 天就是真 50 天,只是数据来自自家日线、不含今天,返回体里写明。
+OWN_VOL_MAX = 250
+OWN_VOL_NOTE = "{n}日均量:扫描源没有这个周期,由自家日线计算(截至最近一次每晚更新的收盘,不含今天)"
+_OWN_VOL_RE = re.compile(r"^average_volume_(\d+)d_calc$")
+
+
+def own_avgvol_days(field: str) -> int | None:
+    """扫描源没有、要由自家日线算的 N 日均量字段 → N;其余返回 None。"""
+    m = _OWN_VOL_RE.match(field or "")
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n not in _VOL_AVG_DAYS and 2 <= n <= OWN_VOL_MAX else None
+
 
 def _int_arg(node, fn: str, idx: int) -> int:
     if not (isinstance(node, tuple) and node[0] == "num"):
@@ -369,11 +386,14 @@ class _FieldResolver:
         # 泛泛的「不认识」会让人以为整份脚本写法不被支持(2026-09-13 用户原话:「ThinkScript 风格为什么识别不出」)。
         m = re.match(r"^average_volume_(\d+)d_calc$", name, re.I)
         if m:
+            n = int(m.group(1))
+            if 2 <= n <= OWN_VOL_MAX:
+                self._note(OWN_VOL_NOTE.format(n=n))
+                return f"average_volume_{n}d_calc"
             raise ScreenError(
-                f"扫描源没有 {name}(没有 {m.group(1)} 天均量)—— 只提供 "
-                f"{'/'.join(map(str, _VOL_AVG_DAYS))} 天:"
-                + " / ".join(f"average_volume_{n}d_calc" for n in _VOL_AVG_DAYS)
-                + f"。请改成其中之一(不拿相近周期冒充 {m.group(1)} 天:那是在编数字)")
+                f"算不了 {name}({n} 天均量)—— 扫描源提供 "
+                f"{'/'.join(map(str, _VOL_AVG_DAYS))} 天,其余周期由自家日线计算,最长 {OWN_VOL_MAX} 天。"
+                f"(不拿相近周期冒充 {n} 天:那是在编数字)")
         raise ScreenError(
             f"不认识 {name!r}。它既不是 close/open/high/low/volume,"
             f"也不是扫描源的字段名。"
@@ -390,11 +410,12 @@ class _FieldResolver:
             n = _int_arg(args[1], fn, 2)
             if src == "volume":
                 if n not in _VOL_AVG_DAYS:
-                    raise ScreenError(
-                        f"{fn}(volume, {n}) 映射不了 —— 扫描源只提供 "
-                        f"{'/'.join(map(str, _VOL_AVG_DAYS))} 天的均量字段。"
-                        f"请把周期改成这四个之一。"
-                        f"(不拿 90 天冒充 {n} 天:那是在编数字)")
+                    if not 2 <= n <= OWN_VOL_MAX:
+                        raise ScreenError(
+                            f"{fn}(volume, {n}) 算不了 —— 扫描源提供 "
+                            f"{'/'.join(map(str, _VOL_AVG_DAYS))} 天均量,其余周期由自家日线计算,"
+                            f"最长 {OWN_VOL_MAX} 天。(不拿相近周期冒充 {n} 天:那是在编数字)")
+                    self._note(OWN_VOL_NOTE.format(n=n))
                 return f"average_volume_{n}d_calc"
             if src != "close":
                 raise ScreenError(
@@ -706,6 +727,9 @@ def missing_reason(field: str) -> str:
         return f"上市不足 {m.group(1)} 个交易日,均线算不出来"
     m = re.match(r"^average_volume_(\d+)d_calc$", field)
     if m:
+        if own_avgvol_days(field):
+            return (f"上市不足 {m.group(1)} 个交易日、不在自家日线覆盖范围(美股剔 OTC 与微盘)、"
+                    f"当天停牌,或日线已过期")
         return f"上市不足 {m.group(1)} 天"
     if field in ("price_52_week_high", "price_52_week_low"):
         return "上市不足一年"

@@ -439,10 +439,19 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
     if uses_vcp and vcp.DISPLAY not in want:
         want.append(vcp.DISPLAY)      # 结果表里顺带显示「25.7→13.0→6.0」,一眼看出每次多深
     ours = set(screen_rs.RS_FIELDS) | set(vcp.FIELDS) | {vcp.DISPLAY}
+    # 扫描源没有的 N 日均量(Average(volume, 50))由自家日线算好补进来,不发给扫描源(发了整批报错)
+    own_vol = [f for f in want if screen_dsl.own_avgvol_days(f) and not has_field(f)]
+    ours |= set(own_vol)
     req_cols = [f for f in want if f not in ours]
     if uses_rs:
         for col in screen_rs.RS_SOURCE_COLS:
             if col not in req_cols:
+                req_cols.append(col)
+    if own_vol and as_of is None:
+        # 自家日线第一次载入时要用 Perf.* 做拆股修正的锚点(和时间回溯同一口径)
+        from app.services.quant import rs_history as _rh
+        for col in _rh._PERF_COLS:
+            if has_field(col) and col not in req_cols:
                 req_cols.append(col)
 
     t0 = time.time()
@@ -487,6 +496,12 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
         fresh_n = sum(1 for v in (hist or {}).values() if v["as_of"] == v_as_of)
         vcp_stat = {"as_of": v_as_of, "stale": v_stale, "fresh": fresh_n,
                     "n": vcp.inject(rows, hist, v_stale, vcp_used)}
+
+    vol_stat = None
+    if own_vol and as_of is None:
+        from app.services.quant import screen_asof
+        vol_stat = screen_asof.inject_avg_volume(rows, md.key, own_vol, {r["_code"]: r for r in rows})
+        fetch_ms = (time.time() - t0) * 1000       # 日线冷启动约 10 秒,算进取数耗时,别让它藏在求值里
 
     t1 = time.time()
     hits, skipped, missing = screen_dsl.evaluate_detail(c, rows, cache)
@@ -571,6 +586,19 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
                 msg += (f";其中 {rs_stat['young']} 只上市不足 250 个交易日的次新股"
                         f"没有评级(没有真正的 12 个月涨幅,和别人不可比)")
             warnings.append(msg + "。")
+    if vol_stat is not None:
+        names = "、".join(screen_dsl.field_label_cn(f) or f for f in own_vol)
+        va = vol_stat["as_of"]
+        if va is None:
+            warnings.append(f"{md.label}的全市场日线还没建好,{names}这次全部为空(算不出,不是不满足)。"
+                            f"日线由每晚的定时任务拉取。")
+        elif vol_stat["stale"]:
+            warnings.append(f"{md.label}的日线停在 {va},已超过 {screen_rs.HIST_STALE_DAYS} 天没更新"
+                            f"(每晚的定时任务可能坏了)—— 不拿过期的量当现在的均量,{names}这次全部为空。")
+        else:
+            warnings.append(f"{names}扫描源没有,由自家日线计算:截至 {va} 收盘、不含今天;"
+                            f"{vol_stat['n']} 只算得出,其余不在日线池里(美股剔 OTC 与微盘)、"
+                            f"上市不足对应天数或当天停牌,计入「算不出」。")
     if vcp_stat is not None:
         a = vcp_stat["as_of"]
         if a is None:

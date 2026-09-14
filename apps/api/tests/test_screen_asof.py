@@ -116,6 +116,47 @@ r = sa._rsi(xs, 14)
 check("RSI(14) 与 StockCharts 教科书例子一致(最后一根 57.97)", r is not None and 57.5 < r < 58.5, str(r))
 
 total = passed + len(fails)
+# ── 2026-09-14 · 自家日线算 N 日均量 / A 股成交量单位 ─────────────────────
+import numpy as np                                             # noqa: E402
+from app.services.quant import screen_dsl                      # noqa: E402
+
+check("⭐A 股非科创板成交量 ×100(腾讯给的是「手」)",
+      sa.volume_factor("a", "600519") == 100 and sa.volume_factor("a", "000001") == 100
+      and sa.volume_factor("a", "300750") == 100)
+check("科创板 / 美股 / 港股不换算",
+      sa.volume_factor("a", "688981") == 1 and sa.volume_factor("us", "AAPL") == 1 and sa.volume_factor("hk", "00700") == 1)
+check("扫描源自带的周期不自己算、2~250 天自己算、超出上限不算",
+      screen_dsl.own_avgvol_days("average_volume_30d_calc") is None
+      and screen_dsl.own_avgvol_days("average_volume_50d_calc") == 50
+      and screen_dsl.own_avgvol_days("average_volume_300d_calc") is None
+      and screen_dsl.own_avgvol_days("volume") is None)
+check("回溯:50 日均量要 50 根", sa.need_bars("average_volume_50d_calc") == 50)
+
+_d0 = date(2026, 9, 11)
+_ds = [_d0 - timedelta(days=59 - i) for i in range(60)]
+_arr = np.array([[10.0, 11.0, 9.0, float(i + 1)] for i in range(60)])
+_gap = _arr.copy()
+_gap[-3, 3] = np.nan
+_store = {"codes": {"AAA": (_ds, _arr), "OLD": (_ds[:-1], _arr[:-1]), "SHORT": (_ds[-30:], _arr[-30:]),
+                    "GAP": (_ds, _gap)}, "last": _d0, "bench": {}}
+_orig_get = sa.get_store
+sa.get_store = lambda m, p: _store
+try:
+    _rows = [{"_code": "AAA"}, {"_code": "OLD"}, {"_code": "SHORT"}, {"_code": "GAP"}, {"_code": "NONE"}]
+    _st = sa.inject_avg_volume(_rows, "us", ["average_volume_50d_calc", "close"], {}, today=date(2026, 9, 14))
+    check("⭐50 日均量 = 最近 50 根量的平均(11~60 → 35.5)", _rows[0]["average_volume_50d_calc"] == 35.5,
+          str(_rows[0]))
+    check("⭐当天没收盘 / 不足 50 根 / 窗口里缺量 / 不在日线池 → 空,不拿短窗口冒充",
+          all(r["average_volume_50d_calc"] is None for r in _rows[1:]))
+    check("只补自家算的字段,不碰 close", "close" not in _rows[0])
+    check("算得出的只数与截至日", _st["n"] == 1 and _st["as_of"] == _d0 and not _st["stale"])
+    _rows2 = [{"_code": "AAA"}]
+    _st2 = sa.inject_avg_volume(_rows2, "us", ["average_volume_50d_calc"], {}, today=date(2026, 9, 25))
+    check("⭐日线超过 6 天没更新 → 整批为空", _st2["stale"] and _rows2[0]["average_volume_50d_calc"] is None)
+finally:
+    sa.get_store = _orig_get
+total = passed + len(fails)
+
 print(f"时间回溯用例 {total} 条")
 if fails:
     print(f"FAIL {len(fails)} 条:")

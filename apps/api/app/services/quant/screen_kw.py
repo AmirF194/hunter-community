@@ -242,8 +242,9 @@ class _Vocab:
 
         for m in _AVGVOL_RE.finditer(text):
             n = int(m.group(1))
-            err = "" if n in (10, 30, 60, 90) else \
-                f"「{m.group(0)}」映射不了 —— 扫描源只有 10/30/60/90 天均量"
+            # 10/30/60/90 天来自扫描源,其余 2~250 天由自家日线算(screen_dsl.OWN_VOL_MAX,2026-09-14)
+            err = "" if 2 <= n <= 250 else \
+                f"「{m.group(0)}」算不了 —— 扫描源有 10/30/60/90 天均量,其余周期由自家日线计算,最长 250 天"
             out.append((m.start(), -len(m.group(0)),
                         f"average_volume_{n}d_calc", m.group(0), err))
         for m in _EMA_RE.finditer(text):
@@ -382,11 +383,26 @@ def _unit(fld: str) -> str | None:
     return None
 
 
-def _check_comparable(a: tuple, b: tuple) -> None:
-    """字段对字段:单位不同 / 单位未知 → 拒绝,并尽量给出"你是不是想写…"。"""
+def _check_comparable(a: tuple, b: tuple, notes: list | None = None) -> tuple[tuple, tuple]:
+    """字段对字段:单位不同 / 单位未知 → 拒绝,并尽量给出"你是不是想写…"。→ (a, b),可能改写过一边。
+
+    唯一的改写:「成交量大于50日均线」。成交量不可能和价格均线比,这里的「均线」只能是均量 ——
+    2026-09-11 以前产出 volume > SMA50(废条件),之后改成拒绝并问「是不是想写 50日均量」;
+    2026-09-14 用户确认按 50 日均量理解、要本地直接识别(扫描源没有的周期由自家日线算)。
+    只认「N日均线 / N日线」这种写法对应的 SMA,EMA / MA50 / 布林这些不猜;改写写进 notes。
+    """
     ua, ub = _unit(a[2]), _unit(b[2])
     if ua and ua == ub:
-        return
+        return a, b
+    if {ua, ub} == {"成交量", "价格"}:
+        ma = a if ua == "价格" else b
+        mm = re.match(r"^SMA(\d+)$", ma[2])
+        if mm and 2 <= int(mm.group(1)) <= 250 and re.search(r"均线|日线", ma[3] or ""):
+            n = mm.group(1)
+            fixed = (ma[0], ma[1], f"average_volume_{n}d_calc", ma[3])
+            if notes is not None:
+                notes.append(f"「{ma[3]}」按「{n}日均量」理解 —— 成交量不能和价格均线比")
+            return (fixed, b) if ma is a else (a, fixed)
     hint = ""
     # 最常见的手误:把「均量」写成「均线」
     if {ua, ub} == {"成交量", "价格"}:
@@ -544,9 +560,9 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
     # 「A比B高/低/大/小」—— 中文最常见的比较句式,比较符在句尾
     m = re.search(r"比.+?(高|低|大|小|多|少)\s*$", t)
     if m and len(fs) >= 2:
-        _check_comparable(fs[0], fs[1])
+        f0, f1 = _check_comparable(fs[0], fs[1], notes)
         op = ">" if m.group(1) in ("高", "大", "多") else "<"
-        return f"{fs[0][2]} {op} {fs[1][2]}"
+        return f"{f0[2]} {op} {f1[2]}"
 
     # ── 上穿 / 下穿 / 金叉 / 死叉 / 站上 / 跌破 ────────────────
     #
@@ -566,15 +582,15 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
         word = (up or dn).group(0)
         op = ">" if up else "<"
         if len(fs) >= 2:
-            _check_comparable(fs[0], fs[1])
+            f0, f1 = _check_comparable(fs[0], fs[1], notes)
             # 「股价突破52周新高」同样要 >=(见下方单字段分支的说明)
-            if up and fs[1][2] in ("price_52_week_high", "all_time_high"):
+            if up and f1[2] in ("price_52_week_high", "all_time_high"):
                 op = ">="
             if word in ("上穿", "下穿", "金叉", "死叉"):
-                notes.append(f"「{t}」按「{fs[0][3]} 当前在 {fs[1][3]} "
+                notes.append(f"「{t}」按「{f0[3]} 当前在 {f1[3]} "
                              f"{'之上' if up else '之下'}」处理 —— "
                              f"快照数据判断不了是不是**刚刚**发生交叉")
-            return f"{fs[0][2]} {op} {fs[1][2]}"
+            return f"{f0[2]} {op} {f1[2]}"
         if len(fs) == 1 and _unit(fs[0][2]) == "价格" \
                 and fs[0][2] not in ("close", "open", "high", "low"):
             tgt = fs[0][2]
@@ -592,8 +608,8 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
     left = fs[0]
     if len(fs) >= 2:
         # 右边也是字段(「20日均线大于50日均线」)—— 必须同单位
-        _check_comparable(left, fs[1])
-        return f"{left[2]} {op[0]} {fs[1][2]}"
+        left, right = _check_comparable(left, fs[1], notes)
+        return f"{left[2]} {op[0]} {right[2]}"
 
     tail = t[left[1]:]
     mnum = _NUM_RE.search(tail)

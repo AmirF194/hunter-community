@@ -3,7 +3,7 @@
 
     cd apps/api && PYTHONPATH=. python tests/test_screen_fix.py
 
-2026-09-13 用户粘了一份 ThinkScript 风格脚本,17 句只有 average_volume_50d_calc 取不到,
+2026-09-13 用户粘了一份 ThinkScript 风格脚本,17 句只有 average_volume_300d_calc 取不到,
 界面只给报错、不给 AI 按钮。修法见 screen_nl.py「脚本修错」节。这里盯这几件事:
   1. 改了哪几句由程序比对得出,改一个数字也必须被列出来(不采信模型自述)
   2. 模型只给替换指令;推理里举的例子(原文不在脚本里)不能被采用
@@ -65,22 +65,25 @@ def c_price = close > 20;   # 价格 > $20
 def c_rs = rs_rating >= 80;
 def rng = (high_63d - low_63d) / high_63d;
 def c_depth = rng >= 0.12 and rng <= 0.35;
-def c_vdry = average_volume_10d_calc < average_volume_50d_calc * 0.9;  # 缩量
+def c_vdry = average_volume_10d_calc < average_volume_300d_calc * 0.9;  # 缩量
 plot scan = c_price and c_rs
     and c_depth and c_vdry;
 """
-GOOD = ORIG.replace("average_volume_50d_calc", "average_volume_60d_calc")
-FIX_LINE = "<<average_volume_50d_calc>> => <<average_volume_60d_calc>>"
+# 2026-09-14 起 50 天均量由自家日线算、能编译了;「算不了的周期」换成超出上限(250 天)的 300 天
+GOOD = ORIG.replace("average_volume_300d_calc", "average_volume_60d_calc")
+FIX_LINE = "<<average_volume_300d_calc>> => <<average_volume_60d_calc>>"
 
 # ── 1. 报错信息 ──────────────────────────────────────────────
 try:
     compile_(ORIG)
-    check("50 天均量应当编译失败", False)
+    check("300 天均量应当编译失败", False)
     ERR = ""
 except dsl.ScreenError as e:
     ERR = str(e)
-    check("报错点名 50 天", "50" in ERR and "average_volume_50d_calc" in ERR)
-    check("报错列出可用周期", "10/30/60/90" in ERR and "average_volume_60d_calc" in ERR)
+    check("报错点名 300 天", "300" in ERR and "average_volume_300d_calc" in ERR)
+    check("报错说清可用周期与自家日线上限", "10/30/60/90" in ERR and "250" in ERR)
+check("⭐50 天均量能编译(自家日线算)并写进说明",
+      "自家日线" in " ".join(compile_(ORIG.replace("average_volume_300d_calc", "average_volume_50d_calc")).notes))
 check("改成 60 天能编译", bool(compile_(GOOD)))
 
 # ── 2. looks_like_script(脚本走修错,不走大白话翻译)──────────
@@ -90,7 +93,7 @@ check("大白话不判为脚本", not nl.looks_like_script("成交量大于100�
 # ── 3. script_changes ─────────────────────────────────────────
 ch = nl.script_changes(ORIG, GOOD)
 check("只改一句 → 列出一句", len(ch) == 1 and ch[0]["name"] == "def c_vdry")
-check("对照里有前后原文", "50d" in ch[0]["before"] and "60d" in ch[0]["after"])
+check("对照里有前后原文", "300d" in ch[0]["before"] and "60d" in ch[0]["after"])
 check("注释 / 换行 / 空白差异不算改动",
       nl.script_changes(ORIG, "def c_price = close  >  20;\n" + ORIG.split("\n", 2)[2]) == [])
 sneaky = GOOD.replace("0.12", "0.10")
@@ -107,7 +110,7 @@ check("新增的句子列成 before=None",
 noisy = ("Okay, the user wants ... for example <<SMA37>> => <<SMA40>> is how it works.\n"
          "Wait, is SMA50 valid?\n" + FIX_LINE + "\n")
 check("推理里举的例子(原文不在脚本里)不采用",
-      nl.parse_replacements(noisy, ORIG) == [("average_volume_50d_calc", "average_volume_60d_calc")])
+      nl.parse_replacements(noisy, ORIG) == [("average_volume_300d_calc", "average_volume_60d_calc")])
 check("只在注释里出现的原文不采用",
       nl.parse_replacements("<<$20>> => <<$30>>", ORIG) == [])
 check("同一原文多次给出取最后一次",
@@ -166,10 +169,10 @@ except dsl.ScreenError as e:
 check("两处错时先报前面那处", "SMA37" in ERR2)
 fc, r = run(["<<SMA37>> => <<SMA40>>", FIX_LINE], script=ORIG2, err=ERR2)
 check("修一处露出下一处 → 在修过的基础上继续",
-      r["attempts"] == 2 and len(r["changes"]) == 2 and "average_volume_50d_calc" not in r["script"]
+      r["attempts"] == 2 and len(r["changes"]) == 2 and "average_volume_300d_calc" not in r["script"]
       and "SMA37" not in r["script"])
 check("第二轮喂给模型的是已修过的脚本与新报错",
-      "SMA40" in fc.calls[1]["messages"][1]["content"] and "50" in fc.calls[1]["messages"][1]["content"])
+      "SMA40" in fc.calls[1]["messages"][1]["content"] and "300" in fc.calls[1]["messages"][1]["content"])
 # 替换没解决当前报错 → 不前进(不把没用的改动攒下来)
 fc2 = FakeClient(["<<rs_rating>> => <<rs_rating * 1>>", FIX_LINE])
 with_client(fc2)
