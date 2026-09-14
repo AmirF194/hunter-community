@@ -414,6 +414,61 @@ def _check_comparable(a: tuple, b: tuple, notes: list | None = None) -> tuple[tu
         f"({ua or '单位未知'} 对 {ub or '单位未知'})。{hint}")
 
 
+# ── 区间与双边比较(2026-09-14 · 第一轮评审 GN-006:「股价在10到20之间」「收盘价大于10小于20」本地要能处理)──
+# 原来这两类一律拒绝:通用分支只认一个比较符,不拦就会丢掉上限(「市盈率大于10小于20」曾产出 pe > 10)。
+# 现在专门认,但只认**骨架完全对得上**的:一个字段在前、后面恰好两个数、数字之间只有连接词。
+# 骨架对不上一律返回 None,交给后面的拒绝逻辑 —— 宁可认不出,也不能认一半。
+_OP_EXACT = {w: op for w, op in _OP_WORDS}
+_RANGE_SKEL = re.compile(r"(?:在|从|介于|位于|处于)?#(?:到|至|和|与|~|-|—)#(?:之间|区间内|区间|范围内|范围)?")
+
+
+def _range_expr(t: str, fs: list) -> str | None:
+    """一个字段 + 一个区间 → 两个比较用 and 连成一个条件;认不全返回 None。
+
+    · 「在10到20之间」按闭区间(>= 与 <=),两个数颠倒写也按大小排好
+    · 「大于10小于20」保留原比较符;方向必须一大一小、且真的是个非空区间,否则拒绝(「大于20小于10」是写错了,不替用户猜)
+    · 两个数的单位必须一致:「10到20万」可能是 10万~20万,也可能是 10~200000,不猜
+    · 数字必须都在字段**后面**:「10到20之间的股价」不认;标识符里的数字(MA20)不算阈值
+    · 天数类字段不在这里认(「大于50天」的天有自己的规则,见 _clause_to_expr 末尾)
+    """
+    if len(fs) != 1:
+        return None
+    start, end, fld = fs[0][0], fs[0][1], fs[0][2]
+    if _unit(fld) == "天数" or re.search(r"\d", t[:start]):
+        return None
+    tail = t[end:]
+    nums = list(_NUM_RE.finditer(tail))
+    if len(nums) != 2:
+        return None
+    for m in nums:
+        if m.start() > 0 and re.match(r"[A-Za-z(_]", tail[m.start() - 1]):
+            return None
+    if (nums[0].group(2) or "").lower() != (nums[1].group(2) or "").lower():
+        return None
+    a, b = _parse_number(nums[0]), _parse_number(nums[1])
+    between = tail[nums[0].end():nums[1].start()]
+    if nums[1].group(1).startswith("-") and not between.strip():
+        # 「10-20之间」:连字符被数字正则吃成了负号
+        between, b = "-", -b
+    skel = re.sub(r"\s+|元", "", tail[:nums[0].start()] + "#" + between + "#" + tail[nums[1].end():])
+    if _RANGE_SKEL.fullmatch(skel):
+        if a == b:
+            return None
+        lo, hi = min(a, b), max(a, b)
+        return f"{fld} >= {_fmt(lo)} and {fld} <= {_fmt(hi)}"
+    m = re.fullmatch(r"(.+?)#(.+?)#", skel)
+    if not m:
+        return None
+    op1 = _OP_EXACT.get(m.group(1))
+    op2 = _OP_EXACT.get(re.sub(r"^(?:但是|但|并|而)", "", m.group(2)))
+    if not op1 or not op2:
+        return None
+    big, small = (">", ">="), ("<", "<=")
+    if not ((op1 in big and op2 in small and a < b) or (op1 in small and op2 in big and a > b)):
+        return None
+    return f"{fld} {op1} {_fmt(a)} and {fld} {op2} {_fmt(b)}"
+
+
 def _find_op(text: str) -> tuple[str, str] | None:
     low = text.lower()
     best = None
@@ -548,6 +603,18 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
     # 用户看到的是一个看起来很正常的条件,完全不会意识到少了东西。
     if re.search(r"\d\s*倍|倍数|百分之", t):
         return None
+    # 区间 / 双边比较骨架完全对得上才认(见 _range_expr);对不上继续往下走,由下面两条拒绝
+    rng = _range_expr(t, fs)
+    if rng:
+        return rng
+    # 一个字段后面跟着两个阈值数字、区间规则又没认出来 → 一定有一半意思落不进通用分支,拒绝。
+    # 下面那条「数比较词」的检查不认「等于」(认了会把「大于等于」数成两个),
+    # 「收盘价等于10小于20」曾因此产出 close == 10(2026-09-14 补区间用例时挖出来的)
+    if len(fs) == 1:
+        tail_nums = [m for m in _NUM_RE.finditer(t[fs[0][1]:])
+                     if not (m.start() > 0 and re.match(r"[A-Za-z(_]", t[fs[0][1]:][m.start() - 1]))]
+        if len(tail_nums) >= 2:
+            return None
     if len(re.findall(r"大于|小于|高于|低于|超过|不到|不低于|不高于|不超过|[<>]=?", t)) >= 2 \
             and len(fs) <= 1:
         return None                     # 一个字段两个比较 = 区间,本地不拆

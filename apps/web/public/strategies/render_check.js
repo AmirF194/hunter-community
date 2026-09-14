@@ -1329,6 +1329,15 @@ try {
   console.log('FAIL 会员额度定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 标签页图标(2026-09-14 · 第一轮评审 GN-001:页面标题的图标也要是猎鹿人 logo)──────────
+// 静态页不走 Next 的 app/icon.png,不写 <link rel="icon"> 浏览器就显示空白图标。与主站同一个 /icon.png
+for (const page of ['index.html', 'factors.html', 'workbench.html', 'backtest.html', 'data.html', 'agent.html', 'screener.html']) {
+  const html = fs.readFileSync(path.join(DIR, page), 'utf8')
+  const ok = /<link rel="icon" href="\/icon.png" type="image\/png" \/>/.test(html.split('</head>')[0] || '')
+  if (ok) console.log('PASS 标签页图标 ·', page)
+  else { failed++; console.log('FAIL 标签页图标 ·', page, '没有声明 /icon.png') }
+}
+
 // setImmediate:上面有一组断言挂在 async 函数的 await 链上(微任务),同步退出会跳过它们
 setImmediate(() => {
   console.log(failed ? `SOME FAILED (${failed})` : 'ALL OK')

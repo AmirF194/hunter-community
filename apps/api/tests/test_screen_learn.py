@@ -49,8 +49,9 @@ def tr(text, table):
 
 
 # ── 前提:这几句本地规则确实认不出(否则根本不会走到 AI,也就谈不上学) ──
-for t in ["RS线连涨超过50天", "市值在100亿以上", "收盘价高于50日均线的1.05倍", "市盈率大于10小于20"]:
+for t in ["RS线连涨超过50天", "市值在100亿以上", "收盘价高于50日均线的1.05倍", "市盈率小于10或大于30"]:
     check(f"前提 · 规则认不出「{t}」", not RULE_OK(t))
+check("前提 · 区间「市盈率大于10小于20」2026-09-14 起规则直接认,不再走 AI", RULE_OK("市盈率大于10小于20"))
 
 # ① 单句:学一次,换个数字也能认 ─────────────────────────────
 E = kw.learn_entries("RS线连涨超过50天", ["rs_line_up_days > 50"], RULE_OK)
@@ -81,12 +82,12 @@ check("周期 · 换倍数命中", lookup("收盘价高于50日均线的1.1倍",
 check("周期 · ⭐换均线周期不命中(不能把 20 日线套进 SMA50)",
       lookup("收盘价高于20日均线的1.05倍", TB) is None)
 
-# ④ 区间:本地规则故意拒绝的,AI 翻过就能学 ─────────────────────
-E = kw.learn_entries("市盈率大于10小于20",
-                     ["price_earnings_ttm > 10 and price_earnings_ttm < 20"], RULE_OK)
+# ④ 两个数字(「或」):本地规则拒绝的,AI 翻过就能学。2026-09-14 以前这里用区间「市盈率大于10小于20」,区间现在规则直接认了 ─────────────────────
+E = kw.learn_entries("市盈率小于10或大于30",
+                     ["price_earnings_ttm < 10 or price_earnings_ttm > 30"], RULE_OK)
 TB = table_of(E)
 check("区间 · 两个数字各占一个空位",
-      lookup("市盈率大于5小于30", TB) == ["price_earnings_ttm > 5 and price_earnings_ttm < 30"])
+      lookup("市盈率小于5或大于40", TB) == ["price_earnings_ttm < 5 or price_earnings_ttm > 40"])
 
 # ⑤ 同一个值出现两次 —— 分不清谁对谁,不挖空 ────────────────────
 E = kw.learn_entries("市盈率大于10小于10",
@@ -98,29 +99,29 @@ E = kw.learn_entries("成交量大于100万，RS线连涨超过50天",
                      ["volume > 1000000", "rs_line_up_days > 50"], RULE_OK)
 check("多句 · 规则认得的「成交量大于100万」不学,只学 RS 那句",
       [k for k, _e in E] == ["rs线连涨超过{0}天"], str(E))
-E = kw.learn_entries("市盈率大于10小于20，RS线连涨超过50天",
-                     ["price_earnings_ttm > 10 and price_earnings_ttm < 20", "rs_line_up_days > 50"],
+E = kw.learn_entries("市盈率小于10或大于30，RS线连涨超过50天",
+                     ["price_earnings_ttm < 10 or price_earnings_ttm > 30", "rs_line_up_days > 50"],
                      RULE_OK)
 check("多句 · 两句都规则认不出,两句都学", len(E) == 2, str(E))
 TB = table_of(E)
-exprs, _m = tr("RS线连涨超过30天，市盈率大于8小于25", TB)
+exprs, _m = tr("RS线连涨超过30天，市盈率小于8或大于25", TB)
 check("多句 · ⭐学完之后换顺序、换数字的新组合也能本地认",
-      exprs == ["rs_line_up_days > 30", "price_earnings_ttm > 8 and price_earnings_ttm < 25"],
+      exprs == ["rs_line_up_days > 30", "price_earnings_ttm < 8 or price_earnings_ttm > 25"],
       str(exprs))
 
 # ⑦ 多句 · AI 把顺序弄乱了:不能逐句对错,只记整句 ──────────────
-E = kw.learn_entries("市盈率大于10小于20，RS线连涨超过50天",
-                     ["rs_line_up_days > 50", "price_earnings_ttm > 10 and price_earnings_ttm < 20"],
+E = kw.learn_entries("市盈率小于10或大于30，RS线连涨超过50天",
+                     ["rs_line_up_days > 50", "price_earnings_ttm < 10 or price_earnings_ttm > 30"],
                      RULE_OK)
 check("错位 · ⭐不逐句学(否则「市盈率…」会被永远翻成 RS 线)",
       len(E) == 1 and "市盈率" in E[0][0] and "rs线" in E[0][0], str(E))   # key 已归一化,全角逗号成了半角
 TB = table_of(E)
-exprs, _m = tr("市盈率大于10小于20，RS线连涨超过50天", TB)
+exprs, _m = tr("市盈率小于10或大于30，RS线连涨超过50天", TB)
 check("错位 · 整句原样再问能命中",
       exprs is not None and sorted(exprs) == sorted(["rs_line_up_days > 50",
-                                                     "price_earnings_ttm > 10 and price_earnings_ttm < 20"]),
+                                                     "price_earnings_ttm < 10 or price_earnings_ttm > 30"]),
       str(exprs))
-check("错位 · 单独问其中一句不命中", lookup("市盈率大于10小于20", TB) is None)
+check("错位 · 单独问其中一句不命中", lookup("市盈率小于10或大于30", TB) is None)
 
 # ⑧ 对照表绝不能盖过本地规则 ─────────────────────────────────
 BOGUS = table_of([("成交量大于{0}万", ["volume < {0}"])])     # 一条故意学错的
@@ -143,10 +144,10 @@ ALL = {}
 for t, ex in [("RS线连涨超过50天", ["rs_line_up_days > 50"]),
               ("市值在100亿以上", ["market_cap_basic > 10000000000"]),
               ("收盘价高于50日均线的1.05倍", ["close > SMA50 * 1.05"]),
-              ("市盈率大于10小于20", ["price_earnings_ttm > 10 and price_earnings_ttm < 20"])]:
+              ("市盈率小于10或大于30", ["price_earnings_ttm < 10 or price_earnings_ttm > 30"])]:
     ALL.update(table_of(kw.learn_entries(t, ex, RULE_OK), start_id=len(ALL) + 1))
 for q in ["RS线连涨超过60天", "市值在50亿以上", "收盘价高于50日均线的1.1倍",
-          "市盈率大于5小于30", "RS线连涨超过30天，市盈率大于8小于25", "  RS 线 连涨 超过 60 天 "]:
+          "市盈率小于5或大于40", "RS线连涨超过30天，市盈率小于8或大于25", "  RS 线 连涨 超过 60 天 "]:
     full, _m1 = tr(q, ALL)
     narrowed = {k: v for k, v in ALL.items() if k in set(kw.candidate_keys(q))}
     only, _m2 = tr(q, narrowed)
