@@ -88,11 +88,12 @@ SCREEN_OK = {"sma150": 90.0, "sma200": 85.0, "hi252": 110.0, "av30": 900_000.0,
 SCREEN_BROKEN = dict(SCREEN_OK, rng1m=0.18, rng5d=0.12)       # 18%:v4 把 4b 上限放到 15% 之后仍算撑坏
 
 
-def defs(big, big_ok, dn=30, cnt=12):
-    return {"dn": dn, "cnt": cnt, "ratio": cnt / dn, "big": big, "big_ok": big_ok, "bigok": (big_ok / big) if big else None}
+def acc(an, exc, beta=1.0, dn=20):
+    return {"beta": beta, "an": an, "exc": exc, "dn": dn}
 
 
-DEFS_S = defs(7, 2)                                          # 大跌 7 天扛住 2 天(29%)→ S
+ACC_B = acc(2, 0.4)                                          # v12 第 3 项:有资金逆势买入痕迹 → B(最高档)
+ACC_D = acc(0, 0.2)                                          # 一天都没有 → D
 VPS_S = {"acc21": 4, "dist21": 0, "ad21": 4, "acc63": 6, "dist63": 1, "ad63": 5, "udv63": 1.4, "udv21": 1.5}
 
 
@@ -100,8 +101,8 @@ def vps(ad21, ad63=5, udv63=1.4):
     return dict(VPS_S, ad21=ad21, acc21=max(ad21, 0), dist21=max(-ad21, 0), ad63=ad63, udv63=udv63)
 
 
-GF_S = {"stop": 101.0, "sup": {"count": 4, "items": [], "text": "4 类"}, "vp": 6, "vps": VPS_S, "def": (16, 30), "defs": DEFS_S,
-        "macd_d": True, "macd_w": True, "res": None}              # 五项全 S(500 分)
+GF_S = {"stop": 101.0, "sup": {"count": 4, "items": [], "text": "4 类"}, "vp": 6, "vps": VPS_S, "def": (16, 30), "acc": ACC_B, "lead": None,
+        "macd_d": True, "macd_w": True, "res": None}              # 支撑 / 量价 / MACD S、抗跌 B(v12 最高档)
 
 
 def good(prev=None, gf=None, **kw):
@@ -162,7 +163,7 @@ if buys:
     check("P-07 · v8 统一仓位:首次买入 完整仓位(总资产 20%)的一半", buys[0]["shares"] == UNIFORM, f"{buys[0]['shares']} vs {UNIFORM}")
     check("进场 · 理由里写了 P-01 ~ P-06、走廊、评分与统一仓位", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "P-21", "P-20", "统一仓位", "昨收")))
     check("进场 · 加仓基数 = 完整仓位(extra.unit)", r["positions"][0].extra.get("unit") == UNIT)
-    check("进场 · 成交记录照写档位与分数(追高 1.96% → A,其余 S → 480)", buys[0].get("grade") == "S" and buys[0].get("points") == 480,
+    check("进场 · 成交记录照写档位与分数(追高 1.96% → A,抗跌 B,其余 S → 440)", buys[0].get("grade") == "S" and buys[0].get("points") == 440,
           str((buys[0].get("grade"), buys[0].get("points"))))
     check("P-11 · v7 回到 v5:初始止损 = 进场价 − 1 ATR(104 − 3 = 101)", abs(r["positions"][0].stop - 101.0) < 1e-9,
           str(r["positions"][0].stop))
@@ -181,22 +182,22 @@ def entry_with(gf, score=90):
 # v8:第 4 项换成追高幅度。good() 收盘 104、枢轴 102 → 高出 1.96% → A
 g0_ = ab.grade(good(), 101.0, 90)
 check("P-20 · v8 第 4 项叫「追高幅度」,不再是走廊", g0_["factors"][3][0] == "追高幅度", str(g0_["factors"][3]))
-check("P-20 · 四项 S + 追高 A = 480", g0_["points"] == 480, g0_["text"])
+check("P-20 · 三项 S + 抗跌 B + 追高 A = 440", g0_["points"] == 440, g0_["text"])
 check("追高 · 高出 0.5% → S", ab.grade(good(close=102.5), 101.0, 90)["factors"][3][1] == "S")
 check("追高 · 高出 1.99%(A 档上沿内)→ A", ab.grade(good(close=104.03), 101.0, 90)["factors"][3][1] == "A")
 check("追高 · 高出 2.9% → B", ab.grade(good(close=105.0), 101.0, 90)["factors"][3][1] == "B")
 check("追高 · 高出 3.9% → C", ab.grade(good(close=106.0), 101.0, 90)["factors"][3][1] == "C")
 check("追高 · 高出 4.4% → D", ab.grade(good(close=106.5), 101.0, 90)["factors"][3][1] == "D")
 check("追高 · 枢轴缺 → D", ab.grade(dict(good(), pivot=None), 101.0, 90)["factors"][3][1] == "D")
-# A 级:支撑 2 类 B60 + 量价 3 C40 + 抗跌 3 次 C40 + 追高 A80 + 只有周线金叉 A80 = 300
-gf_a = {"sup": {"count": 2, "items": [], "text": "2 类"}, "vps": vps(1), "defs": defs(7, 4), "macd_d": False, "macd_w": True}
+# A 级:支撑 2 类 B60 + 量价 1 C40 + 抗跌(有资金逆势买入)B60 + 追高 A80 + 只有周线金叉 A80 = 320
+gf_a = {"sup": {"count": 2, "items": [], "text": "2 类"}, "vps": vps(1), "acc": ACC_B, "macd_d": False, "macd_w": True}
 g_a = ab.grade(good(gf=gf_a), 101.0, 90)
-check("P-20 · 60 + 40 + 40 + 80 + 80 = 300 → A", g_a["grade"] == "A" and g_a["points"] == 300, g_a["text"])
+check("P-20 · 60 + 40 + 60 + 80 + 80 = 320 → A", g_a["grade"] == "A" and g_a["points"] == 320, g_a["text"])
 r = entry_with(gf_a)
 b = [f for f in r["fills"] if f["side"] == "buy"]
 check("P-07 · v8 统一仓位:A 级也买完整仓位一半,档位照记", b and b[0]["shares"] == UNIFORM and b[0]["grade"] == "A", str(r["fills"]))
 # D 级:支撑 0 + 量价 2 + 抗跌 2 + 追高 A80 + 周线 A80 = 160
-gf_d = {"sup": {"count": 0, "items": [], "text": "0 类"}, "vps": vps(0), "defs": defs(7, 0), "macd_d": False, "macd_w": True}
+gf_d = {"sup": {"count": 0, "items": [], "text": "0 类"}, "vps": vps(0), "acc": ACC_D, "macd_d": False, "macd_w": True}
 check("P-20 · 0 + 0 + 0 + 80 + 80 = 160 → D", ab.grade(good(gf=gf_d), 101.0, 90)["grade"] == "D")
 r = entry_with(gf_d)
 b = [f for f in r["fills"] if f["side"] == "buy"]
@@ -243,36 +244,45 @@ st = ab.vp_stats(vb)
 check("vp_stats · 近 21 天放量上涨 3、放量下跌 1、净 2", st and (st["acc21"], st["dist21"], st["ad21"]) == (3, 1, 2), str(st))
 check("vp_stats · 日线不足 113 根 → None", ab.vp_stats(vb[-100:]) is None)
 
-# ── v11 抗跌定档(倒 U)──────────────────────────────────────
-check("抗跌 v11 · 大跌 7 天扛住 2 天(29%)→ S", ab.def_tier(defs(7, 2))[0] == "S")
-check("抗跌 v11 · 大跌 6 天扛住 2 天(1/3)→ S", ab.def_tier(defs(6, 2))[0] == "S")
-check("抗跌 v11 · 大跌 6 天扛住 3 天(1/2)→ A", ab.def_tier(defs(6, 3))[0] == "A")
-check("抗跌 v11 · 大跌 6 天扛住 1 天(1/6)→ B", ab.def_tier(defs(6, 1))[0] == "B")
-check("抗跌 v11 · 大跌 7 天扛住 4 天(57%,防御性太强)→ C", ab.def_tier(defs(7, 4))[0] == "C")
-check("抗跌 v11 · 大跌 7 天一天都没扛住 → D", ab.def_tier(defs(7, 0))[0] == "D")
-check("抗跌 v11 · 大跌日每天都不跌 → C(不是 S)", ab.def_tier(defs(8, 8))[0] == "C")
-check("抗跌 v11 · 大跌日不足 3 天 → 改看全部下跌日:12/30 = 40% → S", ab.def_tier(defs(2, 2, dn=30, cnt=12))[0] == "S")
-check("抗跌 v11 · 平静行情全部下跌日 55% → B、28% → C、20% → D",
-      [ab.def_tier(defs(1, 0, dn=20, cnt=x))[0] for x in (11, 5.6, 4)] == ["B", "C", "D"])
-check("抗跌 v11 · 说明里写明大跌日与平静行情", "跌 ≥1%" in ab.def_tier(defs(7, 2))[1] and "行情平静" in ab.def_tier(defs(2, 1))[1])
-check("抗跌 v11 · 算不出 → None", ab.def_tier(None)[0] is None)
-check("抗跌 v11 · 评分里第 3 项用新口径(原 def 16 次不再决定档位)",
-      ab.grade(good(gf={"def": (16, 30), "defs": defs(8, 8)}), 101.0, 90)["factors"][2][1] == "C")
-# def_stats:70 根日线,标普 7 天跌 1.5%(个股 2 天不跌)、3 天跌 0.5%(个股都不跌),其余上涨
-bench_d, sc_, bc_ = {}, [100.0], 1000.0
-dts = [date(2025, 1, 1) + timedelta(days=i) for i in range(70)]
-bench_d[dts[0]] = bc_
-BIG_DAYS, SMALL_DAYS = (20, 25, 30, 35, 40, 45, 50), (55, 60, 65)
-for k in range(1, 70):
-    bc_ *= 0.985 if k in BIG_DAYS else 0.995 if k in SMALL_DAYS else 1.001
+# ── v12 抗跌 = 资金逆势买入(有 B / 没有 D),均线领先只记录 ──────────
+check("抗跌 v12 · 逆势放量超额上涨 2 天、平均超额 +0.4% → B", ab.acc_tier(acc(2, 0.4))[0] == "B")
+check("抗跌 v12 · 1 天、平均超额正好 0 → B", ab.acc_tier(acc(1, 0.0))[0] == "B")
+check("抗跌 v12 · 一天都没有 → D", ab.acc_tier(acc(0, 0.5))[0] == "D")
+check("抗跌 v12 · 有 3 天但扣 beta 后平均跑输 → D", ab.acc_tier(acc(3, -0.1))[0] == "D")
+check("抗跌 v12 · 不设 S / A:痕迹再多也是 B", ab.acc_tier(acc(9, 2.0))[0] == "B")
+check("抗跌 v12 · 算不出 / 下跌日太少 → None", ab.acc_tier(None)[0] is None and ab.acc_tier(acc(2, None))[0] is None)
+check("抗跌 v12 · 说明写明 beta 与「没有资金逆势买入痕迹」", "beta" in ab.acc_tier(acc(0, 0.5))[1] and "没有资金逆势买入痕迹" in ab.acc_tier(acc(0, 0.5))[1])
+g12 = ab.grade(good(gf={"def": (16, 30), "acc": ACC_D}), 101.0, 90)
+check("抗跌 v12 · 评分里第 3 项用资金口径(原 def 16 次不再决定档位)", g12["factors"][2][1] == "D", str(g12["factors"][2]))
+check("抗跌 v12 · 均线领先写进说明、标明只记录", "只记录" in g12["factors"][2][3], g12["factors"][2][3])
+# accum_stats:180 根日线,标普单双日 ±1%;个股跟标普一样(beta ≈ 1),
+# 最后 42 天里挑 2 个标普下跌日个股 +2% 且量 2 倍(算),1 个下跌日 +2% 但量不放大(不算)
+n_ = 180
+dts = [date(2025, 1, 1) + timedelta(days=i) for i in range(n_)]
+bench_d, bc_, sc_ = {dts[0]: 1000.0}, 1000.0, [100.0]
+vols = [1_000_000.0] * n_
+SPECIAL = {n_ - 39: 2_000_000.0, n_ - 21: 2_000_000.0, n_ - 11: 1_000_000.0}     # 都是奇数下标 = 标普下跌日
+for k in range(1, n_):
+    m = 0.01 if k % 2 == 0 else -0.01
+    bc_ *= 1 + m
     bench_d[dts[k]] = bc_
-    sc_.append(sc_[-1] - 1.0 if (k in BIG_DAYS and k not in (20, 25)) else sc_[-1] + 0.1)
-dbars = [(dts[k], sc_[k], sc_[k] + 1, sc_[k] - 1, 1_000_000.0) for k in range(70)]
-ds_ = ab.def_stats(dbars, bench_d)
-check("def_stats · 下跌 10 天、不跌 5 天、大跌 7 天扛住 2 天", ds_ and (ds_["dn"], ds_["cnt"], ds_["big"], ds_["big_ok"]) == (10, 5, 7, 2), str(ds_))
-check("def_stats · 没有基准 → None", ab.def_stats(dbars, None) is None)
+    if k in SPECIAL:
+        sc_.append(sc_[-1] * 1.02)
+        vols[k] = SPECIAL[k]
+    else:
+        sc_.append(sc_[-1] * (1 + m))
+abars = [(dts[k], sc_[k], sc_[k] * 1.01, sc_[k] * 0.99, vols[k]) for k in range(n_)]
+as_ = ab.accum_stats(abars, bench_d)
+check("accum_stats · 放量的 2 天算、没放量的 1 天不算 → an = 2", as_ and as_["an"] == 2, str(as_))
+check("accum_stats · beta ≈ 1、下跌日 21 天、平均超额为正 → B", as_ and abs(as_["beta"] - 1) < 0.1 and as_["dn"] == 21
+      and as_["exc"] > 0 and ab.acc_tier(as_)[0] == "B", str(as_))
+check("accum_stats · 没有基准 / 日线不足 → None", ab.accum_stats(abars, None) is None and ab.accum_stats(abars[-100:], bench_d) is None)
+ls_ = ab.lead_stats(abars, bench_d)
+check("lead_stats · 算得出四项,说明里有四项", ls_ is not None and all(k in ab.lead_text(ls_) for k in ("5 日线", "斜率", "早见底", "站上 20 日线")),
+      str(ls_))
+check("lead_stats · 日线不足 81 根 → None", ab.lead_stats(abars[-80:], bench_d) is None)
 
-g_na = ab.grade(good(gf={"sup": None, "vp": None, "vps": None, "def": None, "defs": None, "macd_d": None, "macd_w": None}), 101.0, 90)
+g_na = ab.grade(good(gf={"sup": None, "vp": None, "vps": None, "def": None, "acc": None, "lead": None, "macd_d": None, "macd_w": None}), 101.0, 90)
 check("P-20 · 算不出的项按 D 计 0 分、MACD 算不出记 C", [f[1] for f in g_na["factors"]] == ["D", "D", "D", "A", "C"], str(g_na["factors"]))
 
 # 走廊:R = 104 − 101 = 3。阻力 116 → 4R A;阻力 108.5 → 1.5R 空间受限

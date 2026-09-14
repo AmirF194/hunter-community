@@ -180,6 +180,23 @@ S 203 次突破后 20 天中位 -0.8%、涨过 10% 只有 26%;成交里 S 9 笔�
 S+A 对 C+D 中位差 +2.7、先跌 5% 比例差 -12 个百分点(原口径中位差 +1.6、均值差 -1.1)。v9/v10 成交:S 18 笔 +330、C 8 笔 -270、D 5 笔 -278。
 另一套「平静行情一律记 C」在事件上两头更开(中位差 +3.2),但成交上不单调,且把 229 次平静行情硬归一档,没选。
 比例是小分数(大跌日中位 7 天):1/6 = 16.7% 落 B、1/3 落 S、1/2 落 A —— 边界故意避开这些值的正中。门槛在同一年上挑,有贴合风险。
+**v11 口径已被 v12 取代**(用户否了:量的是股性,不是资金),上面留作记录。
+
+## v12(2026-09-14 用户:「我需要的抗跌不是这支股票特性就抗跌,我需要的是在近两三个月找到领头羊,下跌时有大资金偷偷潜伏买入……我是波段投资者」)
+
+用户要的第 3 项是**资金行为**:大盘下跌时有大资金逆势买入;并希望看个股均线是否领先大盘(比大盘先完成回调、先开始上涨、领先同类股)。
+在同一批 1,654 次突破上验证(与 beta 相关系数、按 beta 三组、上下半年分开都看了):
+- **资金逆势买入(`accum_stats`)**:近 42 天标普下跌日里,个股收盘上涨、扣掉 beta 后仍多涨 > 1%、成交量 > 50 日均量 × 1.2 的天数(an),
+  及这些下跌日扣 beta 后的平均超额(exc)。**不扣 beta 时指标与 beta 相关 -0.36 ~ -0.45(量到的是低 beta 股性),扣掉后 -0.13 ~ 0**。
+  an = 0 或 exc < 0 的 489 次:20 天中位 -1.0%、先跌 5% 55%;其余 1,165 次 +0.3%、47%;高 beta 组里前者 -3.0%、65%;上下半年都成立。
+  **但痕迹越多并不越好**(五档 S +0.2% / A -0.4% / B +0.9%,不单调)—— 日线只能看出「完全没有」,看不出强弱。
+- **均线领先大盘**(大盘跌破 10 日线时守 5 日线、20 日线斜率领先、比大盘先见底、先站上 20 日线)、**领先同板块**(21 天涨幅板块百分位):
+  与 20 天收益相关 -0.06 ~ +0.05,分档不单调;「先见底」看着有效是因为大盘刚回调过(大盘回调过的 710 次里早 0 天与早 30 天中位都在 +2% 左右)。
+  六条合成信号数上半年 4~6 个最差、下半年最好 —— 不稳定。原因大概是突破池已卡 RS ≥ 70、贴前高,进来的已是领头羊,再比谁更领先分不开。
+
+**现口径(`acc_tier`)**:an ≥ 1 且 exc ≥ 0 → B;否则 D(不设 S / A,数据不支持)。
+均线领先大盘四项由 `lead_stats` 算出,**只写进第 3 项说明,不参与定档**,方便对照交易清单。领先同板块引擎里拿不到板块指数,没写。
+第 3 项满分从 100 变 60,汇总档普遍下移。评分只记录、不影响买卖。
 """
 from __future__ import annotations
 
@@ -219,8 +236,10 @@ CHASE_MAX = {"S": 1.0, "A": 2.0, "B": 3.0, "C": 4.0}   # v8 第 4 项:收盘高�
 VP_BIG = 1.2          # v10 第 2 项:放量 = 成交量 > 50 日均量 × 1.2
 VP_HOT_UDV = 1.7      # v10:近 63 天上涨日总量 ÷ 下跌日总量 > 1.7 → 过热降一档
 VP_HOT_AD = 8         # v10:近 63 天放量上涨 − 放量下跌 ≥ 8 → 过热降一档
-DEF_BIG_DROP = -0.01  # v11 第 3 项:标普当天跌 ≥ 1% 算大跌日
-DEF_MIN_BIG = 3       # v11:大跌日不足 3 天(平静行情)改看全部下跌日
+ACC_LOOK = 42         # v12 第 3 项:资金逆势买入看近 42 个交易日(约两个月)
+ACC_BETA_LOOK = 126   # v12:beta 用近 126 天日收益估
+ACC_EXC = 0.01        # v12:扣 beta 后多涨 > 1% 才算
+ACC_VOL = 1.2         # v12:成交量 > 50 日均量 × 1.2 才算
 GRADE_RULE = "P-20"
 ENTRY_RULE = "P-06"
 ADD_RULE = "P-08"
@@ -261,7 +280,7 @@ RULES = [
     {"id": "P-17", "kind": "sell", "condition": "+20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)"},
     {"id": "P-18", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA10 卖出余仓一半(一次)"},
     {"id": "P-19", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA20 清仓"},
-    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 量价配合(近 21 天放量上涨 − 放量下跌 ≥4 S · 3 A · 2 B · 1 C · ≤0 D,3 个月过热降一档) · 抗跌(近 63 天标普跌 ≥1% 的日子不跌比例 17~34% S · 34~51% A · 10~17% B · >51% C · <10% D;大跌日不足 3 天改看全部下跌日) · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
+    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 量价配合(近 21 天放量上涨 − 放量下跌 ≥4 S · 3 A · 2 B · 1 C · ≤0 D,3 个月过热降一档) · 抗跌 = 资金逆势买入(近 42 天标普下跌日,个股上涨、扣 beta 后多涨 >1%、放量 1.2 倍,有 ≥1 天且下跌日平均超额 ≥0 记 B,否则 D;均线领先大盘只记录) · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
     {"id": "P-21", "kind": "risk", "condition": "空间受限:走廊(上方 252 日强阻力 − 收盘)÷ R 不足 1R,达到买点也不进"},
 ]
 RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Base 低点", "P-10": "固定 6% 止损",
@@ -504,42 +523,117 @@ def vp_tier(vs: dict | None) -> tuple[str | None, str]:
     return t, txt
 
 
-def def_stats(bars: list[tuple], bench: dict | None, look: int = 63) -> dict | None:
-    """第 3 项 · 抗跌口径(v11)→ {dn, cnt, ratio, big, big_ok, bigok};没有基准、日线不足、下跌日不足 3 天 → None。
-    最近 look 根里,标普下跌的日子这只票收盘不跌(≥ 前收)算一次;标普跌 ≥ 1% 的另记大跌日。"""
-    if not bench or len(bars) < look + 1:
+def _bench_aligned(bars: list[tuple], bench: dict | None, n: int) -> list[float] | None:
+    """最后 n 根个股日线对应的标普收盘;缺任何一天 / 个股收盘缺 → None。"""
+    if not bench or len(bars) < n:
         return None
-    dn = cnt = big = big_ok = n = 0
-    for k in range(len(bars) - look, len(bars)):
-        b0, b1 = bench.get(bars[k - 1][0]), bench.get(bars[k][0])
-        if b0 is None or b1 is None or not bars[k - 1][1]:
+    out = []
+    for b in bars[-n:]:
+        r = bench.get(b[0])
+        if r is None or not b[1]:
+            return None
+        out.append(r)
+    return out
+
+
+def accum_stats(bars: list[tuple], bench: dict | None) -> dict | None:
+    """第 3 项 · 资金逆势买入(v12)→ {beta, an, exc, dn};日线 / 基准不够 → None。
+    beta:近 126 天日收益对标普回归。近 42 天标普下跌日里,个股上涨、扣 beta 后多涨 > 1%、量 > 50 日均量 × 1.2 记一天(an);
+    exc = 这些下跌日扣 beta 后的平均超额(%),下跌日不足 3 天 → None。"""
+    need = max(ACC_BETA_LOOK, ACC_LOOK + 50) + 1
+    r = _bench_aligned(bars, bench, need)
+    if r is None:
+        return None
+    s = [b[1] for b in bars[-need:]]
+    v = [b[4] for b in bars[-need:]]
+    sr = [s[k] / s[k - 1] - 1 for k in range(need - ACC_BETA_LOOK, need)]
+    br = [r[k] / r[k - 1] - 1 for k in range(need - ACC_BETA_LOOK, need)]
+    mb, ms = sum(br) / len(br), sum(sr) / len(sr)
+    var = sum((x - mb) ** 2 for x in br)
+    if not var:
+        return None
+    beta = sum((x - mb) * (y - ms) for x, y in zip(br, sr)) / var
+    an = dn = 0
+    exc = 0.0
+    for k in range(need - ACC_LOOK, need):
+        m = r[k] / r[k - 1] - 1
+        if m >= 0:
             continue
-        n += 1
-        ir = b1 / b0 - 1
-        ok = bars[k][1] >= bars[k - 1][1]
-        if ir < 0:
-            dn += 1
-            cnt += ok
-            if ir <= DEF_BIG_DROP:
-                big += 1
-                big_ok += ok
-    if n < look * 0.8 or dn < 3:
+        st = s[k] / s[k - 1] - 1
+        dn += 1
+        res = st - beta * m
+        exc += res
+        vol50 = v[k - 50:k]
+        if v[k] is None or any(x is None for x in vol50):
+            continue
+        if res > ACC_EXC and st > 0 and v[k] > sum(vol50) / 50 * ACC_VOL:
+            an += 1
+    return {"beta": beta, "an": an, "exc": exc / dn * 100 if dn >= 3 else None, "dn": dn}
+
+
+def acc_tier(acc: dict | None) -> tuple[str | None, str]:
+    """v12 第 3 项定档 → (档位, 说明)。有资金逆势买入痕迹 B,没有 D;数据只支持这一刀,不设 S / A。"""
+    if not acc or acc["exc"] is None:
+        return None, "日线或标普基准不足,资金逆势买入算不出"
+    ok = acc["an"] >= 1 and acc["exc"] >= 0
+    return ("B" if ok else "D"), (f"近 {ACC_LOOK} 天标普下跌 {acc['dn']} 天里,逆势放量超额上涨 {acc['an']} 天、"
+                                  f"扣 beta({acc['beta']:.2f})后平均超额 {acc['exc']:+.2f}%"
+                                  + ("" if ok else " —— 没有资金逆势买入痕迹"))
+
+
+def _sma(a: list[float], n: int, j: int) -> float:
+    return sum(a[j - n + 1:j + 1]) / n
+
+
+def lead_stats(bars: list[tuple], bench: dict | None) -> dict | None:
+    """v12 · 均线领先大盘(只记录,不定档)→ {ma_frac, slope_gap, bottom_lead, regain_lead};日线 / 基准不足 81 根 → None。
+    ma_frac:近 42 天标普收盘跌破 10 日线的日子里,个股仍在 5 日线上的比例(那种日子不足 3 天 → None);
+    slope_gap:个股 20 日线 5 天涨幅 − 标普的(个百分点);
+    bottom_lead:近 42 天个股最低收盘比标普早几天(标普那段回撤不到 3% → None);
+    regain_lead:个股最近一次站上 20 日线比标普早几天(标普还在 20 日线下 = 今天之后;个股不在 20 日线上 → None)。"""
+    n = 81
+    r = _bench_aligned(bars, bench, n)
+    if r is None:
         return None
-    return {"dn": dn, "cnt": cnt, "ratio": cnt / dn, "big": big, "big_ok": big_ok, "bigok": (big_ok / big) if big else None}
+    s = [b[1] for b in bars[-n:]]
+    J = n - 1
+    weak = lead = 0
+    for j in range(J - 41, J + 1):
+        if r[j] < _sma(r, 10, j):
+            weak += 1
+            lead += s[j] > _sma(s, 5, j)
+
+    def slope(a, j):
+        return _sma(a, 20, j) / _sma(a, 20, j - 5) - 1
+
+    w = range(J - 41, J + 1)
+    ir = min(w, key=lambda j: r[j])
+    is_ = min(w, key=lambda j: s[j])
+    r_dd = r[ir] / max(r[j] for j in range(J - 41, ir + 1)) - 1
+
+    def last_cross(a):
+        if a[J] <= _sma(a, 20, J):
+            return None
+        for j in range(J, J - 60, -1):
+            if a[j] > _sma(a, 20, j) and a[j - 1] <= _sma(a, 20, j - 1):
+                return j
+        return J - 60
+
+    sk, rk = last_cross(s), last_cross(r)
+    return {"ma_frac": lead / weak if weak >= 3 else None,
+            "slope_gap": (slope(s, J) - slope(r, J)) * 100,
+            "bottom_lead": (ir - is_) if r_dd <= -0.03 else None,
+            "regain_lead": ((J + 1 if rk is None else rk) - sk) if sk is not None else None}
 
 
-def def_tier(ds: dict | None) -> tuple[str | None, str]:
-    """v11 第 3 项定档 → (档位, 说明)。倒 U 形:大跌日扛住一部分最好,每次都不跌(防御股)和每次都跟跌都差。"""
-    if not ds:
-        return None, "没有基准日线或日线不足,算不出"
-    if ds["big"] >= DEF_MIN_BIG:
-        r = ds["bigok"]
-        t = "S" if 0.17 <= r < 0.34 else "A" if 0.34 <= r <= 0.51 else "B" if 0.10 <= r < 0.17 else "C" if r > 0.51 else "D"
-        note = {"S": "扛住一部分,最好", "A": "扛住一半左右", "B": "偶尔扛住", "C": "大跌日几乎都不跌,防御性太强", "D": "大跌日基本跟着跌"}[t]
-        return t, f"近 63 天标普跌 ≥1% 的 {ds['big']} 天里 {ds['big_ok']} 天不跌({r * 100:.0f}%,{note})"
-    r = ds["ratio"]
-    t = "S" if 0.38 <= r < 0.52 else "A" if 0.32 <= r < 0.38 else "B" if r >= 0.52 else "C" if r >= 0.25 else "D"
-    return t, (f"近 63 天标普跌 ≥1% 只有 {ds['big']} 天(行情平静),改看全部下跌 {ds['dn']} 天里 {ds['cnt']} 天不跌({r * 100:.0f}%)")
+def lead_text(ls: dict | None) -> str:
+    if not ls:
+        return "均线领先大盘(只记录,不定档):日线或基准不足,算不出"
+    parts = [("标普跌破 10 日线的日子里守住 5 日线 " + (f"{ls['ma_frac'] * 100:.0f}%" if ls["ma_frac"] is not None else "—(近 42 天标普没怎么跌破)")),
+             f"20 日线斜率比标普 {ls['slope_gap']:+.1f} 个百分点",
+             ("比标普早见底 " + (f"{ls['bottom_lead']} 天" if ls["bottom_lead"] is not None else "—(标普近 42 天回撤不到 3%)")),
+             ("站上 20 日线比标普早 " + (f"{ls['regain_lead']} 天" if ls["regain_lead"] is not None else "—(个股不在 20 日线上)"))]
+    return "均线领先大盘(只记录,不定档):" + " · ".join(parts)
 
 
 def grade_features(bars: list[tuple], ind: dict, bench: dict | None, p: dict = PARAMS) -> dict:
@@ -554,7 +648,8 @@ def grade_features(bars: list[tuple], ind: dict, bench: dict | None, p: dict = P
         "vp": c3._vp_net(c, v) if len(v) >= need and all(x is not None for x in v[-need:]) else None,   # 原口径,留作对照
         "vps": vp_stats(bars),                                                                          # v10 定档用
         "def": c3._defense(bars, bench),                                                                # 原口径,留作对照
-        "defs": def_stats(bars, bench),                                                                 # v11 定档用
+        "acc": accum_stats(bars, bench),                                                                # v12 定档用
+        "lead": lead_stats(bars, bench),                                                                # v12 只记录
         "macd_d": c3._macd_cross(c, c3.MACD_DAILY_WITHIN),
         "macd_w": c3._macd_cross(c3._weekly_closes(bars), c3.MACD_WEEKLY_WITHIN),
         "res": c3.res_above(bars, px, atr),
@@ -584,8 +679,8 @@ def grade(ind: dict, stop: float, score=None, p: dict = PARAMS) -> dict:
                   sup["text"] if sup else f"日线不足 {int(p['sup_look']) + 52} 根,算不出"))
     vp_t, vp_txt = vp_tier(gf.get("vps"))
     items.append(("量价配合", vp_t, vp_txt))
-    df_t, df_txt = def_tier(gf.get("defs"))
-    items.append(("抗跌", df_t, df_txt))
+    df_t, df_txt = acc_tier(gf.get("acc"))
+    items.append(("抗跌", df_t, f"{df_txt};{lead_text(gf.get('lead'))}"))
     pv = ind.get("pivot")
     ch_pct = (ind["close"] / pv - 1) * 100 if pv else None
     ch_tier = None if ch_pct is None else next((k for k in ("S", "A", "B", "C") if ch_pct <= CHASE_MAX[k]), "D")
