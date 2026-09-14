@@ -747,12 +747,10 @@ try {
     ['净值图:两条有净值的线 + 基准一条 = 3 条 path', (H.match(/<path d="M/g) || []).length === 3],
     ['基准是虚线', /stroke-dasharray="4 3"/.test(H)],
     ['新建入口常驻可见(按钮在研究台面板里)', /id="rs-new"/.test(H)],
-    // 用户 2026-09-13 指定:扫描筛选入口卡在分页下面、研究台面板上面
-    ['扫描筛选入口卡夹在分页与研究台面板之间',
-      H.indexOf('rs-seg') >= 0 && H.indexOf('rs-seg') < at('扫描筛选 · 找候选票') &&
-      at('扫描筛选 · 找候选票') < at('从左到右是一条线必经的先后阶段')],
-    ['研究台里的扫描筛选入口能直接打开筛选器', /href="\/strategies\/screener.html"/.test(H)],
-    ['404 骨架里扫描筛选入口也在', ctx.H_RSSKEL.indexOf('扫描筛选 · 找候选票') >= 0],
+    // 用户 2026-09-14 要求:研究台首页去掉扫描筛选入口卡(09-13 曾加在分页和研究台面板之间);运行看板那张保留(见上面顺序断言)
+    ['研究台首页没有扫描筛选入口卡', H.indexOf('扫描筛选 · 找候选票') < 0 && !/打开扫描筛选/.test(H)],
+    ['404 骨架里也没有扫描筛选入口卡', ctx.H_RSSKEL.indexOf('扫描筛选 · 找候选票') < 0],
+    ['研究台面板仍紧跟在分页之后', H.indexOf('rs-seg') >= 0 && H.indexOf('rs-seg') < at('从左到右是一条线必经的先后阶段')],
     ['研究台视图顶上是分页,研究台高亮', /data-go="research" class="on"/.test(H)],
     ['正常数据不出现 NaN / undefined / null', clean(H)],
     ['全 null 的线不出现 NaN / undefined / null', clean(ctx.H_RSNULL)],
