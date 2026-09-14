@@ -1503,10 +1503,14 @@ function applyParsed(d) {
   // 后端判的「这套条件是不是原样的官方示例」(2026-09-14 · 原样运行不扣扫描次数)。只用于界面提示和按钮,
   // 真正扣不扣由 /screener/run 再判一次
   S.officialPreset = d.official_preset || null
+  // 记下判定那一刻的脚本:切开关 / 改数字不一定重新解析,只比标记会一直显示「不计次数」,
+  // 而后端 run 会照常扣(2026-09-14 线上实测:关掉一条后提示没消失)。任何本地改动都让脚本变样 → 提示立刻消失
+  S.officialScript = S.officialPreset ? buildScript() : null
 }
 
 function isOfficialNow() {
-  return !!(S.officialPreset && S.officialPreset.market === S.market && S.conditions.length)
+  return !!(S.officialPreset && S.officialPreset.market === S.market && S.conditions.length &&
+    S.officialScript === buildScript())
 }
 
 // 没有 detail 时的兜底文案。502 / 503 / 504(api 重启时 nginx 回的就是 502 HTML)和断网(status 0)

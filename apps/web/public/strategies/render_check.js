@@ -1399,6 +1399,11 @@ try {
     S.market = 'hk'
     OP.barOtherMarket = vRunBar()
     S.market = 'us'
+    // 只在本地切开关、没有重新解析:标记还在,但脚本变了 → 也不能再说不计次数(2026-09-14 线上实测出过)
+    applyParsed({ conditions: [{ name: 'c1', expr: 'close > 20', is_bool: true }, { name: 'c2', expr: 'RSI < 70', is_bool: true }],
+                  plot_refs: ['c1', 'c2'], combine: 'all', official_preset: { key: 'uptrend', name: '上升趋势', market: 'us' } })
+    S.conditions[1].enabled = false
+    OP.barToggledLocal = vRunBar()
     applyParsed({ conditions: [{ name: 'c1', expr: 'close > 21', is_bool: true }], plot_refs: ['c1'], combine: 'all', official_preset: null })
     OP.barModified = vRunBar()
     var TOASTS = []
@@ -1417,6 +1422,7 @@ try {
     ['原样的官方示例:运行栏写明不计次数', /官方示例「上升趋势」· 原样运行不计扫描次数/.test(OP.barOfficial)],
     ['换了市场就不算官方示例(按钮照常禁用)', /id="sc-run" disabled>今天的扫描次数已用完/.test(OP.barOtherMarket) && !/原样运行不计/.test(OP.barOtherMarket)],
     ['改过条件就不算官方示例', /id="sc-run" disabled>今天的扫描次数已用完/.test(OP.barModified) && !/原样运行不计/.test(OP.barModified)],
+    ['⭐只在本地关掉一条(没重新解析)提示也消失', /id="sc-run" disabled>今天的扫描次数已用完/.test(OP.barToggledLocal) && !/原样运行不计/.test(OP.barToggledLocal)],
   ]
   for (const [name, ok] of checks) {
     if (ok) console.log('PASS 官方示例免费 ·', name)
