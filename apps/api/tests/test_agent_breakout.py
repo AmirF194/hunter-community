@@ -145,13 +145,21 @@ if buys:
     check("P-07 · 首次买入 = 完整仓位(总资产 20%)的一半", buys[0]["shares"] == int(unit * 0.5), f"{buys[0]['shares']} vs {unit}")
     check("进场 · 理由里逐条写了 P-01 ~ P-06 与股数算法", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "完整仓位", "昨收")))
     check("进场 · 完整仓位记在 extra 里(加仓按它算)", r["positions"][0].extra.get("unit") == unit)
-    check("P-11 · 初始止损 = 进场价 − 1 ATR(104 − 3 = 101)", abs(r["positions"][0].stop - 101.0) < 1e-9, str(r["positions"][0].stop))
-    check("P-11 · 买入理由写了初始止损算法", "初始止损" in buys[0]["rationale"])
+    # good():收盘 104、Base 低点 95、ATR 3 → 形态 95 × 0.985 = 93.575(10.0%)、1.5 ATR = 4.5(4.3%)→ 取形态 10% → 截在 7%
+    check("P-11 · v6 形态 10% > 1.5 ATR 4.3% → 取形态,超过 7% 截在 7%", abs(r["positions"][0].stop - 104.0 * 0.93) < 1e-9,
+          str(r["positions"][0].stop))
+    check("P-11 · 买入理由写了形态 / ATR / 上限的算法", all(k in buys[0]["rationale"] for k in ("初始止损", "Base 低点", "ATR", "截在 7%")))
 
-r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
-               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(atr20=12.0))
-check("P-11 · ATR 12 超过 8% → 止损被截在 进场价 × 0.92",
-      r["positions"] and abs(r["positions"][0].stop - 104.0 * 0.92) < 1e-9, str([x.stop for x in r["positions"]]))
+# 形态比 ATR 宽、没超 7%:Base 低点 101 → 101 × 0.985 = 99.485(4.34%);1.5 ATR = 4.5(4.33%)→ 取形态
+s, how = ab.initial_stop(104.0, 3.0, 101.0)
+check("P-11 · 形态 4.34% 略宽于 1.5 ATR 4.33% → 取形态", abs(s - 101.0 * 0.985) < 1e-9 and "取形态" in how, f"{s} {how}")
+# ATR 比形态宽:Base 低点 102.5 → 100.96(2.9%);1.5 ATR = 4.5 → 取 ATR,止损 99.5
+s, how = ab.initial_stop(104.0, 3.0, 102.5)
+check("P-11 · 形态 2.9% 太紧 → 取 1.5 ATR(止损 99.5)", abs(s - 99.5) < 1e-9 and "取 ATR" in how, f"{s} {how}")
+s, how = ab.initial_stop(104.0, 3.0, None)
+check("P-11 · 没有 Base 低点 → 只用 ATR", abs(s - 99.5) < 1e-9 and "算不出" in how, f"{s} {how}")
+s, how = ab.initial_stop(104.0, 6.0, 102.5)
+check("P-11 · 1.5 ATR = 9 超过 7% → 截在 进场价 × 0.93", abs(s - 104.0 * 0.93) < 1e-9 and "截在 7%" in how, f"{s} {how}")
 r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
                ind_of=lambda c: UP if c == ab.MARKET_KEY else good(atr20=None))
 check("P-11 · ATR 算不出 → 不买并写明(不拿 8% 顶替)", not r["fills"] and "ATR" in (r["watch_items"][0].get("blocked_reason") or ""))
@@ -192,10 +200,10 @@ def sold(r_):
 
 
 r = day(pos(), hold(101.0, low=87.0))
-check("P-09 · 最低价跌破 Base 低点 × 0.98 → 清仓按收盘价", sold(r) and sold(r)[0]["rule_id"] == "P-09"
-      and sold(r)[0]["price"] == 101.0 and sold(r)[0]["shares"] == 100, str(r["fills"]))
+check("v6 · P-09 已去掉:最低价跌破 Base 低点 × 0.98 不再出场", not sold(r), str(r["fills"]))
 r = day(pos(), hold(93.9, ema8=90.0, low=93.5))
-check("P-10 · 收盘 < 进场价 × 0.94 → 固定止损", sold(r) and sold(r)[0]["rule_id"] == "P-10", str(r["fills"]))
+check("v6 · P-10 已去掉:收盘跌 6.1% 但没破初始止损 90 → 不出场", not sold(r), str(r["fills"]))
+check("v6 · 规则手册里没有 P-09 / P-10", not any(x["id"] in ("P-09", "P-10") for x in ab.RULES))
 p11 = pos()
 p11.stop = 97.0
 r = day(p11, hold(96.5, low=96.0))
@@ -248,7 +256,7 @@ check("P-15 · 大盘算不出不当成转弱", not sold(r), str(r["fills"]))
 p_ord = pos()
 p_ord.stop = 97.0
 r = day(p_ord, hold(96.5, low=87.0))
-check("出场顺序 · 同时满足 Base 低点(P-09)和初始止损(P-11)时记 P-09", sold(r) and sold(r)[0]["rule_id"] == "P-09")
+check("v6 · 最低价破 Base 低点且收盘破初始止损 → 记 P-11", sold(r) and sold(r)[0]["rule_id"] == "P-11")
 
 # 部分止盈:只做一次
 p1 = pos()
