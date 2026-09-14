@@ -332,6 +332,19 @@ https://github.com/tjdwls101010/IBD-RS-Rating(MIT,Copyright (c) 2026 성진)。
 区间规则里改用 `_NUM_STRICT_RE`(k/m/b 后面紧跟字母不算单位),遇到 billion / million 这类整词单位整句不认。
 **别去改全局 `_NUM_RE`**:通用分支里「10 billion」正是靠它算成 1e10 的,加了前瞻就静默变成 10。
 
+## 魔法筛选器第一轮执行用例(2026-09-14)· 挖出来的四条前端规矩
+
+137 条用例执行结果写在 `docs/screener-test-cases.md` 的「执行结果」一节。随手修掉的 bug 里有四类会反复出现,写下来:
+
+1. **`post()` 必须接住 fetch 的 reject。** 断网 / api 重启时 fetch 直接 reject,调用方的 `S.generating` / `S.running` / 保存按钮
+   永远停在「进行中」。统一返回 `{ok:false, status:0, data:{detail:'请求没发出去…'}}`,调用方按普通失败处理。新写的请求函数照这个来。
+2. **失败文案不许露裸状态码。** api 重启时 nginx 回 502 HTML、没有 detail,原来显示「扫描失败 · HTTP 502」。兜底一律走 `httpFail(what, status)`。
+3. **会整页 `render()` 的函数(`needLogin` 等)要先调,再往 DOM 里写提示**,否则提示当场被冲掉。检查时注意字段搜索在折叠面板里,
+   面板没展开时 `innerText` 恒为空,要读 `innerHTML`(这次误判过一次)。
+4. **编辑类提交先留原样、失败回滚**(`commitEdit`)。原来写错的表达式直接进了条件区,之后单条测试 / 运行全挂,看起来像别的功能坏了。
+
+点列头排序会重新扫描并扣次数(GN-045)、本地识别两次往返约 1 秒(XN-007)、提示区过滤掉延迟 / 市值口径两条(GN-041)是**已知未改**,等用户定。
+
 ## 策略中心静态页的标签页图标
 
 静态页不走 Next 的 `app/icon.png`,不写 `<link rel="icon" href="/icon.png">` 浏览器就是空白图标(2026-09-14 第一轮评审 GN-001)。

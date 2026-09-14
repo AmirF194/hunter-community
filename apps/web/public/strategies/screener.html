@@ -850,7 +850,7 @@ async function doSave(raw, modal) {
     }
     return
   }
-  if (!r.ok) { show(errOf(r, '保存失败 · HTTP ' + r.status)); return }
+  if (!r.ok) { show(errOf(r, httpFail('保存失败', r.status))); return }
   modal.remove()
   S.loadedName = name
   await loadSaved()
@@ -1498,6 +1498,15 @@ function applyParsed(d) {
   S.parseWarnings = d.warnings || []
 }
 
+// 没有 detail 时的兜底文案。502 / 503 / 504(api 重启时 nginx 回的就是 502 HTML)和断网(status 0)
+// 不许把裸状态码甩给用户 —— 2026-09-14 执行用例 KK-003 时重启 api,界面显示「扫描失败 · HTTP 502」
+function httpFail(what, status) {
+  if (status === 0 || status === 502 || status === 503 || status === 504) {
+    return what + ':服务正在重启或暂时连不上,稍后再试'
+  }
+  return what + ' · HTTP ' + status
+}
+
 // 后端的 detail 现在可能是对象:NeedsAI 会带 {message, can_try_ai}。
 // 老的字符串形式也还在(普通 ScreenError),两种都要认。
 function errOf(r, fallback) {
@@ -1518,7 +1527,7 @@ async function reparse(script) {
   const r = await post(PARSE_API, { script: script, market: S.market })
   if (!r.ok) {
     if (gateOf(r)) return
-    S.genError = errOf(r, '解析失败 · HTTP ' + r.status)
+    S.genError = errOf(r, httpFail('解析失败', r.status))
     S.canTryAi = false
     render(); return
   }
@@ -1561,7 +1570,7 @@ async function generate(allowAi) {
       setQuota(det.quota)
       if (det.quota_note) toast(det.quota_note, 'warn')
     }
-    S.genError = errOf(r, '生成失败 · HTTP ' + r.status)
+    S.genError = errOf(r, httpFail('生成失败', r.status))
     // 后端说"本地两条路都不通,可以试 AI" → 把原文记下来,弹按钮等用户点
     S.canTryAi = canAi(r)
     S.aiText = S.canTryAi ? text : ''
@@ -1651,7 +1660,7 @@ async function runScan() {
   S.running = false
   if (!r.ok) {
     if (gateOf(r)) { render(); return }
-    S.runError = errOf(r, '扫描失败 · HTTP ' + r.status)
+    S.runError = errOf(r, httpFail('扫描失败', r.status))
     S.result = null; render(); return
   }
   const d = r.data
