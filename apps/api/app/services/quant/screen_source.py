@@ -596,8 +596,10 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
             warnings.append(f"{md.label}的日线停在 {va},已超过 {screen_rs.HIST_STALE_DAYS} 天没更新"
                             f"(每晚的定时任务可能坏了)—— 不拿过期的量当现在的均量,{names}这次全部为空。")
         else:
+            pool = ("RS 排名池:交易所上市、不含 OTC、市值 ≥5000 万美元" if md.key == "us"
+                    else "RS 排名池:市值约 5000 万美元以上")
             warnings.append(f"{names}扫描源没有,由自家日线计算:截至 {va} 收盘、不含今天;"
-                            f"{vol_stat['n']} 只算得出,其余不在日线池里(美股剔 OTC 与微盘)、"
+                            f"{vol_stat['n']} 只算得出,其余不在自家日线的覆盖范围里({pool})、"
                             f"上市不足对应天数或当天停牌,计入「算不出」。")
     if vcp_stat is not None:
         a = vcp_stat["as_of"]
