@@ -1405,7 +1405,11 @@ async def screener_run(body: ScreenIn, request: Request):
             raise HTTPException(409, {"kind": "resort_expired", "message": str(e)})
         except ValueError as e:
             raise HTTPException(400, str(e))
-    kind = "probe" if body.probe else "scan"
+    # 原样运行官方示例不扣扫描次数(2026-09-14 用户要求),改过一点就照常扣 —— 判定口径见 screen_source.official_preset_of。
+    # 单独记 preset 计数(每天上限宽松)防刷;5 秒间隔照旧,扫描后等 5 秒也照旧(那是保护上游,不是计费)
+    official = None if body.probe else await asyncio.to_thread(
+        screen_source.official_preset_of, script, body.market)
+    kind = "probe" if body.probe else ("preset" if official else "scan")
     try:
         if not body.probe:
             screen_quota.check_gap(uid, role)
@@ -1443,6 +1447,10 @@ async def screener_run(body: ScreenIn, request: Request):
                 "skipped_incomplete": out.get("skipped_incomplete")}
     if all_picks is not None:
         screen_resort.put(uid, screen_resort.key_of(script, body.market, as_of), out, all_picks)
+    if official:
+        # 不回 quota:前端拿到 quota 会提示「本次扫描计 1 次」,而这次没有计
+        out["official_preset"] = official
+        return out
     out["quota"] = q
     return out
 

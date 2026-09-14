@@ -992,7 +992,9 @@ function setAsOf(v) {
 
 function vRunBar() {
   const n = S.conditions.filter(function (c) { return c.is_bool && c.enabled }).length
-  const used = !!(S.quota && S.quota.scan && S.quota.scan.remaining === 0)
+  const official = isOfficialNow()
+  // 原样的官方示例不扣扫描次数:次数用完了也照样能跑
+  const used = !official && !!(S.quota && S.quota.scan && S.quota.scan.remaining === 0)
   return '<div class="sc-runbar">' +
     '<button class="btn" id="sc-run"' + (S.conditions.length && !S.running && !S.reveal && !used ? '' : ' disabled') + '>' +
       (S.running ? '扫描中…'
@@ -1003,6 +1005,8 @@ function vRunBar() {
       ' title="把当前的条件、开关状态、市场和排序存成一个扫描策略">' +
       '<span class="hi hi-save"></span> 保存扫描策略</button>' +
     vAsOf() + vQuota() +
+    (official ? '<span class="sc-quota" style="background:#e6f1eb;color:#2f725b" title="改动任何一条条件、开关或市场后就不再是官方示例,运行会照常计次数">' +
+      '官方示例「' + esc(S.officialPreset.name) + '」· 原样运行不计扫描次数</span>' : '') +
     (S.conditions.length && !n && S.combine !== 'custom'
       ? '<span class="sc-na" style="font-size:12px">一条都没启用,扫不出东西</span>' : '') +
     '</div>' +
@@ -1194,7 +1198,7 @@ function bind() {
     const n = S.conditions.filter(function (c) { return c.is_bool }).length
     if (!confirm('清空全部 ' + n + ' 个条件和当前扫描结果?草稿也会一起清掉。')) return
     S.conditions = []; S.result = null; S.probe = {}; S.notes = []; S.parseWarnings = []
-    S.combine = 'all'; S.plotExpr = ''; S.loadedName = ''; saveDraft(); render()
+    S.combine = 'all'; S.plotExpr = ''; S.loadedName = ''; S.officialPreset = null; saveDraft(); render()
   })
 
   const run = document.getElementById('sc-run')
@@ -1496,6 +1500,13 @@ function applyParsed(d) {
   S.plotExpr = d.combine === 'custom' ? (d.plot_expr || '') : ''
   S.notes = d.notes || []
   S.parseWarnings = d.warnings || []
+  // 后端判的「这套条件是不是原样的官方示例」(2026-09-14 · 原样运行不扣扫描次数)。只用于界面提示和按钮,
+  // 真正扣不扣由 /screener/run 再判一次
+  S.officialPreset = d.official_preset || null
+}
+
+function isOfficialNow() {
+  return !!(S.officialPreset && S.officialPreset.market === S.market && S.conditions.length)
 }
 
 // 没有 detail 时的兜底文案。502 / 503 / 504(api 重启时 nginx 回的就是 502 HTML)和断网(status 0)
@@ -1522,7 +1533,7 @@ function canAi(r) {
 
 async function reparse(script) {
   if (!script) {
-    S.conditions = []; S.result = null; saveDraft(); render(); return
+    S.conditions = []; S.result = null; S.officialPreset = null; saveDraft(); render(); return
   }
   const r = await post(PARSE_API, { script: script, market: S.market })
   if (!r.ok) {
@@ -1665,6 +1676,7 @@ async function runScan() {
   }
   const d = r.data
   if (d && d.quota) { setQuota(d.quota); toastQuota(d.quota, '本次扫描计 1 次') }
+  else if (d && d.official_preset) toast('官方示例「' + d.official_preset.name + '」原样运行,不计扫描次数')
   // 每次扫描后等 5 秒再显示结果(2026-09-14 用户定 · 按 5000 会员保护上游)
   await revealAfter(REVEAL_S)
   // 倒数的这几秒里条件 / 市场 / 回溯日被改过,这张表就不是当前条件的结果了 —— 不能拿来骗人

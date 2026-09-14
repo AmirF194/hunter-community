@@ -695,6 +695,60 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
     return result
 
 
+# ─── 官方示例原样运行不扣扫描次数(2026-09-14 用户要求)─────────────────
+# 「原样」按**条件语义**判,不按原文比:界面加载示例后会把条件重新拼成脚本(注释没了、换行变了、
+# plot 里的顺序可能不同),逐字比会把没改过的也判成改过。所以两边都解析成语法树再比:
+#   · 每个 def 的名字 → 表达式节点(数字节点去掉源码位置,只比数值)
+#   · plot 是纯 and 链时比名字集合(顺序无关);否则比整个表达式节点
+#   · 市场必须是示例自己的市场
+# 关掉一条(plot 集合少一个)、改一个数、加一条、换市场、改名 —— 都不再是官方示例,照常扣次数。
+# 判不出来(脚本编译不过)一律当「不是官方示例」,宁可扣也不能漏。
+_PRESET_CANON: dict[str, object] = {}
+
+
+def _strip_pos(node):
+    if isinstance(node, (tuple, list)):
+        if node and node[0] == "num":
+            return ("num", node[1])
+        return tuple(_strip_pos(x) for x in node)
+    return node
+
+
+def _canon_script(script: str):
+    try:
+        stmts, _plot_name = screen_dsl._Parser(script or "").parse()
+    except ScreenError:
+        return None
+    defs: dict[str, object] = {}
+    plot = None
+    for st in stmts:
+        if st.kind == "plot":
+            plot = st.node
+        else:
+            defs[st.name] = _strip_pos(st.node)
+    if plot is None:
+        return None
+    names = screen_dsl._flatten_and_names(plot)
+    return (tuple(sorted(defs.items(), key=lambda kv: kv[0])),
+            ("and", frozenset(names)) if names else ("expr", _strip_pos(plot)))
+
+
+def official_preset_of(script: str, market_key: str) -> dict | None:
+    """这份脚本是不是「原样的官方示例」→ {key, name, market} | None。"""
+    mine = _canon_script(script)
+    if mine is None:
+        return None
+    mk = (market_key or "").strip().lower()
+    for p in PRESETS:
+        if p.get("market") != mk:
+            continue
+        if p["key"] not in _PRESET_CANON:
+            _PRESET_CANON[p["key"]] = _canon_script(p["script"])
+        if _PRESET_CANON[p["key"]] is not None and _PRESET_CANON[p["key"]] == mine:
+            return {"key": p["key"], "name": p["name"], "market": mk}
+    return None
+
+
 def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
                  user_id: str | None = None, on_ai=None) -> dict:
     """只解析、不拉数 —— 界面上点「生成」走这条,把脚本变成可视化条件行。
@@ -793,6 +847,8 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     d["market"] = md.key
     d["market_label"] = md.label
     d["fields"] = c.fields
+    # 界面据此提示「官方示例 · 不计扫描次数」;真正是否扣次数由 /screener/run 再判一次(前端的话不算数)
+    d["official_preset"] = official_preset_of(script, md.key)
     d["warnings"] = warnings
     if kw:
         # 本地关键词匹配出来的 —— 同样要可核对:哪一句变成了哪个表达式。

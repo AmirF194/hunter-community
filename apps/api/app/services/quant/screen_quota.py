@@ -36,10 +36,12 @@ from app.services.database import get_conn
 _SH = timezone(timedelta(hours=8))
 
 # 档位 → 每天次数。以后有「高级会员」就在这里加一档,再在 tier_of 里认出来。
+# preset:原样运行官方示例(2026-09-14 用户要求不扣扫描次数)。单独计数、上限宽松 ——
+# 不占用户的 20 次,但也不能无限刷(官方示例列组固定,多数命中 90 秒取数缓存,300 次/天足够)
 TIERS: dict[str, dict[str, int]] = {
-    "normal": {"ai": 10, "scan": 20, "probe": 300},
+    "normal": {"ai": 10, "scan": 20, "probe": 300, "preset": 300},
 }
-KIND_LABEL = {"ai": "AI 识别", "scan": "扫描", "probe": "单条测试"}
+KIND_LABEL = {"ai": "AI 识别", "scan": "扫描", "probe": "单条测试", "preset": "官方示例运行"}
 
 SCAN_GAP_S = 5.0
 

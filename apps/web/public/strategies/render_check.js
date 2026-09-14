@@ -1383,6 +1383,56 @@ try {
   console.log('FAIL 列头排序定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 官方示例原样运行不扣扫描次数(2026-09-14 用户要求)──────────────────────────
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  inlineScripts(fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')).forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    var OP = {}
+    localStorage.setItem('hunter_token', 't'); S.login = true
+    S.quota = { login: true, scan: { kind: 'scan', label: '扫描', remaining: 0, limit: 20 }, ai: { kind: 'ai', label: 'AI 识别', remaining: 3, limit: 10 } }
+    applyParsed({ conditions: [{ name: 'c1', expr: 'close > 20', is_bool: true }], plot_refs: ['c1'], combine: 'all',
+                  official_preset: { key: 'uptrend', name: '上升趋势', market: 'us' } })
+    S.market = 'us'
+    OP.barOfficial = vRunBar()
+    S.market = 'hk'
+    OP.barOtherMarket = vRunBar()
+    S.market = 'us'
+    applyParsed({ conditions: [{ name: 'c1', expr: 'close > 21', is_bool: true }], plot_refs: ['c1'], combine: 'all', official_preset: null })
+    OP.barModified = vRunBar()
+    var TOASTS = []
+    toast = function (m) { TOASTS.push(String(m)) }
+    revealAfter = async function () {}
+    post = async function () { return { ok: true, status: 200, data: { matched: 3, picks: [], columns: [], official_preset: { key: 'uptrend', name: '上升趋势', market: 'us' } } } }
+    OP.done = (async function () {
+      applyParsed({ conditions: [{ name: 'c1', expr: 'close > 20', is_bool: true }], plot_refs: ['c1'], combine: 'all', official_preset: { key: 'uptrend', name: '上升趋势', market: 'us' } })
+      await runScan()
+      OP.toasts = TOASTS.slice(); OP.left = S.quota.scan.remaining
+    })()
+  `, ctx, { filename: 'assert-official' })
+  const OP = ctx.OP
+  const checks = [
+    ['原样的官方示例:次数用完仍可运行', /id="sc-run">/.test(OP.barOfficial) && !/今天的扫描次数已用完/.test(OP.barOfficial)],
+    ['原样的官方示例:运行栏写明不计次数', /官方示例「上升趋势」· 原样运行不计扫描次数/.test(OP.barOfficial)],
+    ['换了市场就不算官方示例(按钮照常禁用)', /id="sc-run" disabled>今天的扫描次数已用完/.test(OP.barOtherMarket) && !/原样运行不计/.test(OP.barOtherMarket)],
+    ['改过条件就不算官方示例', /id="sc-run" disabled>今天的扫描次数已用完/.test(OP.barModified) && !/原样运行不计/.test(OP.barModified)],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 官方示例免费 ·', name)
+    else { failed++; console.log('FAIL 官方示例免费 ·', name) }
+  }
+  OP.done.then(() => {
+    const ok = OP.toasts.some(t => /官方示例「上升趋势」原样运行,不计扫描次数/.test(t)) && OP.left === 0 &&
+      !OP.toasts.some(t => /本次扫描计 1 次/.test(t))
+    if (ok) console.log('PASS 官方示例免费 · 运行后提示不计次数、剩余次数不变')
+    else { failed++; console.log('FAIL 官方示例免费 · 运行后提示', JSON.stringify(OP.toasts), OP.left) }
+  }).catch((e) => { failed++; console.log('FAIL 官方示例免费异步断言 ·', e && e.message) })
+} catch (e) {
+  failed++
+  console.log('FAIL 官方示例免费定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 标签页图标(2026-09-14 · 第一轮评审 GN-001:页面标题的图标也要是猎鹿人 logo)──────────
 // 静态页不走 Next 的 app/icon.png,不写 <link rel="icon"> 浏览器就显示空白图标。与主站同一个 /icon.png
 for (const page of ['index.html', 'factors.html', 'workbench.html', 'backtest.html', 'data.html', 'agent.html', 'screener.html']) {
