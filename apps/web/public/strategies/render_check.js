@@ -834,7 +834,7 @@ try {
     ['app.js:0 天命中也写进图例', /mark\.alwaysScan/.test(appJs)],
     ['app.js:算不出的天数单独写', /天算不出/.test(appJs)],
     // 换票时不清头部,新票加载中会顶着上一只的现价和命中天数(2026-09-13 截图实测)
-    ['app.js:换票先清上一只的现价 / 图例 / 区间,再去拉日线', /px0\.textContent = ''[\s\S]{0,200}lg0\.textContent = '滚轮缩放 · 十字星读数'[\s\S]{0,120}rg0\.textContent = ''[\s\S]{0,600}await kcFetch\(code\)/.test(appJs)],
+    ['app.js:换票先清上一只的现价 / 图例 / 区间,再去拉日线', /px0\.textContent = ''[\s\S]{0,200}lg0\.textContent = KC_HINT[\s\S]{0,120}rg0\.textContent = ''[\s\S]{0,600}await kcFetch\(code\)/.test(appJs)],
   ]
   for (const [name, ok] of hk) {
     if (ok) console.log('PASS 筛选器命中日 ·', name)
@@ -871,6 +871,43 @@ try {
 } catch (e) {
   failed++
   console.log('FAIL 命中日可见断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
+// ─── 悬停日K:左键拖动平移(仿 TradingView,2026-09-14)──────────────────────
+// 用户要先把想看的那段拖到中间再滚轮放大。四件事钉住:
+//   ① dataZoom 打开按住拖动平移,滚轮只缩放;② 拖动中划出弹层不关、划过别的代码不换票;
+//   ③ 松手 / 窗口失焦都要结束拖动(否则 dragging 卡住,弹层再也关不掉);
+//   ④ 同一只票重画(命中日后到)沿用拖动 / 缩放区间,不弹回全年。
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  vm.runInContext(
+    "var KD_ROWS = [{ ts: '2026-09-10', open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 }, { ts: '2026-09-11', open: 1.5, high: 2, low: 1, close: 1.8, volume: 12 }];" +
+    "var KD_A = kcOption(KD_ROWS, null).dataZoom[0];" +
+    "var KD_B = kcOption(KD_ROWS, null, { start: 40, end: 60 }).dataZoom[0];",
+    ctx, { filename: 'assert-kc-drag' })
+  const css = fs.readFileSync(path.join(DIR, 'style.css'), 'utf8')
+  const kd = [
+    ['按住左键拖动平移已打开', ctx.KD_A.moveOnMouseMove === true],
+    ['滚轮只缩放、不平移', ctx.KD_A.zoomOnMouseWheel === true && ctx.KD_A.moveOnMouseWheel === false],
+    ['默认显示全年', ctx.KD_A.start === 0 && ctx.KD_A.end === 100],
+    ['传入区间时沿用', ctx.KD_B.start === 40 && ctx.KD_B.end === 60],
+    ['kcHide 拖动中不收起', /function kcHide\(\) \{\s*if \(KC\.dragging\) return/.test(appJs)],
+    ['拖动中划过别的代码不换票', /if \(td && !KC\.dragging\) kcShow\(td\)/.test(appJs)],
+    ['松手结束拖动', /document\.addEventListener\('mouseup', endDrag, true\)/.test(appJs)],
+    ['窗口失焦也结束拖动', /window\.addEventListener\('blur', endDrag\)/.test(appJs)],
+    ['同一只票重画先取拖动 / 缩放区间,再丢旧图', /KC\.chartCode === code\) \? kcZoomOf\(KC\.chart\) : null\s*kcDropChart\(\)/.test(appJs)],
+    ['新图记下是哪只票并带上区间', /KC\.chartCode = code\s*KC\.chart\.setOption\(kcOption\(rows, mark, zoom\)\)/.test(appJs)],
+    ['图例提示写着左键拖动', ctx.KC_HINT === undefined ? /const KC_HINT = '左键拖动平移/.test(appJs) : /左键拖动/.test(ctx.KC_HINT)],
+    ['光标:划过十字、拖动抓手', /\.kc-box \*\{cursor:crosshair!important\}/.test(css) && /\.kc-pop\.drag \.kc-box \*\{cursor:grabbing!important\}/.test(css)],
+  ]
+  for (const [name, ok] of kd) {
+    if (ok) console.log('PASS 日K拖动 ·', name)
+    else { failed++; console.log('FAIL 日K拖动 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 日K拖动断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
 // ─── 悬停日K:dispose 必须在清容器之前(app.js)────────────────────────

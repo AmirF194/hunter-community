@@ -883,7 +883,7 @@ function shareCurrentUrl() {
 
 
 // ═════════════════════════════════════════════════════════════════
-// 悬停日K —— 鼠标停在代码上弹出近一年日线 · 滚轮缩放 · 十字星读数
+// 悬停日K —— 鼠标停在代码上弹出近一年日线 · 左键拖动平移 · 滚轮缩放 · 十字星读数
 // ═════════════════════════════════════════════════════════════════
 // 2026-09-12 从 screener.html 搬到这里变成公共模块:智能体的历史交易记录
 // 也要用它,再抄一份迟早会漂移(前科:hermes 和 huntercode 两份 uzi_mcp.py)。
@@ -909,6 +909,8 @@ function shareCurrentUrl() {
 // 标记画在 K 线序列上,所以缩放平移时跟着走。
 const KC = { el: null, chart: null, cache: new Map(),
              seq: 0, showT: null, hideT: null, cur: null, bound: false,
+             chartCode: null,      // 当前这张图是哪只票(同一只重画时沿用拖动 / 缩放区间)
+             dragging: false,      // 左键正按着拖图:这期间不关弹层、不换票
              asOf: null,           // asOf: 回溯时只画到这天(screener 用)
              markOf: null }        // 页面可选:async (code, td) → 标记 | null(screener 用来标历史命中日)
 const KC_LIMIT = 250          // 一年大约 250 个交易日
@@ -919,6 +921,7 @@ const KC_UP = '#a4332b', KC_DN = '#3f6b40'
 const KC_BUY = '#1f9254', KC_SELL = '#c0392b'
 const KC_SCAN = 'rgba(46,134,222,.16)'    // 扫描命中:半透明蓝(色带,一根 K 线宽)
 const KC_SCAN_LINE = 'rgba(46,134,222,.55)' // 扫描命中:固定 2px 竖线(250 根挤在一起时色带看不见,靠它)
+const KC_HINT = '左键拖动平移 · 滚轮缩放 · 十字星读数'
 
 function kcEsc(s) {
   return String(s == null ? '' : s)
@@ -945,11 +948,28 @@ function kcEl() {
     '<div class="kc-hd"><span class="sy" id="kc-sy"></span>' +
     '<span class="nm" id="kc-nm"></span><span class="px" id="kc-px"></span></div>' +
     '<div class="kc-box" id="kc-box"></div>' +
-    '<div class="kc-ft"><span id="kc-lg">滚轮缩放 · 十字星读数</span><span class="r" id="kc-rg"></span></div>'
+    '<div class="kc-ft"><span id="kc-lg">' + KC_HINT + '</span><span class="r" id="kc-rg"></span></div>'
   document.body.appendChild(d)
-  // 鼠标进了弹层就别关 —— 用户要在里面滚轮缩放
+  // 鼠标进了弹层就别关 —— 用户要在里面拖动、滚轮缩放
   d.addEventListener('mouseenter', function () { clearTimeout(KC.hideT) })
   d.addEventListener('mouseleave', kcHide)
+  // 左键拖动平移(仿 TradingView,2026-09-14 用户要求)。拖的时候鼠标常常划出弹层、划过表格里别的代码,
+  // 这期间既不能关弹层(kcHide 里判 dragging)、也不能换票(bindKChart 的 mouseover 里判);
+  // 松手时鼠标已经不在弹层里,再按正常路径收起。都用捕获阶段,不指望 echarts 不拦冒泡。
+  d.addEventListener('mousedown', function (e) {
+    if (e.button !== 0 || !e.target || !e.target.closest || !e.target.closest('.kc-box')) return
+    KC.dragging = true
+    d.classList.add('drag')
+    clearTimeout(KC.hideT)
+  }, true)
+  const endDrag = function (e) {
+    if (!KC.dragging) return
+    KC.dragging = false
+    d.classList.remove('drag')
+    if (!(e && e.target && e.target.nodeType === 1 && d.contains(e.target))) kcHide()
+  }
+  document.addEventListener('mouseup', endDrag, true)
+  window.addEventListener('blur', endDrag)      // 拖到窗口外松手收不到 mouseup,别让 dragging 卡住
   KC.el = d
   return d
 }
@@ -968,6 +988,7 @@ function kcPlace(rect) {
 }
 
 function kcHide() {
+  if (KC.dragging) return        // 拖动中划出弹层不算离开,松手时(endDrag)再判断
   clearTimeout(KC.showT)
   KC.hideT = setTimeout(function () {
     if (KC.el) KC.el.classList.remove('on')
@@ -1057,7 +1078,8 @@ function kcMarkSeries(rows, mark) {
   return out
 }
 
-function kcOption(rows, mark) {
+// zoom = { start, end }(百分比),同一只票重画时沿用;不传 = 全年
+function kcOption(rows, mark, zoom) {
   const dates = rows.map(function (r) { return String(r.ts || r.date || '').slice(5) })
   const ohlc = rows.map(function (r) { return [r.open, r.close, r.low, r.high] })
   const vols = rows.map(function (r) { return r.volume })
@@ -1085,11 +1107,13 @@ function kcOption(rows, mark) {
         splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false } },
     ],
     dataZoom: [{
-      type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100,
-      zoomOnMouseWheel: true,
-      // ⚠️ 这两个必须关掉。开着的话鼠标一动图就平移,十字星根本读不了数 ——
-      // 而「十字星读数」正是这个弹层存在的理由。
-      moveOnMouseMove: false, moveOnMouseWheel: false,
+      type: 'inside', xAxisIndex: [0, 1],
+      start: zoom ? zoom.start : 0, end: zoom ? zoom.end : 100,
+      zoomOnMouseWheel: true,          // 滚轮以鼠标所在位置为中心缩放
+      // 左键按住拖动平移(2026-09-14 用户要求,仿 TradingView:先把想看的那段拖到中间,再滚轮放大)。
+      // echarts 的 moveOnMouseMove 只在**按住**时平移,不按键划过去图不动,十字星照常读数。
+      // moveOnMouseWheel 仍关:滚轮只管缩放,两个手势各管一件事。
+      moveOnMouseMove: true, moveOnMouseWheel: false, preventDefaultMouseMove: true,
       minValueSpan: 8,        // 最多放大到 8 根,再放大就看不出形态了
     }],
     tooltip: {
@@ -1139,7 +1163,7 @@ function kcOption(rows, mark) {
 function kcLegend(rows, mark) {
   const lg = document.getElementById('kc-lg')
   if (!lg) return
-  if (!mark) { lg.textContent = '滚轮缩放 · 十字星读数'; return }
+  if (!mark) { lg.textContent = KC_HINT; return }
   const n = function (a) { return kcIndexOf(rows, a).length }
   const parts = []
   if (mark.error) {
@@ -1156,7 +1180,15 @@ function kcLegend(rows, mark) {
   }
   if (n(mark.buy)) parts.push('<i style="background:' + KC_BUY + '"></i>买入 ' + n(mark.buy))
   if (n(mark.sell)) parts.push('<i style="background:' + KC_SELL + '"></i>卖出 ' + n(mark.sell))
-  lg.innerHTML = parts.length ? parts.join('　') : '滚轮缩放 · 十字星读数'
+  lg.innerHTML = parts.length ? parts.join('　') : KC_HINT
+}
+
+function kcZoomOf(chart) {
+  try {
+    const dz = (chart.getOption().dataZoom || [])[0]
+    if (dz && Number.isFinite(dz.start) && Number.isFinite(dz.end)) return { start: dz.start, end: dz.end }
+  } catch (e) { /* 图已经被丢掉了,当没有 */ }
+  return null
 }
 
 function kcRender(code, name, payload, mark) {
@@ -1196,11 +1228,15 @@ function kcRender(code, name, payload, mark) {
 
   const box = document.getElementById('kc-box')
   if (!box) return
+  // 同一只票重画(命中日标记后到)时沿用用户已经拖动 / 缩放到的区间 ——
+  // 否则刚把那段拖到中间放大,标记一到图就弹回全年视图
+  const zoom = (KC.chart && KC.chartCode === code) ? kcZoomOf(KC.chart) : null
   kcDropChart()            // 顺序不能反,原因见 kcDropChart 的注释
   box.innerHTML = ''
   if (!window.echarts) { kcMsg('图表库没加载出来'); return }
   KC.chart = window.echarts.init(box)
-  KC.chart.setOption(kcOption(rows, mark))
+  KC.chartCode = code
+  KC.chart.setOption(kcOption(rows, mark, zoom))
   kcPlace(el._rect || { right: 0, left: 0, top: 0, height: 0 })
 }
 
@@ -1252,7 +1288,7 @@ function kcShow(td) {
     const px0 = document.getElementById('kc-px')
     if (px0) { px0.textContent = ''; px0.className = 'px' }
     const lg0 = document.getElementById('kc-lg')
-    if (lg0) lg0.textContent = '滚轮缩放 · 十字星读数'
+    if (lg0) lg0.textContent = KC_HINT
     const rg0 = document.getElementById('kc-rg')
     if (rg0) rg0.textContent = ''
     // 首次拉日线要 5~10 秒(上游接口),不说清楚用户会以为卡死了 —— 他没法区分
@@ -1276,7 +1312,7 @@ function kcShow(td) {
       try { m = await KC.markOf(code, td) } catch (e) { m = { error: '命中日没算出来:' + ((e && e.message) || e) } }
       if (seq !== KC.seq) return            // 等的这一两秒里鼠标换了票,别把上一只的标记画到这只上
       if (m) kcRender(code, td.dataset.kname, payload, m)
-      else if (lg) lg.textContent = '滚轮缩放 · 十字星读数'
+      else if (lg) lg.textContent = KC_HINT
     }
   }, 180)
 }
@@ -1286,7 +1322,7 @@ function bindKChart() {
   KC.bound = true
   document.addEventListener('mouseover', function (e) {
     const td = e.target && e.target.closest ? e.target.closest('[data-kchart]') : null
-    if (td) kcShow(td)
+    if (td && !KC.dragging) kcShow(td)     // 拖图时划过表格里别的代码,不换票
   })
   document.addEventListener('mouseout', function (e) {
     const td = e.target && e.target.closest ? e.target.closest('[data-kchart]') : null

@@ -486,7 +486,7 @@ a{text-decoration:none;color:inherit}
 }
 
 /* ══ 悬停日K 弹层(公共 · screener 与 agent 都用,脚本在 app.js) ══════
-   鼠标停在代码上弹出近一年日K,滚轮缩放,十字星读数。
+   鼠标停在代码上弹出近一年日K,左键拖动平移,滚轮缩放,十字星读数。
    用 position:fixed —— 表格自己在容器里滚动,用 absolute 会跟着滚出可视区。
    用 opacity 而不是 display:none:display:none 的容器尺寸为 0,
    echarts 在里面 init 会画出一张 0×0 的图,再 resize 也回不来。 */
@@ -502,7 +502,11 @@ a{text-decoration:none;color:inherit}
 .kc-hd .nm{color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kc-hd .px{font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums;font-weight:600}
 .kc-hd .px.up{color:var(--up,#a4332b)} .kc-hd .px.dn{color:var(--dn,#3f6b40)}
-.kc-box{height:252px}
+.kc-box{height:252px;user-select:none}
+/* 光标仿 TradingView:划过是十字,按住拖动是抓手。echarts 会往自己的节点上写行内 cursor,所以要 !important */
+.kc-box *{cursor:crosshair!important}
+.kc-pop.drag .kc-box *{cursor:grabbing!important}
+.kc-box .kc-msg{cursor:default!important}
 .kc-msg{height:252px;display:grid;place-items:center;text-align:center;
   color:var(--muted);font-size:12.5px;line-height:1.9;padding:0 24px}
 .kc-ft{font-size:10.5px;color:var(--soft,#a2a49d);margin-top:3px;display:flex;gap:10px}
