@@ -73,6 +73,21 @@ v2 一年:+0.63%、48 笔、每笔 +12 美元、回撤 -7.94%。
 在 v3 基础上把 4b「1 个月振幅 3%~12%」的上限放到 15%。诊断:只差 P-04 的 161 次里 4b 没过 107 次,
 那批票 1 个月振幅中位 14%;单独放到 15% 新增 12 次,突破后 20 天收盘中位 +5.5%(样本很小)。
 「1 月 ≤ 3 月 × 0.55」没动 —— 放到 0.70 新增的 10 次 20 天中位 -7.3%,说明收缩这条有用。
+
+v3 一年 -0.27%、63 笔、每笔 -6;v4 一年 -1.41%、74 笔、每笔 -21、回撤 -11.62%。三版里 EMA8 止损(P-11)的亏损 7,550 → 9,953 → 14,035。
+
+## v5(2026-09-14 用户:「把 EMA8 止损改成更宽松的组合」,入场保持 v4)
+
+用户选定(AskUserQuestion):**只换 EMA8 止损,其余出场照旧**;移动止盈「破 EMA10 卖一半、破 EMA20 清仓」;入场保持 v4。
+
+- P-11 初始止损:进场价 − 1 × ATR(20),但止损距离最多 8%(止损价 = max(进场价 − ATR, 进场价 × 0.92));
+        持有期最高收盘到过进场价 × 1.05 后,止损上移到**持仓均价**(加过仓的话均价比首笔高,这样才是真保本)。收盘跌破即出。
+        ⚠ P-10 固定 6% 保留着,ATR 超过 6% 的票会先碰到 6%,8% 上限实际用不上 —— 用户选「其余照旧」时已提醒。
+        ATR 算不出 → 不买(不拿 8% 顶替)。
+- P-17 +20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)。
+- P-18 跌破 EMA10 减半:P-17 之后,收盘跌破 EMA10,卖出余仓一半(一次)。
+- P-19 跌破 EMA20 清仓:P-17 之后,收盘跌破 EMA20,清仓。和 P-13(浮盈 10% 跌破 EMA21)几乎同一条线,
+        两者同时成立时记 P-19(用户的新规则优先记账,动作一样都是清仓)。
 """
 from __future__ import annotations
 
@@ -94,6 +109,7 @@ PARAMS = {
     "extend": 1.05, "vol_surge": 1.5,
     "add1_pct": 1.02, "add1_vol": 1.2, "add2_pct": 1.05, "add2_vol": 1.1,
     "base_stop": 0.98, "fixed_stop": 0.94,
+    "stop_atr": 1.0, "stop_cap": 0.08, "be_trigger": 1.05, "half_trigger": 1.20,       # v5:替换 EMA8 止损
     "partial_profit": 8.0, "partial_frac": 0.20,
     "exit_ema21_profit": 10.0, "exit_sma50_profit": 20.0,
     "unit_pct": 0.20, "initial_frac": 0.50, "add1_frac": 0.30, "add2_frac": 0.20, "max_holdings": 5,
@@ -130,16 +146,19 @@ RULES = [
     {"id": "P-08", "kind": "buy", "condition": "加仓:收盘 > 进场价 × 1.02、量 > 20 日均量 × 1.2、收盘 > EMA8、市场向上 → +30%;收盘 > 进场价 × 1.05、量 > 20 日均量 × 1.1、收盘 > EMA21 → 再 +20%"},
     {"id": "P-09", "kind": "sell", "condition": "止损 A:当天最低价 < 前一天为止近 21 日最低 × 0.98(跌破 Base 低点),按收盘价出"},
     {"id": "P-10", "kind": "sell", "condition": "止损 B:收盘 < 进场价 × 0.94(固定 6%)"},
-    {"id": "P-11", "kind": "sell", "condition": "止损 C:收盘 < EMA8 且收盘 < 进场价"},
+    {"id": "P-11", "kind": "sell", "condition": "初始止损:进场价 − 1 × ATR(20),止损距离最多 8%;最高收盘到过进场价 × 1.05 后上移到持仓均价(保本);收盘跌破即出"},
     {"id": "P-12", "kind": "sell", "condition": "部分止盈:浮盈 ≥ 8% 且收盘 < 前一天最高、量 < 10 日均量 → 卖出约 20%(每个持仓一次)"},
     {"id": "P-13", "kind": "sell", "condition": "趋势出场:收盘 < EMA21 且浮盈 > 10%"},
     {"id": "P-14", "kind": "sell", "condition": "趋势出场:收盘 < 50 日均线且浮盈 > 20%"},
     {"id": "P-15", "kind": "sell", "condition": "市场转弱:标普 500 不再满足 收盘 > 50 日 > 200 日 → 清仓"},
     {"id": "P-16", "kind": "risk", "condition": "护栏:单日权益回撤达 -3% 当天停止开仓;连亏 3 笔后下一个交易日不开仓"},
+    {"id": "P-17", "kind": "sell", "condition": "+20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)"},
+    {"id": "P-18", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA10 卖出余仓一半(一次)"},
+    {"id": "P-19", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA20 清仓"},
 ]
 RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Base 低点", "P-10": "固定 6% 止损",
-             "P-11": "跌破 EMA8 且亏损", "P-12": "部分止盈", "P-13": "跌破 EMA21", "P-14": "跌破 50 日线",
-             "P-15": "市场转弱"}
+             "P-11": "ATR 止损 / 保本", "P-12": "部分止盈", "P-13": "跌破 EMA21", "P-14": "跌破 50 日线",
+             "P-15": "市场转弱", "P-17": "+20% 减半", "P-18": "跌破 EMA10 减半", "P-19": "跌破 EMA20 清仓"}
 RULE_PARAM_KEY: dict = {}            # 规则固定,不进优化器
 
 
@@ -151,7 +170,8 @@ def summary(p: dict = PARAMS) -> str:
     return ("Patrick Walker 风格突破:标普在 50 日 > 200 日之上才做;前一天收盘时已是均线多头、离一年高点 20% 以内、RS ≥ 70、"
             "3 个月 → 1 个月 → 5 天振幅逐级收紧、低点抬高、量能干燥的票,今天收盘放量(> 1.5 倍 50 日均量)站上浪高点下方密集成交区的上沿、"
             "且不超过 5% 时买入完整仓位(总资产 20%)的一半;涨 2% / 5% 且放量站上 EMA8 / EMA21 各加 30% / 20%;"
-            "跌破 Base 低点 2%、亏 6%、或亏损中跌破 EMA8 止损;浮盈 8% 后遇暂停卖 20%;"
+            "跌破 Base 低点 2%、亏 6%、或跌破 1 倍 ATR 初始止损(最多 8%)出场,最高到过 +5% 后止损上移到均价保本;"
+            "浮盈 8% 后遇暂停卖 20%,+20% 减半,之后跌破 EMA10 再减半、跌破 EMA20 清仓;"
             "浮盈 10% 跌破 EMA21、浮盈 20% 跌破 50 日线、或大盘转弱时清仓。")
 
 
@@ -235,6 +255,7 @@ def _core(bars: list[tuple]) -> dict | None:
         "pivot": zone["high"] if zone else None, "zone": zone, "base_low": min(lo[-22:-1]),
         "av10": _mean(v[-10:]), "av20": _mean(v[-20:]), "av50": _mean(v[-50:]),
         "ema8": av._ema(c[-160:], 8), "ema21": av._ema(c[-160:], 21),
+        "ema10": av._ema(c[-160:], 10), "ema20": av._ema(c[-160:], 20), "atr20": av._atr(bars[-61:], 20),
         "sma50": av._sma(c, 50),
         "screen": None,
     }
@@ -407,8 +428,12 @@ def exit_rule(pos: av.Position, ind: dict, market: dict | None, p: dict = PARAMS
         return "P-09", f"最低价 ${ind['low']:.2f} 跌破 Base 低点 ${ind['base_low']:.2f} 的 {p['base_stop']:.2f} 倍 —— 止损 A,按收盘出。"
     if px < ep * p["fixed_stop"]:
         return "P-10", f"收盘 ${px:.2f} 跌破进场价 × {p['fixed_stop']:.2f} = ${ep * p['fixed_stop']:.2f} —— 固定止损。"
-    if ind["ema8"] is not None and px < ind["ema8"] and px < ep:
-        return "P-11", f"收盘 ${px:.2f} 在 EMA8 ${ind['ema8']:.2f} 下方且低于进场价 —— 止损 C。"
+    if pos.stop and px < pos.stop:
+        be = pos.stop >= pos.avg_cost - 1e-9
+        return "P-11", (f"收盘 ${px:.2f} 跌破{'保本止损(持仓均价)' if be else '初始止损'} ${pos.stop:.2f} —— 出场。")
+    ex = pos.extra or {}
+    if ex.get("half20_done") and ind.get("ema20") is not None and px < ind["ema20"]:
+        return "P-19", f"+20% 减半之后,收盘跌破 EMA20 ${ind['ema20']:.2f} —— 移动止盈清仓。"
     if ind["ema21"] is not None and px < ind["ema21"] and profit > p["exit_ema21_profit"]:
         return "P-13", f"浮盈 {profit:.1f}% 时收盘跌破 EMA21 ${ind['ema21']:.2f} —— 趋势出场。"
     if ind["sma50"] is not None and px < ind["sma50"] and profit > p["exit_sma50_profit"]:
@@ -433,8 +458,18 @@ def manage_position(pos: av.Position, ind: dict, state: dict, p: dict = PARAMS, 
         pos.highest = max(pos.highest, px)
         state["closed"].append(pos)
         return fills
+    # v5 减仓:+20% 减半(一次)→ 之后跌破 EMA10 再减半(一次)。清仓那条 P-19 在 exit_rule 里
+    if (ex.get("half20_done") and not ex.get("ema10_done") and ind.get("ema10") is not None
+            and px < ind["ema10"] and pos.size >= 2):
+        _sell(pos, pos.size // 2, px, "P-18", f"+20% 减半之后收盘跌破 EMA10 ${ind['ema10']:.2f} —— 卖出余仓一半。",
+              state, fills, n, want_text, base)
+        ex["ema10_done"] = True
+    elif not ex.get("half20_done") and px >= ep * p["half_trigger"] and pos.size >= 2:
+        _sell(pos, pos.size // 2, px, "P-17", f"收盘到进场价 × {p['half_trigger']:.2f} = ${ep * p['half_trigger']:.2f} 以上 —— 减半,余仓按 EMA10 / EMA20 移动止盈。",
+              state, fills, n, want_text, base)
+        ex["half20_done"] = True
     # 部分止盈(一次)
-    if (profit >= p["partial_profit"] and not ex.get("partial_done") and px < ind["prev_high"]
+    elif (profit >= p["partial_profit"] and not ex.get("partial_done") and px < ind["prev_high"]
             and ind["av10"] is not None and ind["volume"] < ind["av10"] and pos.size >= 2):
         qty = max(1, int(round(pos.size * p["partial_frac"])))
         _sell(pos, qty, px, "P-12", f"浮盈 {profit:.1f}% ≥ {p['partial_profit']:.0f}%,收盘低于昨天最高 ${ind['prev_high']:.2f}、"
@@ -461,6 +496,9 @@ def manage_position(pos: av.Position, ind: dict, state: dict, p: dict = PARAMS, 
             fills.append(_fill("buy", pos, add, px, "P-08", (base + why + f"({add} 股)。") if want_text else "",
                                amount=round(add * px, 2), position_pct=round(add * px / state["equity"] * 100, 2)))
     pos.highest = max(pos.highest, px)
+    # 保本:最高收盘到过进场价 × 1.05 → 止损上移到持仓均价(只上不下;明天起按新止损判断)
+    if pos.highest >= ep * p["be_trigger"] and pos.avg_cost > pos.stop:
+        pos.stop = pos.avg_cost
     if pos.size <= 0:
         state["closed"].append(pos)
     return fills
@@ -478,6 +516,10 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     if len(state["positions"]) >= p["max_holdings"]:
         return None, f"突破成立,但已持有 {len(state['positions'])} 只,达到上限 {p['max_holdings']}(P-07)"
     equity, px = state["equity"], ind["close"]
+    atr = ind.get("atr20")
+    if not atr or atr <= 0:
+        return None, "突破成立,但 ATR(20) 算不出,没法定初始止损(不拿 8% 顶替)(P-11)"
+    stop = max(px - p["stop_atr"] * atr, px * (1 - p["stop_cap"]))
     unit = int(equity * p["unit_pct"] / px)
     size = int(unit * p["initial_frac"])
     if size <= 0:
@@ -492,8 +534,8 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     state["cash"] -= cost
     pos = av.Position(code=code, name=name or code, size=size, initial_size=unit, entry_price=px,
                       entry_date=state["date"], avg_cost=px, highest=px, level=1, bars_held=0,
-                      entry_rule=ENTRY_RULE, stop=px * p["fixed_stop"], risk=px * (1 - p["fixed_stop"]),
-                      extra={"unit": unit, "pivot": ind["pivot"]})
+                      entry_rule=ENTRY_RULE, stop=stop, risk=px - stop,
+                      extra={"unit": unit, "pivot": ind["pivot"], "atr": atr})
     state["positions"].append(pos)
     extra = {"amount": round(cost, 2), "position_pct": round(cost / equity * 100, 2)}
     if not want_text:
@@ -501,7 +543,9 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     rationale = ("".join(f"{c['rule']} {c['text']};" for c in checks)
                  + f"完整仓位 = 总资产 {p['unit_pct'] * 100:.0f}% ÷ ${px:.2f} = {unit} 股,首次买入 {p['initial_frac'] * 100:.0f}%"
                  + (f",现金只够 {size} 股" if cash_cut else f" = {size} 股")
-                 + f",占总资产 {cost / equity * 100:.1f}%。")
+                 + f",占总资产 {cost / equity * 100:.1f}%。"
+                 + f"初始止损 = max(收盘 − {p['stop_atr']:.0f} × ATR ${atr:.2f}, 收盘 × {1 - p['stop_cap']:.2f}) = ${stop:.2f}"
+                 + f"(距收盘 {(1 - stop / px) * 100:.1f}%{',被 8% 上限截住' if px - p['stop_atr'] * atr < px * (1 - p['stop_cap']) else ''})。")
     return _fill("buy", pos, size, px, ENTRY_RULE, rationale, **extra), None
 
 

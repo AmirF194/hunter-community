@@ -91,7 +91,8 @@ SCREEN_BROKEN = dict(SCREEN_OK, rng1m=0.18, rng5d=0.12)       # 18%:v4 把 4b �
 def good(prev=None, **kw):
     x = {"close": 104.0, "high": 104.5, "low": 101.5, "volume": 2_000_000.0, "prev_high": 102.0,
          "pivot": 102.0, "base_low": 95.0, "av10": 1_100_000.0, "av20": 1_000_000.0, "av50": 1_000_000.0,
-         "ema8": 101.0, "ema21": 99.0, "sma50": 95.0, "screen": dict(SCREEN_BROKEN)}
+         "ema8": 101.0, "ema21": 99.0, "sma50": 95.0, "screen": dict(SCREEN_BROKEN),
+         "ema10": 101.5, "ema20": 99.5, "atr20": 3.0}
     pv = {"close": 101.8, "pivot": 102.0, "av10": 800_000.0, "av50": 1_000_000.0, "sma50": 95.0,
           "screen": dict(SCREEN_OK)}
     prev = dict(prev or {})
@@ -144,6 +145,16 @@ if buys:
     check("P-07 · 首次买入 = 完整仓位(总资产 20%)的一半", buys[0]["shares"] == int(unit * 0.5), f"{buys[0]['shares']} vs {unit}")
     check("进场 · 理由里逐条写了 P-01 ~ P-06 与股数算法", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "完整仓位", "昨收")))
     check("进场 · 完整仓位记在 extra 里(加仓按它算)", r["positions"][0].extra.get("unit") == unit)
+    check("P-11 · 初始止损 = 进场价 − 1 ATR(104 − 3 = 101)", abs(r["positions"][0].stop - 101.0) < 1e-9, str(r["positions"][0].stop))
+    check("P-11 · 买入理由写了初始止损算法", "初始止损" in buys[0]["rationale"])
+
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(atr20=12.0))
+check("P-11 · ATR 12 超过 8% → 止损被截在 进场价 × 0.92",
+      r["positions"] and abs(r["positions"][0].stop - 104.0 * 0.92) < 1e-9, str([x.stop for x in r["positions"]]))
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(atr20=None))
+check("P-11 · ATR 算不出 → 不买并写明(不拿 8% 顶替)", not r["fills"] and "ATR" in (r["watch_items"][0].get("blocked_reason") or ""))
 
 r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, P, G,
                ind_of=lambda c: DOWN if c == ab.MARKET_KEY else good())
@@ -157,7 +168,7 @@ check("P-16 · 连亏 3 笔 → 今天不开仓", not r["fills"] and r["halt_rea
 # ── 持仓管理 ─────────────────────────────────────────────────
 def pos(ep=100.0, size=100, unit=200, level=1, extra=None):
     return av.Position(code="AAA", name="AAA", size=size, initial_size=unit, entry_price=ep, entry_date="2026-01-02",
-                       avg_cost=ep, highest=ep, level=level, stop=ep * 0.94, risk=ep * 0.06,
+                       avg_cost=ep, highest=ep, level=level, stop=ep * 0.90, risk=ep * 0.10,
                        extra=dict({"unit": unit}, **(extra or {})))
 
 
@@ -165,7 +176,8 @@ def hold(close, **kw):
     """一份「什么出场条件都不碰」的持仓指标,再按需改几个字段。"""
     x = {"close": close, "high": close * 1.005, "low": close * 0.995, "volume": 1_000_000.0, "prev_high": close * 0.99,
          "pivot": 100.0, "base_low": 90.0, "av10": 1_000_000.0, "av20": 1_000_000.0, "av50": 1_000_000.0,
-         "ema8": close * 0.98, "ema21": close * 0.96, "sma50": close * 0.9, "screen": None, "prev": None}
+         "ema8": close * 0.98, "ema21": close * 0.96, "sma50": close * 0.9, "screen": None, "prev": None,
+         "ema10": close * 0.97, "ema20": close * 0.95, "atr20": 2.0}
     x.update(kw)
     return x
 
@@ -184,10 +196,45 @@ check("P-09 · 最低价跌破 Base 低点 × 0.98 → 清仓按收盘价", sold
       and sold(r)[0]["price"] == 101.0 and sold(r)[0]["shares"] == 100, str(r["fills"]))
 r = day(pos(), hold(93.9, ema8=90.0, low=93.5))
 check("P-10 · 收盘 < 进场价 × 0.94 → 固定止损", sold(r) and sold(r)[0]["rule_id"] == "P-10", str(r["fills"]))
-r = day(pos(), hold(99.0, ema8=99.5))
-check("P-11 · 亏损中收盘 < EMA8 → 止损 C", sold(r) and sold(r)[0]["rule_id"] == "P-11", str(r["fills"]))
-r = day(pos(), hold(101.0, ema8=102.0))
-check("P-11 · 盈利中跌破 EMA8 不算止损 C", not sold(r), str(r["fills"]))
+p11 = pos()
+p11.stop = 97.0
+r = day(p11, hold(96.5, low=96.0))
+check("P-11 · 收盘跌破初始止损 97 → 出场", sold(r) and sold(r)[0]["rule_id"] == "P-11" and "初始止损" in sold(r)[0]["rationale"], str(r["fills"]))
+p11 = pos()
+p11.stop = 97.0
+r = day(p11, hold(98.0, ema8=99.5))
+check("P-11 · v5 不再有 EMA8 止损:亏损中跌破 EMA8 但没破止损 → 不卖", not sold(r), str(r["fills"]))
+pbe = pos()
+pbe.stop = 97.0
+r = day(pbe, hold(105.5))
+check("保本 · 最高收盘到过 +5% → 止损上移到持仓均价 100", not sold(r) and abs(r["positions"][0].stop - 100.0) < 1e-9,
+      str([x.stop for x in r["positions"]]))
+r = day(r["positions"][0], hold(99.5))
+check("保本 · 之后跌回均价下方 → 按保本止损出场", sold(r) and sold(r)[0]["rule_id"] == "P-11" and "保本" in sold(r)[0]["rationale"], str(r["fills"]))
+pbe2 = pos()
+pbe2.stop = 97.0
+r = day(pbe2, hold(104.5))
+check("保本 · 最高只到 +4.5% → 止损不动", abs(r["positions"][0].stop - 97.0) < 1e-9)
+
+# +20% 减半 → EMA10 再减半 → EMA20 清仓
+r = day(pos(), hold(121.0, sma50=100.0))
+s = sold(r)
+check("P-17 · 收盘到 +21% → 卖出一半", s and s[0]["rule_id"] == "P-17" and s[0]["shares"] == 50, str(r["fills"]))
+check("P-17 · 标记已减半,余 50 股", r["positions"] and r["positions"][0].size == 50 and r["positions"][0].extra.get("half20_done"))
+r = day(pos(size=50, extra={"half20_done": True}), hold(125.0, sma50=100.0))
+check("P-17 · 只减一次", not sold(r), str(r["fills"]))
+r = day(pos(size=50, extra={"half20_done": True}), hold(115.0, ema10=116.0, ema20=110.0, sma50=100.0))
+s = sold(r)
+check("P-18 · 减半后跌破 EMA10 → 再卖余仓一半", s and s[0]["rule_id"] == "P-18" and s[0]["shares"] == 25, str(r["fills"]))
+r = day(pos(size=25, extra={"half20_done": True, "ema10_done": True}), hold(115.0, ema10=116.0, ema20=110.0, sma50=100.0))
+check("P-18 · 只减一次", not sold(r), str(r["fills"]))
+r = day(pos(size=25, extra={"half20_done": True, "ema10_done": True}), hold(109.0, ema10=112.0, ema20=110.0, ema21=110.5, sma50=100.0))
+s = sold(r)
+check("P-19 · 减半后跌破 EMA20 → 清仓", s and s[0]["rule_id"] == "P-19" and s[0]["shares"] == 25, str(r["fills"]))
+r = day(pos(size=25, extra={"half20_done": True}), hold(111.0, ema20=112.0, ema21=112.0, sma50=100.0))
+check("P-19 · 与 P-13(浮盈 11% 破 EMA21)同时成立时记 P-19", sold(r) and sold(r)[0]["rule_id"] == "P-19", str(r["fills"]))
+r = day(pos(), hold(111.0, ema20=112.0, ema21=100.0, sma50=100.0))
+check("P-19 · 没减过半时跌破 EMA20 不清仓", not any(f["rule_id"] == "P-19" for f in r["fills"]), str(r["fills"]))
 r = day(pos(), hold(111.0, ema8=110.0, ema21=112.0))
 check("P-13 · 浮盈 11% 跌破 EMA21 → 清仓", sold(r) and sold(r)[0]["rule_id"] == "P-13", str(r["fills"]))
 r = day(pos(), hold(109.0, ema8=108.0, ema21=110.0))
@@ -198,8 +245,10 @@ r = day(pos(), hold(103.0), market=DOWN)
 check("P-15 · 大盘转弱 → 清仓", sold(r) and sold(r)[0]["rule_id"] == "P-15", str(r["fills"]))
 r = day(pos(), hold(103.0), market=NA)
 check("P-15 · 大盘算不出不当成转弱", not sold(r), str(r["fills"]))
-r = day(pos(), hold(99.0, low=87.0, ema8=99.5))
-check("出场顺序 · 同时满足 A 和 C 时记止损 A(脚本 full_exit 顺序)", sold(r) and sold(r)[0]["rule_id"] == "P-09")
+p_ord = pos()
+p_ord.stop = 97.0
+r = day(p_ord, hold(96.5, low=87.0))
+check("出场顺序 · 同时满足 Base 低点(P-09)和初始止损(P-11)时记 P-09", sold(r) and sold(r)[0]["rule_id"] == "P-09")
 
 # 部分止盈:只做一次
 p1 = pos()
