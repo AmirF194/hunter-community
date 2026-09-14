@@ -88,7 +88,14 @@ SCREEN_OK = {"sma150": 90.0, "sma200": 85.0, "hi252": 110.0, "av30": 900_000.0,
 SCREEN_BROKEN = dict(SCREEN_OK, rng1m=0.18, rng5d=0.12)       # 18%:v4 把 4b 上限放到 15% 之后仍算撑坏
 
 
-GF_S = {"stop": 101.0, "sup": {"count": 4, "items": [], "text": "4 类"}, "vp": 6, "def": (16, 30),
+VPS_S = {"acc21": 4, "dist21": 0, "ad21": 4, "acc63": 6, "dist63": 1, "ad63": 5, "udv63": 1.4, "udv21": 1.5}
+
+
+def vps(ad21, ad63=5, udv63=1.4):
+    return dict(VPS_S, ad21=ad21, acc21=max(ad21, 0), dist21=max(-ad21, 0), ad63=ad63, udv63=udv63)
+
+
+GF_S = {"stop": 101.0, "sup": {"count": 4, "items": [], "text": "4 类"}, "vp": 6, "vps": VPS_S, "def": (16, 30),
         "macd_d": True, "macd_w": True, "res": None}              # 五项全 S(500 分)
 
 
@@ -177,14 +184,14 @@ check("追高 · 高出 3.9% → C", ab.grade(good(close=106.0), 101.0, 90)["fac
 check("追高 · 高出 4.4% → D", ab.grade(good(close=106.5), 101.0, 90)["factors"][3][1] == "D")
 check("追高 · 枢轴缺 → D", ab.grade(dict(good(), pivot=None), 101.0, 90)["factors"][3][1] == "D")
 # A 级:支撑 2 类 B60 + 量价 3 C40 + 抗跌 3 次 C40 + 追高 A80 + 只有周线金叉 A80 = 300
-gf_a = {"sup": {"count": 2, "items": [], "text": "2 类"}, "vp": 3, "def": (3, 30), "macd_d": False, "macd_w": True}
+gf_a = {"sup": {"count": 2, "items": [], "text": "2 类"}, "vps": vps(1), "def": (3, 30), "macd_d": False, "macd_w": True}
 g_a = ab.grade(good(gf=gf_a), 101.0, 90)
 check("P-20 · 60 + 40 + 40 + 80 + 80 = 300 → A", g_a["grade"] == "A" and g_a["points"] == 300, g_a["text"])
 r = entry_with(gf_a)
 b = [f for f in r["fills"] if f["side"] == "buy"]
 check("P-07 · v8 统一仓位:A 级也买完整仓位一半,档位照记", b and b[0]["shares"] == UNIFORM and b[0]["grade"] == "A", str(r["fills"]))
 # D 级:支撑 0 + 量价 2 + 抗跌 2 + 追高 A80 + 周线 A80 = 160
-gf_d = {"sup": {"count": 0, "items": [], "text": "0 类"}, "vp": 2, "def": (2, 30), "macd_d": False, "macd_w": True}
+gf_d = {"sup": {"count": 0, "items": [], "text": "0 类"}, "vps": vps(0), "def": (2, 30), "macd_d": False, "macd_w": True}
 check("P-20 · 0 + 0 + 0 + 80 + 80 = 160 → D", ab.grade(good(gf=gf_d), 101.0, 90)["grade"] == "D")
 r = entry_with(gf_d)
 b = [f for f in r["fills"] if f["side"] == "buy"]
@@ -211,7 +218,27 @@ r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], 
                ind_of=lambda c: UP if c == ab.MARKET_KEY else good(gf=gf_c))
 b = [f for f in r["fills"] if f["side"] == "buy"]
 check("P-07 · 开关 size_by_grade 打开 → 回到 v7 按档定仓(C 级 5%)", b and b[0]["shares"] == int(100_000 * 0.05 / 104.0), str(r["fills"]))
-g_na = ab.grade(good(gf={"sup": None, "vp": None, "def": None, "macd_d": None, "macd_w": None}), 101.0, 90)
+# ── v10 量价配合定档 ─────────────────────────────────────────
+check("量价 v10 · 近 21 天净放量上涨 4 → S", ab.vp_tier(vps(4))[0] == "S")
+check("量价 v10 · 3 → A · 2 → B · 1 → C", [ab.vp_tier(vps(x))[0] for x in (3, 2, 1)] == ["A", "B", "C"])
+check("量价 v10 · 0 或负数 → D", ab.vp_tier(vps(0))[0] == "D" and ab.vp_tier(vps(-2))[0] == "D")
+check("量价 v10 · 3 个月上涨量 ÷ 下跌量 1.8 过热 → S 降成 A", ab.vp_tier(vps(4, udv63=1.8))[0] == "A")
+check("量价 v10 · 3 个月净放量 8 过热 → B 降成 C", ab.vp_tier(vps(2, ad63=8))[0] == "C")
+check("量价 v10 · 比值 1.7 正好不算过热", ab.vp_tier(vps(4, udv63=1.7))[0] == "S")
+check("量价 v10 · D 不再往下降", ab.vp_tier(vps(0, udv63=2.5))[0] == "D")
+check("量价 v10 · 说明里写了放量天数、比值和降档", all(k in ab.vp_tier(vps(4, udv63=1.8))[1] for k in ("放量上涨", "上涨量 ÷ 下跌量", "过热降一档")))
+check("量价 v10 · 算不出 → None(评分按 D 计 0 分)", ab.vp_tier(None)[0] is None)
+check("量价 v10 · 评分里第 2 项用新口径(原 vp=6 不再决定档位)",
+      ab.grade(good(gf={"vp": 6, "vps": vps(0)}), 101.0, 90)["factors"][1][1] == "D")
+# vp_stats:造 140 根日线,量 1M 平稳,最后 21 天里 3 天放量上涨、1 天放量下跌
+vb = [(date(2025, 1, 1) + timedelta(days=i), 100.0 + (i % 2) * 0.1, 101.0, 99.0, 1_000_000.0) for i in range(140)]
+for i, (c_, v_) in {125: (101.0, 1_500_000.0), 130: (102.0, 1_500_000.0), 135: (103.0, 1_500_000.0), 137: (99.0, 1_500_000.0)}.items():
+    vb[i] = (vb[i][0], c_, 104.0, 98.0, v_)
+st = ab.vp_stats(vb)
+check("vp_stats · 近 21 天放量上涨 3、放量下跌 1、净 2", st and (st["acc21"], st["dist21"], st["ad21"]) == (3, 1, 2), str(st))
+check("vp_stats · 日线不足 113 根 → None", ab.vp_stats(vb[-100:]) is None)
+
+g_na = ab.grade(good(gf={"sup": None, "vp": None, "vps": None, "def": None, "macd_d": None, "macd_w": None}), 101.0, 90)
 check("P-20 · 算不出的项按 D 计 0 分、MACD 算不出记 C", [f[1] for f in g_na["factors"]] == ["D", "D", "D", "A", "C"], str(g_na["factors"]))
 
 # 走廊:R = 104 − 101 = 3。阻力 116 → 4R A;阻力 108.5 → 1.5R 空间受限

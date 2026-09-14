@@ -146,6 +146,23 @@ ECPG / R 被 D 级挡(追高 4.4% / 4.9% 记 D、量价 D)。
 - **P-21 空间受限放宽到 1R**(`corr_min` 2.0 → 1.0)。v8 挡掉的 ENVA(0.6R)仍会挡,ORA(1.7R)/ STT(1.1R)放行。
 - **D 级不再拦人**(`block_d=False`,档位照记);**唯一的硬条件:收盘高出枢轴超过 4% 不买**(`chase_block`)。
   v8 里追高 > 4% 的 8 笔 0 笔赚钱、平均 -597。ECPG(4.4%)/ R(4.9%)在这条下仍然不买 —— 用户选的,读结果时记住。
+
+v9 一年:+3.35%、回撤 -8.56%、50 笔、每笔 +65、盈亏比 1.23。
+
+## v10(2026-09-14 用户:「针对量价配合这条规则,根据历史经验合理优化评分」)—— 只改第 2 项怎么定档,不影响买卖
+
+原口径(63 天净次数 > 5 S · > 4 A · > 3 B · > 2 C)拿全年 1,654 次突破(去重、有 20 天后续)验证:S 513 次、D 880 次,
+中间三档只有 261 次;S+A 与 C+D 突破后 20 天均值差 -0.4 个百分点 —— **完全分不出好坏**(63 天每天都计数,净次数动辄 ±10)。
+试了净次数 / 比例 / 上涨量 ÷ 下跌量 / 放量日 / 21 · 42 天窗口,五等分都没有单调关系。只有两个方向一致的弱信号:
+3 个月吸筹过多(上涨量 ÷ 下跌量最高 20% > 1.71、放量上涨 − 放量下跌 ≥ 7)突破后 20 天中位 -1.0%(涨过头);
+近 21 天一个净放量上涨日都没有,20 天内涨过 10% 只有 23%(其他 28~34%)。
+
+**新口径(`vp_stats` + `vp_tier`)**:
+- 近 21 天「放量上涨天数 − 放量下跌天数」(放量 = 成交量 > 50 日均量 × 1.2):≥4 S · 3 A · 2 B · 1 C · ≤0 D;
+- 3 个月过热降一档:近 63 天上涨日总量 ÷ 下跌日总量 > 1.7,或近 63 天放量上涨 − 放量下跌 ≥ 8。
+同一批事件:S 154 次 20 天均值 +4.0%、涨过 10% 40%;D 531 次 -0.3%、26%;S+A 对 C+D 均值差 +1.0、涨过 10% 差 +3 个百分点(原口径 -0.4 / +1)。
+**中间档(A / B / C)仍然分不开,C 反而比 A、B 好** —— 能说清楚的只有两头。门槛是在同一年上挑的,有贴合这一年的风险;
+评分只记录、不影响买卖(v8 起),所以这次改动不改变任何成交,只改成交记录里的档位。
 """
 from __future__ import annotations
 
@@ -182,6 +199,9 @@ PARAMS = {
 STOP_KEYS = ("fixed_stop",)
 SUP_MIN = {"S": 4, "A": 3, "B": 2, "C": 1}      # 第 1 项:支撑结构类数的档位下限
 CHASE_MAX = {"S": 1.0, "A": 2.0, "B": 3.0, "C": 4.0}   # v8 第 4 项:收盘高出枢轴 % 的档位上限;超过 C = D
+VP_BIG = 1.2          # v10 第 2 项:放量 = 成交量 > 50 日均量 × 1.2
+VP_HOT_UDV = 1.7      # v10:近 63 天上涨日总量 ÷ 下跌日总量 > 1.7 → 过热降一档
+VP_HOT_AD = 8         # v10:近 63 天放量上涨 − 放量下跌 ≥ 8 → 过热降一档
 GRADE_RULE = "P-20"
 ENTRY_RULE = "P-06"
 ADD_RULE = "P-08"
@@ -222,7 +242,7 @@ RULES = [
     {"id": "P-17", "kind": "sell", "condition": "+20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)"},
     {"id": "P-18", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA10 卖出余仓一半(一次)"},
     {"id": "P-19", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA20 清仓"},
-    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 近 3 月量价配合 · 近 3 月标普下跌日抗跌 · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
+    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 量价配合(近 21 天放量上涨 − 放量下跌 ≥4 S · 3 A · 2 B · 1 C · ≤0 D,3 个月过热降一档) · 近 3 月标普下跌日抗跌 · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
     {"id": "P-21", "kind": "risk", "condition": "空间受限:走廊(上方 252 日强阻力 − 收盘)÷ R 不足 1R,达到买点也不进"},
 ]
 RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Base 低点", "P-10": "固定 6% 止损",
@@ -424,6 +444,47 @@ def supports(bars: list[tuple], stop: float, p: dict = PARAMS) -> dict | None:
     return {"count": len(items), "items": items, "text": text}
 
 
+def vp_stats(bars: list[tuple]) -> dict | None:
+    """第 2 项 · 量价口径(v10)→ {acc21, dist21, ad21, ad63, udv63};日线不足 113 根或缺量 → None。
+    放量 = 成交量 > 当天为止 50 日均量 × VP_BIG;上涨 / 下跌按收盘比前一天。"""
+    c = [b[1] for b in bars]
+    v = [b[4] for b in bars]
+    n = len(c)
+    if n < 113 or any(x is None for x in v[-113:]):
+        return None
+    out = {}
+    for look in (63, 21):
+        acc = dist = 0
+        up_v = dn_v = 0.0
+        for k in range(n - look, n):
+            sma = sum(v[k - 49:k + 1]) / 50
+            if c[k] > c[k - 1]:
+                up_v += v[k]
+                acc += v[k] > VP_BIG * sma
+            elif c[k] < c[k - 1]:
+                dn_v += v[k]
+                dist += v[k] > VP_BIG * sma
+        out[f"acc{look}"], out[f"dist{look}"], out[f"ad{look}"] = acc, dist, acc - dist
+        out[f"udv{look}"] = (up_v / dn_v) if dn_v else None
+    return out
+
+
+def vp_tier(vs: dict | None) -> tuple[str | None, str]:
+    """v10 第 2 项定档 → (档位, 说明)。近 21 天净放量上涨日 ≥4 S · 3 A · 2 B · 1 C · ≤0 D;3 个月过热降一档。"""
+    if not vs:
+        return None, "日线不足 113 根或缺成交量,算不出"
+    a = vs["ad21"]
+    t = "S" if a >= 4 else "A" if a == 3 else "B" if a == 2 else "C" if a == 1 else "D"
+    udv = vs.get("udv63")
+    hot = (udv is not None and udv > VP_HOT_UDV) or vs["ad63"] >= VP_HOT_AD
+    txt = (f"近 21 天放量上涨 {vs['acc21']} 天、放量下跌 {vs['dist21']} 天(净 {a:+d});"
+           f"近 63 天上涨量 ÷ 下跌量 " + (f"{udv:.2f}" if udv is not None else "—") + f"、净放量 {vs['ad63']:+d}")
+    if hot and t != "D":
+        t = "SABCD"["SABCD".index(t) + 1]
+        txt += ",3 个月过热降一档"
+    return t, txt
+
+
 def grade_features(bars: list[tuple], ind: dict, bench: dict | None, p: dict = PARAMS) -> dict:
     c = [b[1] for b in bars]
     v = [b[4] for b in bars]
@@ -433,7 +494,8 @@ def grade_features(bars: list[tuple], ind: dict, bench: dict | None, p: dict = P
     return {
         "stop": stop,
         "sup": supports(bars, stop, p),
-        "vp": c3._vp_net(c, v) if len(v) >= need and all(x is not None for x in v[-need:]) else None,
+        "vp": c3._vp_net(c, v) if len(v) >= need and all(x is not None for x in v[-need:]) else None,   # 原口径,留作对照
+        "vps": vp_stats(bars),                                                                          # v10 定档用
         "def": c3._defense(bars, bench),
         "macd_d": c3._macd_cross(c, c3.MACD_DAILY_WITHIN),
         "macd_w": c3._macd_cross(c3._weekly_closes(bars), c3.MACD_WEEKLY_WITHIN),
@@ -462,9 +524,8 @@ def grade(ind: dict, stop: float, score=None, p: dict = PARAMS) -> dict:
     sup = gf.get("sup")
     items.append(("止损上方支撑", c3._tier(sup["count"], SUP_MIN) if sup else None,
                   sup["text"] if sup else f"日线不足 {int(p['sup_look']) + 52} 根,算不出"))
-    vp = gf.get("vp")
-    items.append(("量价配合", c3._tier(vp, c3.VP_MIN),
-                  f"近 {c3.LOOKBACK} 天净 {vp:+d} 次" if vp is not None else f"日线不足 {c3.LOOKBACK + c3.VOL_SMA} 根,算不出"))
+    vp_t, vp_txt = vp_tier(gf.get("vps"))
+    items.append(("量价配合", vp_t, vp_txt))
     df = gf.get("def")
     items.append(("抗跌", c3._tier(df[0], c3.DEF_MIN) if df else None,
                   f"标普下跌 {df[1]} 天里 {df[0]} 天不跌" if df else "没有基准日线,算不出"))
