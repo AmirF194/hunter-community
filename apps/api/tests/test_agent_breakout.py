@@ -144,12 +144,14 @@ r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], 
                ind_of=lambda c: UP if c == ab.MARKET_KEY else good())
 buys = [f for f in r["fills"] if f["side"] == "buy"]
 check("进场 · 全满足当天买入", len(buys) == 1, str(r["fills"]))
+UNIT = int(100_000 * 0.20 / 104.0)
+UNIFORM = int(UNIT * 0.5)
 if buys:
-    size_s = int(100_000 * 0.20 / 104.0)
-    check("P-07 · S 级首次买入总资产 20%", buys[0]["shares"] == size_s, f"{buys[0]['shares']} vs {size_s}")
-    check("进场 · 理由里写了 P-01 ~ P-06、走廊、评分与仓位", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "P-21", "P-20", "S 级", "昨收")))
-    check("进场 · 加仓基数 = 首次股数(extra.unit)", r["positions"][0].extra.get("unit") == size_s)
-    check("进场 · 成交记录带档位与分数(写进 agent_trade.grade)", buys[0].get("grade") == "S" and buys[0].get("points") == 500)
+    check("P-07 · v8 统一仓位:首次买入 完整仓位(总资产 20%)的一半", buys[0]["shares"] == UNIFORM, f"{buys[0]['shares']} vs {UNIFORM}")
+    check("进场 · 理由里写了 P-01 ~ P-06、走廊、评分与统一仓位", all(k in buys[0]["rationale"] for k in ("P-01", "P-04", "P-06", "P-21", "P-20", "统一仓位", "昨收")))
+    check("进场 · 加仓基数 = 完整仓位(extra.unit)", r["positions"][0].extra.get("unit") == UNIT)
+    check("进场 · 成交记录照写档位与分数(追高 1.96% → A,其余 S → 480)", buys[0].get("grade") == "S" and buys[0].get("points") == 480,
+          str((buys[0].get("grade"), buys[0].get("points"))))
     check("P-11 · v7 回到 v5:初始止损 = 进场价 − 1 ATR(104 − 3 = 101)", abs(r["positions"][0].stop - 101.0) < 1e-9,
           str(r["positions"][0].stop))
 
@@ -164,26 +166,40 @@ def entry_with(gf, score=90):
                       ind_of=lambda c: UP if c == ab.MARKET_KEY else good(gf=gf))
 
 
-# A 级:支撑 1 类 C40 + 量价 3 C40 + 抗跌 3 次 C40 + 走廊无上限 S100 + 只有周线金叉 A80 = 300
-gf_a = {"sup": {"count": 1, "items": [], "text": "1 类"}, "vp": 3, "def": (3, 30), "macd_d": False, "macd_w": True}
+# v8:第 4 项换成追高幅度。good() 收盘 104、枢轴 102 → 高出 1.96% → A
+g0_ = ab.grade(good(), 101.0, 90)
+check("P-20 · v8 第 4 项叫「追高幅度」,不再是走廊", g0_["factors"][3][0] == "追高幅度", str(g0_["factors"][3]))
+check("P-20 · 四项 S + 追高 A = 480", g0_["points"] == 480, g0_["text"])
+check("追高 · 高出 0.5% → S", ab.grade(good(close=102.5), 101.0, 90)["factors"][3][1] == "S")
+check("追高 · 高出 1.99%(A 档上沿内)→ A", ab.grade(good(close=104.03), 101.0, 90)["factors"][3][1] == "A")
+check("追高 · 高出 2.9% → B", ab.grade(good(close=105.0), 101.0, 90)["factors"][3][1] == "B")
+check("追高 · 高出 3.9% → C", ab.grade(good(close=106.0), 101.0, 90)["factors"][3][1] == "C")
+check("追高 · 高出 4.4% → D", ab.grade(good(close=106.5), 101.0, 90)["factors"][3][1] == "D")
+check("追高 · 枢轴缺 → D", ab.grade(dict(good(), pivot=None), 101.0, 90)["factors"][3][1] == "D")
+# A 级:支撑 2 类 B60 + 量价 3 C40 + 抗跌 3 次 C40 + 追高 A80 + 只有周线金叉 A80 = 300
+gf_a = {"sup": {"count": 2, "items": [], "text": "2 类"}, "vp": 3, "def": (3, 30), "macd_d": False, "macd_w": True}
 g_a = ab.grade(good(gf=gf_a), 101.0, 90)
-check("P-20 · 40 + 40 + 40 + 100 + 80 = 300 → A", g_a["grade"] == "A" and g_a["points"] == 300, g_a["text"])
+check("P-20 · 60 + 40 + 40 + 80 + 80 = 300 → A", g_a["grade"] == "A" and g_a["points"] == 300, g_a["text"])
 r = entry_with(gf_a)
 b = [f for f in r["fills"] if f["side"] == "buy"]
-check("P-07 · A 级首次买入总资产 15%", b and b[0]["shares"] == int(100_000 * 0.15 / 104.0) and b[0]["grade"] == "A", str(r["fills"]))
-# C 级:支撑 0 D + 量价 2 D + 抗跌 2 D + 走廊 5R S + 周线 A → 180 → D;加 1 类支撑 → 220 → C
+check("P-07 · v8 统一仓位:A 级也买完整仓位一半,档位照记", b and b[0]["shares"] == UNIFORM and b[0]["grade"] == "A", str(r["fills"]))
+# D 级:支撑 0 + 量价 2 + 抗跌 2 + 追高 A80 + 周线 A80 = 160
 gf_d = {"sup": {"count": 0, "items": [], "text": "0 类"}, "vp": 2, "def": (2, 30), "macd_d": False, "macd_w": True}
-check("P-20 · 0 + 0 + 0 + 100 + 80 = 180 → D", ab.grade(good(gf=gf_d), 101.0, 90)["grade"] == "D")
+check("P-20 · 0 + 0 + 0 + 80 + 80 = 160 → D", ab.grade(good(gf=gf_d), 101.0, 90)["grade"] == "D")
 r = entry_with(gf_d)
-check("P-20 · D 级不买并写明", not r["fills"] and "D 级不买" in (r["watch_items"][0].get("blocked_reason") or ""), str(r["watch_items"][0]))
+check("P-20 · D 级仍然不买并写明(v8 只取消按档定仓)", not r["fills"] and "D 级不买" in (r["watch_items"][0].get("blocked_reason") or ""), str(r["watch_items"][0]))
 gf_c = dict(gf_d, sup={"count": 2, "items": [], "text": "2 类"})
 g_c = ab.grade(good(gf=gf_c), 101.0, 90)
-check("P-20 · 60 + 0 + 0 + 100 + 80 = 240 → C", g_c["grade"] == "C" and g_c["points"] == 240, g_c["text"])
+check("P-20 · 60 + 0 + 0 + 80 + 80 = 220 → C", g_c["grade"] == "C" and g_c["points"] == 220, g_c["text"])
 r = entry_with(gf_c)
 b = [f for f in r["fills"] if f["side"] == "buy"]
-check("P-07 · C 级首次买入总资产 5%", b and b[0]["shares"] == int(100_000 * 0.05 / 104.0), str(r["fills"]))
+check("P-07 · v8 统一仓位:C 级同样买完整仓位一半", b and b[0]["shares"] == UNIFORM and b[0]["grade"] == "C", str(r["fills"]))
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, dict(P, size_by_grade=True), G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good(gf=gf_c))
+b = [f for f in r["fills"] if f["side"] == "buy"]
+check("P-07 · 开关 size_by_grade 打开 → 回到 v7 按档定仓(C 级 5%)", b and b[0]["shares"] == int(100_000 * 0.05 / 104.0), str(r["fills"]))
 g_na = ab.grade(good(gf={"sup": None, "vp": None, "def": None, "macd_d": None, "macd_w": None}), 101.0, 90)
-check("P-20 · 算不出的项按 D 计 0 分、MACD 算不出记 C", [f[1] for f in g_na["factors"]] == ["D", "D", "D", "S", "C"], str(g_na["factors"]))
+check("P-20 · 算不出的项按 D 计 0 分、MACD 算不出记 C", [f[1] for f in g_na["factors"]] == ["D", "D", "D", "A", "C"], str(g_na["factors"]))
 
 # 走廊:R = 104 − 101 = 3。阻力 116 → 4R A;阻力 108.5 → 1.5R 空间受限
 check("走廊 · 阻力 116 → 4.0R → A", ab.c3._tier(ab.corridor(good(gf={"res": (116.0, "前高")}), 101.0)[0], ab.c3.RR_MIN) == "A")

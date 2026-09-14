@@ -125,6 +125,17 @@ v6 一年:-2.30%、回撤 -7.50%、49 笔、每笔 -49。49 笔里 43 笔被截�
    (`agent_vcp3.res_above`,离收盘不足 0.5 ATR 的不算);上方没有阻力 = 走廊无上限记 S。≥5R S · ≥4R A · ≥3R B · ≥2R C。
 **P-21 空间受限**:走廊不足 2R 直接不买(排在评分之前,不是记 0 分)。
 算不出的项按 D 记 0 分并写原因(第 5 项没有 D,算不出记 C)。评分字段只在突破当天(P-06 成立)算,别的日子不花这份计算。
+
+v7 一年:+2.77%、回撤 -6.35%、51 笔、每笔 +53(v5 +3.98%)。档位和盈亏不单调:S 13 笔平均 -130、A +478、B -27、C -117。
+逐笔看 S 级:走廊 13 笔全是 S(一年新高附近上方没阻力)、量价 12 笔是 S —— 这两项人人高分,S 级靠它们堆出来;
+全部 51 笔里量价 S 平均 -77、抗跌 S 0 笔赚钱;S 级 4 笔高出枢轴 ≥4% 全亏或打平;仓位 20% 又把亏损放大。
+
+## v8(2026-09-14 用户:「按照 1、3 修改」)
+
+1. **第 4 项「走廊」换成「追高幅度」**:收盘高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C · 超过 4% D(追高上限本来是 5%)。
+   依据:v5 的 62 笔高出枢轴 0~2% 平均 +181、2~5% 平均 -26。**P-21 空间受限(走廊 < 2R 不买)保留** —— 那是用户单列的规则,只是走廊不再计分。
+2. **仓位统一,回到 v5**:完整仓位 = 总资产 20%,首次买一半,加仓按完整仓位的 30% / 20%。评分照算、档位照写进成交记录,
+   **不再决定买多少**(`size_by_grade=False`;v7 的按档定仓留成开关)。**D 级仍然不买**(那是筛,不是定仓)。
 """
 from __future__ import annotations
 
@@ -150,6 +161,7 @@ PARAMS = {
     "stop_atr": 1.0, "stop_cap": 0.08,                                                 # v7 回到 v5:1 ATR,最多 8%
     "be_trigger": 1.05, "half_trigger": 1.20,                                          # v5 起:保本 / 20% 减半
     "grade_pct": {"S": 0.20, "A": 0.15, "B": 0.10, "C": 0.05},                         # v7:档位 → 首次买入占总资产
+    "size_by_grade": False,                                                            # v8:关 = 统一仓位(v5),评分只记录
     "corr_min": 2.0, "sup_look": 63, "rej_close_pos": 0.6, "key_vol": 2.0,             # v7:空间受限 / 支撑结构口径
     "partial_profit": 8.0, "partial_frac": 0.20,
     "exit_ema21_profit": 10.0, "exit_sma50_profit": 20.0,
@@ -158,6 +170,7 @@ PARAMS = {
 }
 STOP_KEYS = ("fixed_stop",)
 SUP_MIN = {"S": 4, "A": 3, "B": 2, "C": 1}      # 第 1 项:支撑结构类数的档位下限
+CHASE_MAX = {"S": 1.0, "A": 2.0, "B": 3.0, "C": 4.0}   # v8 第 4 项:收盘高出枢轴 % 的档位上限;超过 C = D
 GRADE_RULE = "P-20"
 ENTRY_RULE = "P-06"
 ADD_RULE = "P-08"
@@ -185,7 +198,7 @@ RULES = [
     {"id": "P-04", "kind": "buy", "condition": "整理形态(前一天收盘):3 月振幅 12%~35%、1 月振幅 3%~15%、1 月 ≤ 3 月 × 0.55、5 日 ≤ 1 月 × 0.65、21 日最低 > 63 日最低 × 1.01"},
     {"id": "P-05", "kind": "buy", "condition": "枢轴与缩量(前一天收盘):枢轴 = 近 63 日浪高点下方 10% 内的密集成交区上沿;距枢轴 −4% ~ +5%;10 日均量 < 50 日均量 × 1.0"},
     {"id": "P-06", "kind": "buy", "condition": "突破触发(当天):收盘 > 枢轴(密集成交区上沿)、收盘 < 枢轴 × 1.05、成交量 > 50 日均量 × 1.5(阳线条件没做:日线没有开盘价)"},
-    {"id": "P-07", "kind": "risk", "condition": "仓位:按 P-20 档位首次买入 S 20% / A 15% / B 10% / C 5% 总资产,D 不买;加仓按首次股数的 30% / 20%;最多 5 只"},
+    {"id": "P-07", "kind": "risk", "condition": "仓位:完整仓位 = 总资产 20%,首次买入 50%;加仓按完整仓位的 30% / 20%;最多 5 只(P-20 评分只记录,不影响仓位;D 级不买)"},
     {"id": "P-08", "kind": "buy", "condition": "加仓:收盘 > 进场价 × 1.02、量 > 20 日均量 × 1.2、收盘 > EMA8、市场向上 → +30%;收盘 > 进场价 × 1.05、量 > 20 日均量 × 1.1、收盘 > EMA21 → 再 +20%"},
     {"id": "P-09", "kind": "sell", "condition": "止损 A:当天最低价 < 前一天为止近 21 日最低 × 0.98(跌破 Base 低点),按收盘价出"},
     {"id": "P-10", "kind": "sell", "condition": "止损 B:收盘 < 进场价 × 0.94(固定 6%)"},
@@ -198,7 +211,7 @@ RULES = [
     {"id": "P-17", "kind": "sell", "condition": "+20% 减半:收盘第一次到进场价 × 1.20,卖出一半(一次)"},
     {"id": "P-18", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA10 卖出余仓一半(一次)"},
     {"id": "P-19", "kind": "sell", "condition": "移动止盈:+20% 减半之后,收盘跌破 EMA20 清仓"},
-    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 近 3 月量价配合 · 近 3 月标普下跌日抗跌 · 走廊 R 倍数 · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D 不买"},
+    {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 近 3 月量价配合 · 近 3 月标普下跌日抗跌 · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D 不买;档位只记录,不定仓"},
     {"id": "P-21", "kind": "risk", "condition": "空间受限:走廊(上方 252 日强阻力 − 收盘)÷ R 不足 2R,达到买点也不进"},
 ]
 RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Base 低点", "P-10": "固定 6% 止损",
@@ -214,8 +227,8 @@ def rules_for(p: dict = PARAMS) -> list[dict]:
 def summary(p: dict = PARAMS) -> str:
     return ("Patrick Walker 风格突破:标普在 50 日 > 200 日之上才做;前一天收盘时已是均线多头、离一年高点 20% 以内、RS ≥ 70、"
             "3 个月 → 1 个月 → 5 天振幅逐级收紧、低点抬高、量能干燥的票,今天收盘放量(> 1.5 倍 50 日均量)站上浪高点下方密集成交区的上沿、"
-            "且不超过 5% 时,先看走廊(不足 2R 不买),再按五项评分定档:S / A / B / C 首次买入总资产 20 / 15 / 10 / 5%,D 不买;"
-            "涨 2% / 5% 且放量站上 EMA8 / EMA21 各加首次股数的 30% / 20%;"
+            "且不超过 5% 时,先看走廊(不足 2R 不买),再做五项评分(D 级不买,档位只记录);买入完整仓位(总资产 20%)的一半;"
+            "涨 2% / 5% 且放量站上 EMA8 / EMA21 各加 30% / 20%;"
             "跌破 Base 低点 2%、亏 6%、或跌破 1 倍 ATR 初始止损(最多 8%)出场,最高到过 +5% 后止损上移到均价保本;"
             "浮盈 8% 后遇暂停卖 20%,+20% 减半,之后跌破 EMA10 再减半、跌破 EMA20 清仓;"
             "浮盈 10% 跌破 EMA21、浮盈 20% 跌破 50 日线、或大盘转弱时清仓。")
@@ -444,8 +457,10 @@ def grade(ind: dict, stop: float, score=None, p: dict = PARAMS) -> dict:
     df = gf.get("def")
     items.append(("抗跌", c3._tier(df[0], c3.DEF_MIN) if df else None,
                   f"标普下跌 {df[1]} 天里 {df[0]} 天不跌" if df else "没有基准日线,算不出"))
-    corr, corr_txt = corridor(ind, stop)
-    items.append(("走廊", c3._tier(corr, c3.RR_MIN), corr_txt))
+    pv = ind.get("pivot")
+    ch_pct = (ind["close"] / pv - 1) * 100 if pv else None
+    ch_tier = None if ch_pct is None else next((k for k in ("S", "A", "B", "C") if ch_pct <= CHASE_MAX[k]), "D")
+    items.append(("追高幅度", ch_tier, f"收盘高出枢轴 ${pv:.2f} {ch_pct:.1f}%" if pv else "枢轴缺,算不出"))
     md, mw = bool(gf.get("macd_d")), bool(gf.get("macd_w"))
     items.append(("MACD 金叉", "S" if md and mw else "A" if mw else "B" if md else "C",
                   "日线 + 周线" if md and mw else "只有周线" if mw else "只有日线" if md else "没有金叉"))
@@ -700,10 +715,17 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     gr = grade(ind, stop, score, p)
     if gr["grade"] == "D":
         return None, f"突破成立,但评分 {gr['text']} —— D 级不买(P-20)"
-    pct = p["grade_pct"][gr["grade"]]
-    size = int(equity * pct / px)
+    if p.get("size_by_grade"):
+        pct = p["grade_pct"][gr["grade"]]
+        unit = size = int(equity * pct / px)
+        size_txt = f"P-07 {gr['grade']} 级首次买入总资产 {pct * 100:.0f}%"
+    else:
+        unit = int(equity * p["unit_pct"] / px)
+        size = int(unit * p["initial_frac"])
+        size_txt = (f"P-07 统一仓位(评分只记录,不影响仓位):完整仓位 = 总资产 {p['unit_pct'] * 100:.0f}% ÷ ${px:.2f} = {unit} 股,"
+                    f"首次买入 {p['initial_frac'] * 100:.0f}%")
     if size <= 0:
-        return None, f"突破成立({gr['grade']} 级),但按 {pct * 100:.0f}% 算出的股数为 0"
+        return None, f"突破成立({gr['grade']} 级),但按仓位算出的股数为 0"
     cash_cut = False
     if size * px > state["cash"]:
         size = int(state["cash"] / px)
@@ -712,7 +734,6 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
             return None, f"突破成立,但现金只剩 ${state['cash']:.0f},买不起 1 股"
     cost = size * px
     state["cash"] -= cost
-    unit = size                                  # 加仓按首次股数的 30% / 20%(用户选「首次就买满,加仓另加」)
     pos = av.Position(code=code, name=name or code, size=size, initial_size=unit, entry_price=px,
                       entry_date=state["date"], avg_cost=px, highest=px, level=1, bars_held=0,
                       entry_rule=ENTRY_RULE, stop=stop, risk=px - stop,
@@ -725,8 +746,8 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     rationale = ("".join(f"{c['rule']} {c['text']};" for c in checks)
                  + f"P-21 {corr_txt}(≥ {p['corr_min']:.0f}R)。"
                  + f"P-20 评分 {gr['text']}。"
-                 + f"P-07 {gr['grade']} 级首次买入总资产 {pct * 100:.0f}% ÷ ${px:.2f}"
-                 + (f",现金只够 {size} 股" if cash_cut else f" = {size} 股")
+                 + size_txt
+                 + (f",现金只够 {size} 股" if cash_cut else f",买入 {size} 股")
                  + f",占总资产 {cost / equity * 100:.1f}%。"
                  + f"初始止损 = max(收盘 − {p['stop_atr']:.0f} × ATR ${atr:.2f}, 收盘 × {1 - p['stop_cap']:.2f}) = ${stop:.2f}"
                  + f"(距收盘 {(1 - stop / px) * 100:.1f}%{',被 8% 上限截住' if px - p['stop_atr'] * atr < px * (1 - p['stop_cap']) else ''})。")
