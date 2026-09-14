@@ -1270,7 +1270,11 @@ async def screener_history_range(market: str = "us"):
     from app.services.quant import screen_asof
     if market not in screen_source.MARKETS:
         raise HTTPException(400, f"不支持的市场:{market}")
-    d = await asyncio.to_thread(screen_asof.history_range, market)
+    try:
+        d = await asyncio.to_thread(screen_asof.history_range, market)
+    except Exception:                                   # noqa: BLE001
+        # 日线库连不上:原来裸 500,前端日期框拿不到范围也不知道为什么(执行用例 KK-004 发现)
+        raise HTTPException(503, "日线库暂时连不上,时间回溯先用不了,请稍后再试。")
     d["market"] = market
     d["note"] = ("回溯用的是每晚落库的全市场日线,只保留约 320 个交易日;越往前,52 周高低、"
                  "精确 RS 评级这类长窗口字段越算不出。市值 / 财务字段没有历史值,回溯不了。")
@@ -1386,7 +1390,8 @@ async def screener_run(body: ScreenIn, request: Request):
             as_of = _date.fromisoformat(body.as_of.strip())
         except ValueError:
             raise HTTPException(400, f"时间回溯的日期格式不对:{body.as_of!r},要 YYYY-MM-DD")
-        if as_of > _date.today():
+        # 按上海日期判「未来」:容器是 UTC,上海 0~8 点选「今天」原来会被当成未来拒掉(执行用例 GN-035 发现)
+        if as_of > screen_quota.today_sh():
             raise HTTPException(400, f"时间回溯不能选未来的日期:{as_of}")
     kind = "probe" if body.probe else "scan"
     try:
@@ -1396,6 +1401,12 @@ async def screener_run(body: ScreenIn, request: Request):
         q = await asyncio.to_thread(screen_quota.reserve, uid, role, kind)
     except (screen_quota.QuotaExceeded, screen_quota.TooFast) as e:
         raise _quota_http(e)
+    except Exception:                                   # noqa: BLE001
+        # 额度表连不上(数据库不可用):原来连管理员也裸 500(执行用例 KK-004 注入发现)。
+        # 管理员本来就不限次数,照常扫;普通会员没法记账,不能放行,明说原因
+        if screen_quota.tier_of(role) is not None:
+            raise HTTPException(503, "额度服务暂时连不上(数据库不可用),扫描先用不了,请稍后再试。")
+        q = screen_quota.info_of(kind, 0, None)
     try:
         # 同上 —— 拉全市场实测 1~3s,同步 httpx,不能占着事件循环
         out = await asyncio.to_thread(
@@ -1447,8 +1458,11 @@ def _need_uid(request: Request) -> str:
 @router.get("/screener/saved")
 async def screener_saved_list(request: Request):
     uid = _need_uid(request)
-    return {"items": await asyncio.to_thread(screen_saved.list_for, uid),
-            "max": screen_saved.MAX_PER_USER}
+    try:
+        items = await asyncio.to_thread(screen_saved.list_for, uid)
+    except Exception:                                   # noqa: BLE001
+        raise HTTPException(503, "扫描策略暂时读不出来(数据库不可用),请稍后再试。")
+    return {"items": items, "max": screen_saved.MAX_PER_USER}
 
 
 @router.post("/screener/saved")

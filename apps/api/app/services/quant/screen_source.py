@@ -370,7 +370,14 @@ def _fetch_upstream(md: MarketDef, market_key: str, cols: list[str], limit_scan:
                     f"扫描源返回 HTTP {r.status_code}。"
                     + ("被限流了,等一会儿再试。" if r.status_code == 429 else
                        f"响应片段:{r.text[:200]}"))
-            data = r.json()
+            try:
+                data = r.json()
+            except ValueError as e:
+                # 上游 200 却回了 HTML(维护页 / 验证页):原来 JSONDecodeError 直接冒成 500 纯文本,
+                # 也进不了 10 秒失败缓存(2026-09-14 执行用例 KK-001 注入发现)
+                raise ScreenError(
+                    "扫描源返回的不是数据(可能在维护或临时拦截),稍后重试。"
+                    f"响应片段:{r.text[:120]}") from e
             total = data.get("totalCount") or total
             batch = data.get("data") or []
             if not batch:
@@ -414,7 +421,8 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
         raise ScreenError("脚本是空的。至少要有一句 `plot scan = <条件>;`")
     if len(script) > 20000:
         raise ScreenError("脚本太长(上限 20000 字符)")
-    limit = max(1, min(int(limit or 100), 500))
+    # 不能写 `limit or 100`:limit=0 是假值,会被当成「没传」变成 100(2026-09-14 执行用例 LB-009 发现)
+    limit = max(1, min(int(100 if limit is None else limit), 500))
 
     meta = get_meta(market_key)
 
@@ -598,7 +606,11 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
         else:
             pool = ("RS 排名池:交易所上市、不含 OTC、市值 ≥5000 万美元" if md.key == "us"
                     else "RS 排名池:市值约 5000 万美元以上")
-            warnings.append(f"{names}扫描源没有,由自家日线计算:截至 {va} 收盘、不含今天;"
+            # 「不含今天」不能写死:A 股每晚任务在上海 17:30 后会把当天也落库,那时截至日就是今天(执行用例 GN-061 发现)
+            from app.services.quant import screen_quota as _sq
+            when = (f"截至今天({va})收盘" if va == _sq.today_sh()
+                    else f"截至 {va} 收盘、不含之后的交易日")
+            warnings.append(f"{names}扫描源没有,由自家日线计算:{when};"
                             f"{vol_stat['n']} 只算得出,其余不在自家日线的覆盖范围里({pool})、"
                             f"上市不足对应天数或当天停牌,计入「算不出」。")
     if vcp_stat is not None:
@@ -663,6 +675,9 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
         "returned": len(picks),
         "picks": picks,
         "columns": want,
+        # 结果表列头的中文名(拿不准的为 None,前端照旧显示英文原名)。2026-09-14 执行用例时发现列头全是
+        # market_cap_basic / price_earnings_ttm 这类原名,而条件行早就是中文 —— 同一个字段两处叫法不一
+        "column_labels": {f: screen_dsl.field_label_cn(f) for f in want},
         "notes": c.notes,
         "warnings": warnings,
         "source": ("自家全市场日线 · 时间回溯" if asof_info is not None

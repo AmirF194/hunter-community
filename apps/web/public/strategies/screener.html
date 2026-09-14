@@ -566,7 +566,8 @@ function vCond(c, i) {
     '</span>' +
     (S.editing === c.name
       ? '<div class="cd-editbox">' +
-          '<textarea class="cd-edit" id="cd-edit" spellcheck="false">' + esc(c.expr) + '</textarea>' +
+          '<textarea class="cd-edit" id="cd-edit" spellcheck="false">' +
+            esc(S.editText != null ? S.editText : c.expr) + '</textarea>' +
           '<div class="cd-editbar">' +
             '<button class="btn small" id="cd-save">保存</button>' +
             '<button class="btn small" id="cd-cancel">取消</button>' +
@@ -825,6 +826,17 @@ async function doSave(raw, modal) {
     sort_desc: S.desc,
   })
   if (btn) { btn.disabled = false; btn.textContent = '保存' }
+  if (r.status === 401 && !getToken()) {
+    // 压根没登录过(本地没有令牌):说「登录已失效」是错的 —— 2026-09-14 执行用例 QX-007 时发现
+    if (err) {
+      err.innerHTML = '登录后才能保存和查看自己的扫描策略。' +
+        '<a href="' + loginUrl('login') + '" style="color:inherit;text-decoration:underline">登录</a> / ' +
+        '<a href="' + loginUrl('register') + '" style="color:inherit;text-decoration:underline">注册</a>' +
+        ' —— 当前的条件已存为草稿,登录回来还在。'
+      err.style.display = ''
+    }
+    return
+  }
   if (r.status === 401) {
     // 走到这里说明 app.js 的自动续期**已经试过并失败了** —— 不是「没登录」,
     // 是登录真的失效了(refresh token 30 天没用 / 在别处退出过)。
@@ -1046,7 +1058,9 @@ function vTable(r) {
   const cols = (r.columns || []).filter(function (c) { return !skip[c] })
   const head = '<tr><th>代码</th><th>名称</th><th data-sort="close" class="n">现价</th>' +
     cols.map(function (c) {
-      return '<th data-sort="' + esc(c) + '" class="n">' + esc(c) +
+      // 中文列头 + 悬停看英文原名(与条件行一致);后端拿不准的字段 label 为空,照旧显示原名
+      const lb = (r.column_labels || {})[c]
+      return '<th data-sort="' + esc(c) + '" class="n" title="' + esc(c) + '">' + esc(lb || c) +
         (S.sortBy === c ? '<span class="ar">' + (S.desc ? '↓' : '↑') + '</span>' : '') + '</th>'
     }).join('') + '</tr>'
   const rows = picks.map(function (p) {
@@ -1176,6 +1190,9 @@ function bind() {
   if (copyAll) copyAll.addEventListener('click', function () { copyText(buildScript(), '脚本') })
   const clr = document.getElementById('cd-clear')
   if (clr) clr.addEventListener('click', function () {
+    // 清空要二次确认(2026-09-14 执行用例 YY-009 发现原来点了就清):条件和结果一起没,草稿也被覆盖
+    const n = S.conditions.filter(function (c) { return c.is_bool }).length
+    if (!confirm('清空全部 ' + n + ' 个条件和当前扫描结果?草稿也会一起清掉。')) return
     S.conditions = []; S.result = null; S.probe = {}; S.notes = []; S.parseWarnings = []
     S.combine = 'all'; S.plotExpr = ''; S.loadedName = ''; saveDraft(); render()
   })
@@ -1277,7 +1294,7 @@ function onCondAction(e) {
     S.conditions.splice(i, 1); S.probe = {}
     rebuild(); return
   }
-  if (act === 'edit') { S.editing = (S.editing === c.name ? null : c.name); render(); return }
+  if (act === 'edit') { S.editing = (S.editing === c.name ? null : c.name); S.editText = null; render(); return }
   if (act === 'dup') {
     const copy = { name: uniqName(c.name), expr: c.expr, is_bool: c.is_bool, enabled: c.enabled }
     S.conditions.splice(i + 1, 0, copy)
@@ -1311,13 +1328,26 @@ function onNumChange(e) {
   rebuild()
 }
 
-function commitEdit(text) {
+async function commitEdit(text) {
   const c = S.conditions.filter(function (x) { return x.name === S.editing })[0]
-  if (!c) { S.editing = null; render(); return }
-  c.expr = (text || '').trim().replace(/;+$/, '')
+  if (!c) { S.editing = null; S.editText = null; render(); return }
+  // 先留一份原样:写错的表达式不能把原条件冲掉(2026-09-14 执行用例 GN-026 发现 ——
+  // 原来 c.expr 直接换成新写法再解析,解析失败只报错,条件区里留着一行坏表达式,之后的单条测试 / 运行全挂)
+  const snapshot = S.conditions.map(function (o) { return Object.assign({}, o) })
+  const next = (text || '').trim().replace(/;+$/, '')
+  c.expr = next
   S.editing = null
+  S.editText = null
+  S.genError = null
   // 改完表达式可能把某个变量的最后一个引用去掉了 → rebuild 里会清孤儿
-  rebuild()
+  await rebuild()
+  if (S.genError) {
+    // 解析失败:恢复原条件,编辑框留着刚才写的内容,报错照常显示,用户改完再提交
+    S.conditions = snapshot
+    S.editing = c.name
+    S.editText = next
+    render()
+  }
 }
 
 // ─── 会员校验与额度(2026-09-14 用户定)──────────────────────────────
@@ -1436,11 +1466,18 @@ function revealAfter(sec) {
 
 // ─── 与后端往返 ───────────────────────────────────────────────────
 async function post(url, body) {
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: apiHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  })
+  let r
+  try {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: apiHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    })
+  } catch (e) {
+    // 断网 / 服务正在重启:fetch 直接 reject。原来没接住,generate 里 S.generating 永远是 true,
+    // 按钮卡在「生成中」(2026-09-14 执行用例 LB-013 发现)。统一当成一次失败的请求交给调用方显示
+    return { ok: false, status: 0, data: { detail: '请求没发出去 · 网络断了或服务正在重启,稍后再试' } }
+  }
   let d = null
   try { d = await r.json() } catch (e) { /* 400 也可能不是 JSON */ }
   return { ok: r.ok, status: r.status, data: d }
@@ -1694,7 +1731,13 @@ async function searchFields() {
     r = await fetch(FIELD_API + '?market=' + encodeURIComponent(S.market) +
       '&q=' + encodeURIComponent(kw) + '&limit=60', { headers: apiHeaders() })
   } catch (e) { list.innerHTML = '<span class="sc-na">搜索请求没发出去</span>'; return }
-  if (r.status === 401) { list.innerHTML = '<span class="sc-na">登录后才能搜索字段</span>'; needLogin(); return }
+  if (r.status === 401) {
+    // 先弹登录再写提示:needLogin 会整页 render,先写的话提示当场被冲掉(2026-09-14 执行 QX-001 时发现)
+    needLogin()
+    const l2 = document.getElementById('sc-fd-list')
+    if (l2) l2.innerHTML = '<span class="sc-na">登录后才能搜索字段</span>'
+    return
+  }
   if (!r.ok) { list.innerHTML = '<span class="sc-na">搜索失败 HTTP ' + r.status + '</span>'; return }
   let d
   try { d = await r.json() } catch (e) { list.innerHTML = '<span class="sc-na">返回的不是合法 JSON</span>'; return }
