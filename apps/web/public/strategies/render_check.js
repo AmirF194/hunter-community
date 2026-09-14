@@ -817,6 +817,51 @@ try {
   console.log('FAIL 魔法筛选器定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 筛选器 · ThinkScript 时间序列脚本(2026-09-15)────────────────────────
+// 后端新加了逐根求值引擎(screen_series),前端要配合的只有三件小事,但漏一件用户就看得见:
+//   · input / rec 语句回写时保留关键字(丢了会变成 def,用户复制回 thinkorswim 参数面板就没了)
+//   · 「像不像脚本」的判据要认 input / rec / declare 开头(纯 input + plot 的短脚本才不会被当成大白话去走 AI)
+//   · 语法速查里写了这套写法,用户不用再猜哪些能用
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  inlineScripts(sc).forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    S.conditions = [
+      { name: 'lookback', expr: '5', kind: 'input', is_bool: false, enabled: true },
+      { name: 'bullStreak', expr: 'if close > open then bullStreak[1] + 1 else 0', kind: 'rec', is_bool: false, enabled: true },
+      { name: 'ok', expr: 'bullStreak >= 3 and close > close[lookback]', is_bool: true, enabled: true },
+    ]
+    S.combine = 'all'; S.plotName = 'scan'; S.plotExpr = ''
+    var TS_SCRIPT = buildScript(false)
+    var TS_LOOKS = [looksLikeScript('input n = 5;\\nplot scan = close > close[n];'),
+                    looksLikeScript('rec s = if close > open then s[1] + 1 else 0;\\nplot scan = s > 2;'),
+                    looksLikeScript('收盘价大于20')]
+    var TS_CONDS = condsOf({ conditions: [{ name: 'a', expr: '1', kind: 'input', is_bool: false }, { name: 'b', expr: 'close > 1', is_bool: true }], plot_refs: ['b'], combine: 'all' })
+  `, ctx, { filename: 'assert-series' })
+  const s = String(ctx.TS_SCRIPT)
+  const ts = [
+    ['input 行回写成 input', /^input lookback = 5;/m.test(s)],
+    ['rec 行回写成 rec', /^rec bullStreak = /m.test(s)],
+    ['普通条件仍是 def', /^def ok = /m.test(s)],
+    ['plot 只含布尔条件(input / rec 不进 plot)', /^plot scan = ok;$/m.test(s)],
+    ['looksLikeScript 认 input 开头', ctx.TS_LOOKS[0] === true],
+    ['looksLikeScript 认 rec 开头', ctx.TS_LOOKS[1] === true],
+    ['looksLikeScript 不把大白话当脚本', ctx.TS_LOOKS[2] === false],
+    ['condsOf 带上 kind,没有的默认 def', ctx.TS_CONDS[0].kind === 'input' && ctx.TS_CONDS[1].kind === 'def'],
+    ['语法速查写了时间序列写法', /ThinkScript 时间序列写法/.test(sc) && /if 条件 then 值 else 值/.test(sc)],
+    ['vTok 认识 fn 类 token(函数名原样显示)', /fn: 'f'/.test(sc)],
+  ]
+  for (const [name, ok] of ts) {
+    if (ok) console.log('PASS 时间序列脚本 ·', name)
+    else { failed++; console.log('FAIL 时间序列脚本 ·', name, name.startsWith('input') || name.startsWith('rec') || name.startsWith('plot') ? s : '') }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 时间序列脚本定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 筛选器悬停日K:当前脚本的历史命中日(2026-09-13)──────────────────────
 // 标记是异步来的(后端逐日回算),三件事钉住:
 //   ① 用的是「跑出结果表的那份脚本」,不是条件区此刻的样子;

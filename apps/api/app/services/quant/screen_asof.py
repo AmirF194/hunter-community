@@ -266,7 +266,12 @@ def cut_bars(dates: list, arr, as_of: date) -> int:
 # ═══════════════════════════════════════════════════════════════
 
 def _load_store(market_key: str, perf: dict) -> dict:
-    """→ {"codes": {code: (dates, np.ndarray n×4)}, "bench": {date: close}, "loaded_at", "last"}"""
+    """→ {"codes": {code: (dates, np.ndarray n×5)}, "bench": {date: close}, "loaded_at", "last"}
+
+    数组的列:0 收 · 1 高 · 2 低 · 3 量 · 4 开(2026-09-15 加,时间序列脚本的 close > open 要用;
+    老行没有开盘价的是 NaN)。`_tuples` / `bars_upto` 仍然给 5 元组 (日期, 收, 高, 低, 量),
+    现有消费方(compute_fields / vcp / agent)一个都不用改;要开盘价直接读 arr[:, 4]。
+    """
     import numpy as np
     from app.services.database import get_conn
     from app.services.quant import rs_history as rh
@@ -275,7 +280,7 @@ def _load_store(market_key: str, perf: dict) -> dict:
     rh._ensure_tables(conn)
     scan = conn.cursor(name="asof_scan")
     scan.itersize = 20000
-    scan.execute("SELECT code, trade_date, close, high, low, volume FROM rs_daily "
+    scan.execute("SELECT code, trade_date, close, high, low, volume, open FROM rs_daily "
                  "WHERE market=%s ORDER BY code, trade_date", (market_key,))
     codes: dict = {}
     bench: dict = {}
@@ -284,32 +289,42 @@ def _load_store(market_key: str, perf: dict) -> dict:
 
     def flush(code, full):
         if code == rh.BENCH_CODE:
-            bench.update({d: c for d, c, _h, _l, _v in full})
-            bench_bars.extend(full)
+            bench.update({d: c for d, c, _h, _l, _v, _o in full})
+            bench_bars.extend([(d, c, h, lo, v) for d, c, h, lo, v, _o in full])
             return
         p = perf.get(code)
-        series = [(d, c) for d, c, _h, _l, _v in full]
+        series = [(d, c) for d, c, _h, _l, _v, _o in full]
         if p is not None:
             series, _n = rh.repair_splits(series, rh.perf_anchors(series[-1][0], p))
             if series is None:
                 return                       # 对不上又修不好 —— 这只票不给数(和每晚任务同一口径)
-        raw = {d: (c, h, lo, v) for d, c, h, lo, v in full}
+        raw = {d: (c, h, lo, v) for d, c, h, lo, v, _o in full}
+        opens = {d: o for d, _c, _h, _l, _v, o in full}
         bars = rh.adjust_bars(raw, series)
         dates = [b[0] for b in bars]
-        arr = np.array([[b[1], b[2] if b[2] is not None else np.nan,
+        rows = []
+        for b in bars:
+            d = b[0]
+            # 开盘价跟收盘同一个拆股系数(adjust_bars 对高低就是这么做的)
+            c0 = raw[d][0]
+            f = (b[1] / c0) if c0 else 1.0
+            o = opens.get(d)
+            rows.append([b[1], b[2] if b[2] is not None else np.nan,
                          b[3] if b[3] is not None else np.nan,
-                         b[4] if b[4] is not None else np.nan] for b in bars], dtype=float)
+                         b[4] if b[4] is not None else np.nan,
+                         (o * f) if o else np.nan])
+        arr = np.array(rows, dtype=float)
         vf = volume_factor(market_key, code)       # A 股「手」→「股」,见 volume_factor
         if vf != 1:
             arr[:, 3] *= vf
         codes[code] = (dates, arr)
 
-    for code, d, c, h, lo, v in scan:
+    for code, d, c, h, lo, v, o in scan:
         if code != cur_code:
             if cur_code is not None:
                 flush(cur_code, buf)
             cur_code, buf = code, []
-        buf.append((d, c, h, lo, v))
+        buf.append((d, c, h, lo, v, o))
     if cur_code is not None:
         flush(cur_code, buf)
     scan.close()
@@ -330,6 +345,55 @@ def get_store(market_key: str, perf: dict) -> dict:
     with _cache_lock:
         _cache[market_key] = (now, store)
     return store
+
+
+_AVAIL_CACHE: dict = {}
+
+
+def series_availability(market_key: str) -> dict:
+    """时间序列脚本在「生成」那一步就要知道:这个市场有没有日线、日线里有没有开盘价。
+
+    → {has_bars, last, n(最新一天有收盘的只数), open_have(其中有开盘价的只数), open_ratio}
+    整窗日线已经在缓存里就直接数;否则查一次库(按市场 + 最新一天,几千行),结果缓存 20 分钟。
+    """
+    import numpy as np
+    now = time.time()
+    hit = _AVAIL_CACHE.get(market_key)
+    if hit and now - hit[0] < _CACHE_TTL:
+        return hit[1]
+    out = {"has_bars": False, "last": None, "n": 0, "open_have": 0, "open_ratio": 0.0}
+    with _cache_lock:
+        st = _cache.get(market_key)
+    if st and now - st[0] < _CACHE_TTL:
+        store = st[1]
+        last = store.get("last")
+        n = have = 0
+        for _code, (dates, arr) in store["codes"].items():
+            if dates and dates[-1] == last:
+                n += 1
+                if arr.shape[1] > 4 and not np.isnan(arr[-1, 4]):
+                    have += 1
+        out = {"has_bars": last is not None and n > 0, "last": last, "n": n, "open_have": have,
+               "open_ratio": (have / n) if n else 0.0}
+    else:
+        from app.services.database import get_conn
+        from app.services.quant import rs_history as rh
+        conn = get_conn()
+        rh._ensure_tables(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(trade_date) FROM rs_daily WHERE market=%s AND code=%s",
+                    (market_key, rh.BENCH_CODE))
+        last = (cur.fetchone() or [None])[0]
+        if last is not None:
+            cur.execute("SELECT COUNT(*), COUNT(open) FROM rs_daily WHERE market=%s AND trade_date=%s "
+                        "AND code<>%s", (market_key, last, rh.BENCH_CODE))
+            n, have = cur.fetchone()
+            out = {"has_bars": n > 0, "last": last, "n": int(n), "open_have": int(have),
+                   "open_ratio": (have / n) if n else 0.0}
+        cur.close()
+        conn.close()
+    _AVAIL_CACHE[market_key] = (now, out)
+    return out
 
 
 def history_range(market_key: str) -> dict:

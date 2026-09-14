@@ -363,7 +363,8 @@ function buildScript(allEnabled) {
   const on = []
   S.conditions.forEach(function (c) {
     if (!c.expr) return
-    lines.push('def ' + c.name + ' = ' + c.expr + ';')
+    const kw = c.kind === 'input' ? 'input' : (c.kind === 'rec' ? 'rec' : 'def')
+    lines.push(kw + ' ' + c.name + ' = ' + c.expr + ';')
     if (c.is_bool && (allEnabled || c.enabled)) on.push(c.name)
   })
   if (!lines.length) return ''
@@ -381,7 +382,7 @@ function buildScript(allEnabled) {
 // 只用来决定按钮显示「解析中」还是「识别中」;真正走哪条路由后端说了算,
 // 前端猜错顶多是文案不准,不影响结果。
 function looksLikeScript(t) {
-  return /(^|\n)\s*(def|plot)\s+[A-Za-z_]/.test(t || '')
+  return /(^|\n)\s*(def|plot|input|rec|declare)\s+[A-Za-z_]/.test(t || '')
 }
 
 // 某个名字有没有被别的条件引用
@@ -529,7 +530,7 @@ function vTok(t, ci, ti) {
       'value="' + esc(t.t) + '" size="' + Math.max(1, String(t.t).length) + '" ' +
       'aria-label="数值" />'
   }
-  const cls = { field: 'f', op: 'o', logic: 'l', paren: 'p', ref: 'r', kw: 'k' }[t.k] || ''
+  const cls = { field: 'f', op: 'o', logic: 'l', paren: 'p', ref: 'r', kw: 'k', fn: 'f' }[t.k] || ''
   return '<span class="tk ' + cls + '">' + esc(t.t) + '</span>'
 }
 
@@ -1103,6 +1104,13 @@ function vHelp() {
     '<code>Highest(high, N)</code> / <code>Lowest(low, N)</code>' +
     '(<b>N 只能接近 5/21/63/126/252</b>)· <code>RSI()</code> 默认 14 周期<br>' +
     '<b>字段</b>　也可以直接写字段名,共 3777 个,下面能搜。<br>' +
+    '<b>ThinkScript 时间序列写法</b>(2026-09-15 起支持,按自家全市场日线逐根算)　' +
+    '<code>input n = 5;</code> 参数 · <code>close[1]</code> 前一根 · ' +
+    '<code>if 条件 then 值 else 值</code> · 递归 <code>def s = if 阳线 then s[1] + 1 else 0;</code> · ' +
+    '<code>Sum(条件, N)</code> 计数 · <code>Highest(任意表达式, N)</code> · ' +
+    '<code>a crosses above b</code> · <code>条件 within N bars</code> · ' +
+    '<code>RSI() ATR() MACD().Diff BollingerBands().UpperBand</code>。' +
+    '用了这些写法就不受上面均量 / 窗口周期的限制,任意 N 都行(最长 400 根)。<br>' +
     '<span style="color:var(--soft)">周期映射不上会直接报错并告诉你可用值 —— ' +
     '不会拿相近的周期顶替(那等于把 90 天当 100 天用)。</span></div></details>' +
     '<details class="sc-fold" id="sc-fd-fold"><summary>可用字段(3777 个 · 搜索)</summary>' +
@@ -1631,6 +1639,10 @@ function condsOf(d) {
   return (d.conditions || []).map(function (c) {
     return {
       name: c.name, expr: c.expr, tokens: c.tokens, is_bool: c.is_bool,
+      // 'input' / 'rec' 是 ThinkScript 的语句关键字(2026-09-15 时间序列脚本),回写脚本时要原样保留;
+      // 没有就是 def。丢了它 `input lookback = 5;` 会变成 `def lookback = 5;` —— 引擎能算,但用户
+      // 复制回 thinkorswim 时参数面板就没了
+      kind: c.kind || 'def',
       enabled: !c.is_bool ? true : (d.combine === 'custom' ? true : !!refs[c.name]),
     }
   })

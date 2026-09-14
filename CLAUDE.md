@@ -435,6 +435,51 @@ test_screen_fix 里「算不了的周期」相应换成了 300 天。
    受腾讯 1 次/秒限速和 WAF 前科约束(见 RS 线那节第 1 条),别为这个调高限速。
    上线核对:美股 5 只扫描行 50 日均量与 SQL 直接求平均逐位一致;A 股换算后自算 30 日均量 / 扫描源中位 1.01(688 与其他板块都是)。
 
+## 筛选器 · ThinkScript 时间序列引擎(`quant/screen_series.py`,2026-09-15)· 八条
+
+用户粘了一份标准 ThinkScript 选股脚本(猎杀 FOMO:`bullStreak = if isBull then bullStreak[1] + 1 else 0`、
+`Sum(isBear, lookback)`、`close / close[lookback]`、`Highest(volume[1], 60)`),界面报「第 18 行:看不懂的字符 '['」,
+AI 修错也修不了。**这不是一句话的 bug,是整类写法没支持**:`screen_dsl` 只有横截面(每只票一行快照),
+词法器里连 `[` 都没有,在语法分析之前就死了,报错把用户往"我打错字了"的方向带。
+
+现在两套引擎并存,**按语法自动分流**(`screen_dsl._needs_series`),老脚本一行不变:
+
+| | 横截面(老) | 时间序列(新) |
+|---|---|---|
+| 触发 | 字段 op 常量、`Average(close,50)` 这种能映射成扫描源字段的 | `x[n]` / `if-then-else` / `input` / `rec` / 递归 / `Sum` `StDev` 等 / 对偏移或表达式做窗口 / `crosses` / `within` / 研究函数 `.属性` |
+| 数据 | 上游快照(延迟 15 分钟、7400 只) | 自家全市场日线 `rs_daily`(与时间回溯同一份、同一套拆股修正) |
+| 股票池 | 快照全部 | RS 排名池(美股剔 OTC 与微盘,约 4000 只) |
+| 求值日 | 现在 | 日线最新一天收盘,**不含今天盘中** |
+| 算法 | 逐行 `_eval` | 股票 × K 线二维 numpy;递归定义逐根循环、每根全市场向量化 |
+
+1. **`Highest(close, 5)` 这类"横截面映射不了、ThinkScript 里合法"的写法要进序列引擎,不能报「第 1 个参数应该是 high」。**
+   `_needs_series` 对每个函数按**扫描源有没有对应字段**判:均线只有 close / 均量只有 volume、Highest 只有 high、Lowest 只有 low。
+   `RSI(14, close)` 带 price 参数也走序列 —— 判断顺序里 `rsi` 必须排在 `startswith("rs")` 之前(踩过)。
+2. **三值逻辑与横截面一致,不照 ThinkScript 把 NaN 当 false。** 中间缺一根开盘价,`if isBull then s[1]+1 else 0` 从那根起是「算不出」,
+   直到真正的阴线(else)重置;ThinkScript 会归零重数,静默给一个偏小的假计数。递归定义**起点之前**(含左侧补的 NaN)按 ThinkScript 取 0,
+   否则 NaN + 1 一路传到最后一根,连续计数永远算不出(`_Ctx.prev_self`)。`CompoundValue` 的 K 线序号是**每只票自己的**,不是二维数组的列号。
+3. **开盘价 2026-09-15 才入库**(`rs_daily.open`,同一条腾讯响应里 b[1],以前没存)。老行为空 → `close > open` 是 NaN。
+   parse 时 `screen_asof.series_availability` 查这个市场最新一天有开盘价的比例,< 90% 就在「生成」那一步直接报
+   「当前日线只有收盘 / 最高 / 最低 / 成交量,还没有开盘价 …」并点名第几行用了 open(用户 2026-09-15 要求:不支持的要在生成时就说);
+   **不给 AI 按钮**(数据没有,模型改脚本也改不出来)。整窗重拉一轮后自然消失。`_load_store` 的数组从 4 列变 5 列(第 5 列开),
+   `_tuples` / `bars_upto` 仍给 5 元组,现有消费方不用改;拆股系数同步到开盘价。
+4. **`Round` 是四舍五入,不能用 `np.round`**(银行家舍入,2.5 → 2)。`Sum(布尔, n)` 直接加(布尔就是 1/0/NaN)。
+   窗口函数里有 NaN 整窗 NaN(不拿部分窗口冒充);EMA / RSI / ATR 遇 NaN 重新起算、要「周期 + 30」根才给值(与 screen_asof 同口径)。
+5. **研究用的画图语句整句跳过并进 notes**(AddLabel / AssignPriceColor / `scan.SetDefaultColor(...)`),`declare` 同。
+   带点的名字是**一个**标识符(字段名 MACD.hist 就这样),所以 `scan.SetDefaultColor(` 到语句开头是 ident + `(`,按属性调用跳过。
+   明确不支持的在它出现的位置就说清原因(`_CHAR_HINT` / `_UNSUPPORTED_SYNTAX` / `screen_series._UNSUPPORTED`):
+   fold、AggregationPeriod、`?:`、枚举 input、字符串当值、动态偏移、ADX / DMI / 随机指标、全角标点(报出该换成哪个半角)。
+6. **结果表多出脚本里的数值型定义列**(bullStreak / cumRet / volMA20 …,布尔条件与 input 不列),用户一眼看出为什么命中;
+   `column_labels` 里它们就叫自己的名字。悬停日K 的命中日走同一引擎(`screen_hits._hit_days_series`):整段历史一次算出 plot 整列,
+   所以「表里命中的票,图上最后一天必有蓝线」。
+7. **前端只改三处**:`condsOf` / `buildScript` 带 `kind`(input / rec 回写时保留关键字,丢了用户复制回 thinkorswim 参数面板就没了)、
+   `looksLikeScript` 认 input / rec / declare、语法速查加一段。`_tok_stream(series=True)` 把函数原样显示、`if` 显示成 如果/则/否则。
+   render_check 有 10 条「时间序列脚本」断言。
+8. **用例 `tests/test_screen_series.py`(190+ 条,不连库)按写法类别铺**:A 语法应通过(含横截面老脚本**不能**被误判)、
+   B 应拒绝且报错点名原因、C 求值对暴力算法(递归 / EMA / RSI / 三值逻辑 / 除零 / within / crosses / 研究函数)、
+   D 用户那份脚本三只票(命中 / 不满足 / 缺开盘价算不出)、E decompose 与 bars_matrix、F 4000 只 × 252 根性能。
+   **只加不删**。写用例时注意:脚本里一个序列写法都没有会走横截面,`run()` 会直接报出来 —— 那不是引擎的 bug,是用例没测到东西。
+
 ## 部署坑:`apps/web/public/**` **新增**文件要 `restart web`,改动文件不用
 
 `docker-compose.yml` 里 web 有 `- ./apps/web/public:/app/public:ro`,所以

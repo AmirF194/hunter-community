@@ -46,16 +46,20 @@ class ScreenError(ValueError):
 
 @dataclass
 class Stmt:
-    """一条 `def x = ...;` 或 `plot scan = ...;`。
+    """一条 `def x = ...;` / `plot scan = ...;` / `input n = 5;`。
 
     `expr_start` / `expr_end` 是**表达式**在源码里的字节跨度(不含 `def x =` 和分号)。
     可视化条件行靠它拿到"这一条的原文",数字的内联编辑靠 num 节点自带的位置。
+
+    kind = 'input' 是 ThinkScript 的参数声明(常量);`rec x = …` 记成 'def' 且 rec=True。
     """
     name: str
     node: object
-    kind: str                 # 'def' | 'plot'
+    kind: str                 # 'def' | 'plot' | 'input'
     expr_start: int = 0
     expr_end: int = 0
+    rec: bool = False
+    line: int = 0             # 语句所在行 —— 时间序列引擎的报错要能指到"第几行"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -63,15 +67,63 @@ class Stmt:
 # ═══════════════════════════════════════════════════════════════
 
 # 标识符允许带点:上游字段名本身就长这样(MACD.hist / High.All / Perf.Y)
+#
+# 2026-09-15 加了 `[` `]`:ThinkScript 的 K 线偏移(`close[1]` = 前一根收盘)。以前没有它,
+# 一份标准的选股脚本在**语法分析之前**就死在这里,报「第 18 行:看不懂的字符 '['」——
+# 用户以为是自己打错了字,其实是整类写法没支持;AI 修错只会做局部替换,当然也修不了。
+# 用到偏移的脚本走时间序列引擎(screen_series),见 compile_script。
+#
+# 同时补齐 ThinkScript 表达式里其它常见记号:`!`(逻辑非)、`&&` `||`、字符串(只用于
+# `RSI("length" = 9)` 这种带引号的参数名)、`.5` 这种省掉前导 0 的小数、以及
+# `BollingerBands().UpperBand` 的属性点(`.` 单独成 op;`MACD.hist` 这种字段名仍是一个整词)。
 _TOKEN_RE = re.compile(r"""
     (?P<ws>\s+)
   | (?P<comment>\#[^\n]*)
-  | (?P<num>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)
+  | (?P<num>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)
+  | (?P<str>"[^"\n]*")
   | (?P<ident>[A-Za-z_][A-Za-z0-9_.]*)
-  | (?P<op><=|>=|==|!=|<>|[<>+\-*/(),;=])
+  | (?P<op><=|>=|==|!=|<>|&&|\|\||[<>+\-*/(),;=\[\]!.])
 """, re.VERBOSE)
 
-_KEYWORDS = {"def", "plot", "and", "or", "not", "true", "false"}
+# input / rec / declare / if / then / else 是 ThinkScript 的语句与表达式关键字(2026-09-15)。
+# `rec` 就是显式的递归 def;`declare lower;` 这类研究用的声明整句跳过;
+# yes / no 是 ThinkScript 的布尔字面量(input showX = yes;);crosses / within 是它的中缀运算
+# (`close crosses above sma20`、`cond within 5 bars`)。
+_KEYWORDS = {"def", "plot", "and", "or", "not", "true", "false", "yes", "no",
+             "input", "rec", "declare", "if", "then", "else", "crosses", "within"}
+
+# 词法阶段就能说清楚的"不支持"—— 比「看不懂的字符」有用得多
+_CHAR_HINT = {
+    "{": "花括号:ThinkScript 的枚举型 input(input x = {default A, B})这里不支持,改成数字或 true/false",
+    "}": "花括号:ThinkScript 的枚举型 input 这里不支持",
+    "'": "单引号:参数名要用双引号(RSI(\"length\" = 9));画图 / 标签语句是研究用的,选股脚本里删掉即可",
+    "?": "问号:这里不支持 ?: 三目写法,请写 if 条件 then 值1 else 值2",
+    ":": "冒号:这里不支持 ?: 三目写法,请写 if 条件 then 值1 else 值2",
+    "%": "百分号:百分比请直接写小数(5% 写 0.05)",
+    "&": "单个 &:逻辑与请写 and(或 &&)",
+    "|": "单个 |:逻辑或请写 or(或 ||)",
+    "^": "^:乘方请写 Power(x, n)",
+    "$": "$:脚本里不能出现货币符号,金额直接写数字",
+}
+_FULLWIDTH = {"；": ";", "，": ",", "（": "(", "）": ")", "＝": "=", "＜": "<", "＞": ">",
+              "＋": "+", "－": "-", "＊": "*", "／": "/", "［": "[", "］": "]", "　": " "}
+
+# ThinkScript 里有、这里明确不支持的语法关键字 —— 在它出现的位置就说清,别让它变成「缺分号」
+_UNSUPPORTED_SYNTAX = {
+    "fold": "fold 循环这里不支持,请改写成 Sum / Highest / Lowest / CompoundValue 这类窗口或递归写法",
+    "while": "while 循环这里不支持",
+    "switch": "switch / case 这里不支持,请用 if … then … else if …",
+    "case": "switch / case 这里不支持,请用 if … then … else if …",
+    "script": "自定义 script 块这里不支持,把里面的定义直接写在主脚本里",
+}
+
+# 研究(study)里才有的画图 / 标签 / 告警语句 —— 用户把整个研究粘进选股器时会带着它们。
+# 这些语句对选股没有意义,**整句跳过并记一条提示**,而不是让整份脚本报错。
+_STUDY_STMTS = {
+    "addlabel", "addchartbubble", "addcloud", "addverticalline", "assignpricecolor",
+    "assignbackgroundcolor", "alert", "addorder", "definecolor", "setdefaultcolor",
+    "hidebubble", "hidetitle", "hidepriceplot", "definecolor", "addchart",
+}
 
 
 @dataclass
@@ -87,7 +139,16 @@ def _tokenize(src: str) -> list[_Tok]:
     while i < n:
         m = _TOKEN_RE.match(src, i)
         if not m:
-            raise ScreenError(f"第 {_line_of(src, i)} 行:看不懂的字符 {src[i]!r}")
+            ch = src[i]
+            hint = _CHAR_HINT.get(ch)
+            # 全角标点是中文输入法最常见的坑:`；` `，` `（` 看着和半角一模一样
+            if ch in _FULLWIDTH:
+                hint = f"这是全角字符,请换成半角的 {_FULLWIDTH[ch]!r}"
+            raise ScreenError(
+                f"第 {_line_of(src, i)} 行:看不懂的字符 {ch!r}"
+                + (f" —— {hint}" if hint else
+                   "(这套脚本认 ThinkScript 的 def / plot / input / rec、算术与比较、and / or / not、"
+                   "if 条件 then 值 else 值、K 线偏移 x[n]、Sum / Highest / Average 等函数)"))
         i = m.end()
         kind = m.lastgroup
         if kind in ("ws", "comment"):
@@ -122,10 +183,53 @@ class _Parser:
         self.src = src
         self.toks = _tokenize(src)
         self.i = 0
+        self.skipped: list[str] = []       # 跳过的研究用语句(AddLabel 之类),给用户一条提示
 
     # ── 基础动作 ────────────────────────────────────────────
     def _peek(self) -> _Tok | None:
         return self.toks[self.i] if self.i < len(self.toks) else None
+
+    def _peek2(self) -> _Tok | None:
+        return self.toks[self.i + 1] if self.i + 1 < len(self.toks) else None
+
+    def _expect_kw(self, kind: str, what: str) -> _Tok:
+        t = self._peek()
+        if t is None:
+            raise ScreenError(f"脚本在该出现 {kind} 的地方结束了({what})")
+        if t.kind != kind:
+            raise ScreenError(
+                f"第 {_line_of(self.src, t.pos)} 行:这里应该是 {kind},实际是 {t.val!r}({what})")
+        return self._next()
+
+    def _skip_stmt(self) -> None:
+        """跳到下一个分号之后(含)。"""
+        while self._peek() is not None and not self._at_op(";"):
+            self._next()
+        if self._at_op(";"):
+            self._next()
+
+    def _is_study_stmt(self) -> str | None:
+        """当前位置是不是研究用的语句 → 语句名 | None。
+
+        两种形状:`AddLabel(...)` 直接调用;`scan.SetDefaultColor(...)` 对 plot 的属性调用。
+        """
+        t = self._peek()
+        if t is None or t.kind != "ident":
+            return None
+        t2 = self._peek2()
+        if t2 is not None and t2.kind == "op" and t2.val == "(" and t.val.lower() in _STUDY_STMTS:
+            return t.val
+        # `scan.SetDefaultColor(...)`:词法器把带点的名字整个当一个标识符(字段名 MACD.hist 就长这样),
+        # 所以「名字.方法(」到这里是 ident("scan.SetDefaultColor") + "(" —— 语句开头出现这种形状只能是
+        # 对 plot 的属性调用,整句跳过
+        if t2 is not None and t2.kind == "op" and t2.val == "(" and "." in t.val:
+            return t.val
+        if t2 is not None and t2.kind == "op" and t2.val == ".":
+            t3 = self.toks[self.i + 2] if self.i + 2 < len(self.toks) else None
+            t4 = self.toks[self.i + 3] if self.i + 3 < len(self.toks) else None
+            if t3 is not None and t3.kind == "ident" and t4 is not None and t4.kind == "op" and t4.val == "(":
+                return f"{t.val}.{t3.val}"
+        return None
 
     def _next(self) -> _Tok | None:
         t = self._peek()
@@ -159,12 +263,30 @@ class _Parser:
         seen: set[str] = set()
         while self._peek() is not None:
             t = self._peek()
-            if t.kind not in ("def", "plot"):
+            if t.kind == "declare":
+                # declare lower; / declare once_per_bar; —— 研究的声明,对选股没意义
+                self._skip_stmt()
+                continue
+            study = self._is_study_stmt()
+            if study:
+                self._skip_stmt()
+                if study not in self.skipped:
+                    self.skipped.append(study)
+                continue
+            if t.kind not in ("def", "plot", "input", "rec"):
+                extra = ""
+                if t.kind == "ident" and self._peek2() is not None and self._peek2().kind == "op" \
+                        and self._peek2().val == "=":
+                    extra = (f"(ThinkScript 里先 `def {t.val};` 再 `{t.val} = …;` 的两段写法这里不支持,"
+                             f"合成一句 `def {t.val} = …;`)")
                 raise ScreenError(
-                    f"第 {_line_of(self.src, t.pos)} 行:每一句都要以 def 或 plot 开头,"
-                    f"这里是 {t.val!r}。"
+                    f"第 {_line_of(self.src, t.pos)} 行:每一句都要以 def / plot / input 开头,"
+                    f"这里是 {t.val!r}。{extra}"
                     f"写法:def 名字 = 表达式;   最后一句 plot scan = 综合条件;")
             kind = self._next().kind
+            rec = kind == "rec"
+            if rec:
+                kind = "def"
             nt = self._peek()
             if nt is None or nt.kind != "ident":
                 raise ScreenError(f"{kind} 后面要跟一个名字,例如 `{kind} cond_price = close > 20;`")
@@ -172,6 +294,11 @@ class _Parser:
             if name in seen:
                 raise ScreenError(f"名字 {name!r} 定义了两次")
             seen.add(name)
+            if self._at_op(";"):
+                raise ScreenError(
+                    f"第 {_line_of(self.src, t.pos)} 行:`{kind} {name};` 只声明不赋值 —— "
+                    f"ThinkScript 里先 `def {name};` 再 `{name} = …;` 的两段写法这里不支持,"
+                    f"合成一句 `def {name} = …;`(递归定义直接写 {name}[1] 即可)")
             self._expect_op("=", f"{kind} {name}")
             # 记下表达式在源码里的跨度 —— 可视化条件行要拿它当"这一条的原文"
             expr_start = self._peek().pos if self._peek() is not None else 0
@@ -186,7 +313,8 @@ class _Parser:
                 raise ScreenError(
                     f"第 {_line_of(self.src, t2.pos)} 行:{name} 这一句缺分号 `;`")
             stmts.append(Stmt(name=name, node=node, kind=kind,
-                              expr_start=expr_start, expr_end=expr_end))
+                              expr_start=expr_start, expr_end=expr_end, rec=rec,
+                              line=_line_of(self.src, t.pos)))
             if kind == "plot":
                 plot_name = name
         if not stmts:
@@ -198,40 +326,76 @@ class _Parser:
         return stmts, plot_name
 
     # ── 表达式 ──────────────────────────────────────────────
+    #
+    # 2026-09-15 补的 ThinkScript 写法(节点形状,时间序列引擎 screen_series 按这些求值):
+    #   ("if", 条件, 值1, 值2)          if c then a else b(else 后面可以再接 if)
+    #   ("idx", 基, 偏移)               x[n] —— n 根 K 线之前的值
+    #   ("prop", 基, 属性名)            BollingerBands().UpperBand
+    #   ("cross", 方向, 左, 右)         a crosses above / below / (不写=任一方向) b
+    #   ("within", 条件, n)             cond within n bars —— 最近 n 根里出现过
+    #   ("named", 参数名, 值)           只出现在函数参数里:RSI("length" = 9) / Average(data = close, length = 20)
     def _expr(self):
+        if self._at("if"):
+            t2 = self._peek2()
+            if not (t2 is not None and t2.kind == "op" and t2.val == "("):
+                return self._if_expr()
         return self._or()
+
+    def _if_expr(self):
+        self._next()                                # if
+        cond = self._expr()
+        self._expect_kw("then", "if 后面要有 then")
+        a = self._expr()
+        self._expect_kw("else", "if … then … 后面要有 else(ThinkScript 的 if 表达式必须给 else)")
+        b = self._expr()
+        return ("if", cond, a, b)
 
     def _or(self):
         node = self._and()
-        while self._at("or"):
+        while self._at("or") or self._at_op("||"):
             self._next()
             node = ("bin", "or", node, self._and())
         return node
 
     def _and(self):
         node = self._not()
-        while self._at("and"):
+        while self._at("and") or self._at_op("&&"):
             self._next()
             node = ("bin", "and", node, self._not())
         return node
 
     def _not(self):
-        if self._at("not"):
+        if self._at("not") or self._at_op("!"):
             self._next()
             return ("un", "not", self._not())
         return self._cmp()
 
     def _cmp(self):
         node = self._add()
-        if self._at_op("<", ">", "<=", ">=", "==", "!=", "<>"):
+        if self._at("crosses"):
+            self._next()
+            dirn = "any"
+            t = self._peek()
+            if t is not None and t.kind == "ident" and t.val.lower() in ("above", "below"):
+                dirn = t.val.lower()
+                self._next()
+            node = ("cross", dirn, node, self._add())
+        elif self._at_op("<", ">", "<=", ">=", "==", "!=", "<>"):
             op = self._next().val
             if op == "<>":
                 op = "!="
-            return ("bin", op, node, self._add())
-        if self._at_op("="):
+            node = ("bin", op, node, self._add())
+        elif self._at_op("="):
             t = self._peek()
             raise ScreenError(
                 f"第 {_line_of(self.src, t.pos)} 行:比较相等要写 `==`,单个 `=` 是赋值")
+        if self._at("within"):
+            self._next()
+            n = self._add()
+            t = self._peek()
+            if t is not None and t.kind == "ident" and t.val.lower() in ("bar", "bars"):
+                self._next()
+            node = ("within", node, n)
         return node
 
     def _add(self):
@@ -265,29 +429,78 @@ class _Parser:
             self._next()
             # 带上源码里的起止位置 —— 前端要按位置把数字换掉做内联编辑
             # (按第 n 个数字做正则替换会在 `Average(close,50) > 50` 这种表达式上认错人)
-            return ("num", float(t.val), t.pos, t.pos + len(t.val))
-        if t.kind in ("true", "false"):
+            return self._postfix(("num", float(t.val), t.pos, t.pos + len(t.val)))
+        if t.kind in ("true", "false", "yes", "no"):
             self._next()
-            return ("bool", t.kind == "true")
+            return ("bool", t.kind in ("true", "yes"))
+        if t.kind == "str":
+            raise ScreenError(
+                f"第 {_line_of(self.src, t.pos)} 行:字符串 {t.val} 只能用作函数的参数名"
+                f"(例如 RSI(\"length\" = 9)),不能当值用")
         if t.kind == "op" and t.val == "(":
             self._next()
             node = self._expr()
             self._expect_op(")", "括号")
-            return node
+            return self._postfix(node)
+        if t.kind == "if":
+            # if(条件, 值1, 值2) 的函数写法 —— 与 if … then … else 同义
+            self._next()
+            return self._postfix(("call", "if", self._args("if")))
+        if t.kind == "crosses":
+            # Crosses(a, b, CrossingDirection.ABOVE) 的函数写法 —— crosses 同时是中缀关键字
+            t2 = self._peek2()
+            if t2 is not None and t2.kind == "op" and t2.val == "(":
+                self._next()
+                return self._postfix(("call", "crosses", self._args("Crosses")))
         if t.kind == "ident":
+            low = t.val.lower()
+            if low in _UNSUPPORTED_SYNTAX:
+                raise ScreenError(f"第 {_line_of(self.src, t.pos)} 行:{_UNSUPPORTED_SYNTAX[low]}")
             self._next()
             if self._at_op("("):
-                self._next()
-                args = []
-                if not self._at_op(")"):
-                    args.append(self._expr())
-                    while self._at_op(","):
-                        self._next()
-                        args.append(self._expr())
-                self._expect_op(")", f"函数 {t.val}")
-                return ("call", t.val, args)
-            return ("name", t.val)
+                return self._postfix(("call", t.val, self._args(t.val)))
+            return self._postfix(("name", t.val))
         raise ScreenError(f"第 {_line_of(self.src, t.pos)} 行:这里不该出现 {t.val!r}")
+
+    def _args(self, fn: str) -> list:
+        """`(` 已经看到但还没吃掉。参数可以是 `名字 = 值` / `"名字" = 值`(命名参数)。"""
+        self._expect_op("(", f"函数 {fn}")
+        args = []
+        if not self._at_op(")"):
+            args.append(self._arg())
+            while self._at_op(","):
+                self._next()
+                args.append(self._arg())
+        self._expect_op(")", f"函数 {fn}")
+        return args
+
+    def _arg(self):
+        t, t2 = self._peek(), self._peek2()
+        if t is not None and t.kind in ("ident", "str") and t2 is not None \
+                and t2.kind == "op" and t2.val == "=":
+            self._next(); self._next()
+            name = t.val.strip('"').lower()
+            return ("named", name, self._expr())
+        return self._expr()
+
+    def _postfix(self, node):
+        """x[n](K 线偏移)与 x.prop(研究函数的输出属性),可以连着写。"""
+        while True:
+            if self._at_op("["):
+                self._next()
+                off = self._expr()
+                self._expect_op("]", "K 线偏移 x[n] 的右方括号")
+                node = ("idx", node, off)
+                continue
+            if self._at_op("."):
+                t2 = self._peek2()
+                if t2 is None or t2.kind != "ident":
+                    t = self._peek()
+                    raise ScreenError(f"第 {_line_of(self.src, t.pos)} 行:`.` 后面要跟属性名,例如 MACD().Diff")
+                self._next(); self._next()
+                node = ("prop", node, t2.val)
+                continue
+            return node
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -379,6 +592,10 @@ class _FieldResolver:
         low = name.lower()
         if low in _PRICE and _PRICE[low]:
             return _PRICE[low]
+        if low.startswith("color."):
+            raise ScreenError(f"{name} 是画图用的颜色,选股条件里用不上(AddLabel / AssignPriceColor 这类语句会被整句跳过)")
+        if low.startswith("aggregationperiod."):
+            raise ScreenError(f"这里只有日线,不支持 {name}(周线 / 月线 / 分钟线)")
         # 直接写扫描源字段名也放行 —— 3777 个字段,不可能都包成函数
         if self.has_field(name):
             return name
@@ -513,15 +730,89 @@ class Compiled:
     plot_name: str
     fields: list[str]                     # 需要向扫描源请求的字段
     notes: list[str] = _dc_field(default_factory=list)
+    # 时间序列模式(screen_series.Plan):脚本用到了 K 线偏移 / 递归 / if / 滚动窗口函数,
+    # 要按自家全市场日线逐根求值,而不是查一行快照。None = 老的横截面模式
+    series: object = None
+    skipped: list[str] = _dc_field(default_factory=list)   # 跳过的研究用语句
+
+
+# 横截面模式认识的函数 —— 这些名字、且参数是「裸价格序列 + 数字字面量」时,直接映射成扫描源字段
+# (Average(close, 50) → SMA50)。参数一旦不是这个形状(Average(volume[1], 20) / Highest(ret, n)),
+# 或者用了别的函数(Sum / StDev / CompoundValue …),就得逐根算 → 时间序列模式。
+_CROSS_FUNCS = {"average", "simplemovingavg", "movavg", "sma", "expaverage", "ema", "movingaverage",
+                "highest", "lowest", "rs", "rsrating", "rs_rating", "rslineupdays", "rsline_up_days",
+                "rs_line_up_days", "rslinedays", "rsi"}
+_SERIES_NAMES = {"hl2", "hlc3", "ohlc4", "hl2c4"}
+
+
+def _needs_series(stmts: list[Stmt]) -> bool:
+    """这份脚本能不能靠一行快照算出来?不能就走时间序列引擎。判据只看语法,不看数据。"""
+    names = {st.name for st in stmts}
+
+    def walk(node, owner: str) -> bool:
+        if not isinstance(node, tuple):
+            return False
+        k = node[0]
+        if k in ("idx", "if", "prop", "cross", "within", "named", "str"):
+            return True
+        if k == "name":
+            nm = node[1]
+            return nm == owner or nm.lower() in _SERIES_NAMES
+        if k == "call":
+            fn, args = node[1].lower(), node[2]
+            if fn not in _CROSS_FUNCS:
+                return True
+            if fn == "rsi":
+                # 横截面只认 RSI() / RSI(14) 这种纯数字参数;带 price 参数(RSI(14, close))或表达式就逐根算。
+                # 必须排在下面 startswith("rs") 之前 —— "rsi" 也以 rs 开头
+                return any(walk(a, owner) or a[0] != "num" for a in args)
+            if fn.startswith("rs"):
+                return any(walk(a, owner) for a in args)
+            # Average / Highest 这类:横截面只认 (裸价格名, 数字),而且价格名要是扫描源**有对应字段**的那种:
+            # 均线只有 close / 均量只有 volume、Highest 只有 high、Lowest 只有 low。
+            # `Highest(close, 5)` 在 ThinkScript 里完全合法,横截面映射不了 —— 不能报「第 1 个参数应该是 high」
+            # 把用户往回推,该按逐根算
+            if len(args) != 2 or args[0][0] != "name" or args[1][0] != "num":
+                return True
+            src = args[0][1].lower()
+            if fn == "highest":
+                return src != "high"
+            if fn == "lowest":
+                return src != "low"
+            if fn in ("expaverage", "ema", "movingaverage"):
+                return src != "close"
+            return src not in ("close", "volume")
+        if k == "un":
+            return walk(node[2], owner)
+        if k == "bin":
+            return walk(node[2], owner) or walk(node[3], owner)
+        return False
+
+    for st in stmts:
+        if st.kind == "input" or st.rec:
+            return True
+        if walk(st.node, st.name):
+            return True
+    return False
 
 
 def compile_script(src: str, has_field, sma_periods: list[int],
                    ema_periods: list[int], rsi_periods: list[int]) -> Compiled:
-    """解析脚本 + 解析出需要哪些扫描源字段。不发网络请求。"""
-    stmts, plot_name = _Parser(src).parse()
+    """解析脚本 + 解析出需要哪些扫描源字段。不发网络请求。
+
+    用到 K 线偏移 / 递归 / if / 滚动窗口函数的脚本走时间序列引擎(screen_series.compile),
+    其余照旧走横截面 —— 老脚本的行为一个字都不变。
+    """
+    p = _Parser(src)
+    stmts, plot_name = p.parse()
+    if _needs_series(stmts):
+        from app.services.quant import screen_series
+        return screen_series.compile(src, stmts, plot_name, has_field, sma_periods, ema_periods,
+                                     rsi_periods, skipped=p.skipped)
     rs = _FieldResolver(has_field, sma_periods, ema_periods, rsi_periods)
     fields: list[str] = []
     defined: set[str] = set()
+    all_names = {st.name: st for st in stmts}
 
     def walk(node, owner: str):
         if not isinstance(node, tuple):
@@ -532,6 +823,11 @@ def compile_script(src: str, has_field, sma_periods: list[int],
         if k == "name":
             if node[1] in defined:
                 return
+            if node[1] in all_names:
+                st = all_names[owner]
+                raise ScreenError(
+                    f"第 {st.line} 行:{owner} 用到了在它后面才定义的 {node[1]} —— "
+                    f"定义要写在使用之前;两个定义互相引用(互递归)这里不支持")
             fld = rs.field_of_name(node[1])
             if fld not in fields:
                 fields.append(fld)
@@ -558,7 +854,10 @@ def compile_script(src: str, has_field, sma_periods: list[int],
         walk(st.node, st.name)
         defined.add(st.name)
 
-    return Compiled(stmts=stmts, plot_name=plot_name, fields=fields, notes=rs.notes)
+    notes = list(rs.notes)
+    if p.skipped:
+        notes.append("已跳过研究用的画图 / 标签语句(对选股没有影响):" + "、".join(p.skipped))
+    return Compiled(stmts=stmts, plot_name=plot_name, fields=fields, notes=notes, skipped=p.skipped)
 
 
 # ── 求值 · None 一路传播 ────────────────────────────────────
@@ -870,8 +1169,18 @@ _PREC = {"or": 1, "and": 2, "==": 3, "!=": 3, ">": 3, ">=": 3, "<": 3, "<=": 3,
          "+": 4, "-": 4, "*": 5, "/": 5}
 
 
-def _tok_stream(node, rs, base: int, out: list, defined: dict, parent_prec: int = 0):
-    """AST → 展示 token。`base` 是表达式在源码里的起点,用来把数字位置归一化。"""
+_SERIES_LABEL = {"open": "开盘价", "high": "最高价", "low": "最低价", "close": "收盘价",
+                 "volume": "成交量", "hl2": "(高+低)/2", "hlc3": "(高+低+收)/3", "ohlc4": "(开+高+低+收)/4"}
+_CROSS_LABEL = {"above": "上穿", "below": "下穿", "any": "交叉"}
+
+
+def _tok_stream(node, rs, base: int, out: list, defined: dict, parent_prec: int = 0,
+                series: bool = False):
+    """AST → 展示 token。`base` 是表达式在源码里的起点,用来把数字位置归一化。
+
+    series=True(时间序列模式):函数不再映射成扫描源字段,按原样显示 `Sum(阴线, 5)`;
+    K 线偏移显示成 `收盘价[1]`;if / crosses / within 显示成中文关键字。
+    """
     k = node[0]
     if k == "num":
         out.append({"k": "num", "t": _fmt_num(node[1]),
@@ -886,15 +1195,69 @@ def _tok_stream(node, rs, base: int, out: list, defined: dict, parent_prec: int 
             # 引用了上面某个 def —— 显示它的中文别名(条件行的标题)
             out.append({"k": "ref", "t": defined[nm], "ref": nm})
             return
+        if series:
+            low = nm.lower()
+            if low in _SERIES_LABEL:
+                out.append({"k": "field", "t": _SERIES_LABEL[low], "raw": nm})
+                return
+            try:
+                out.append({"k": "field", "t": field_label(rs.field_of_name(nm)), "raw": nm})
+            except ScreenError:
+                out.append({"k": "field", "t": nm, "raw": nm})      # 枚举常量(Double.NaN)之类
+            return
         out.append({"k": "field", "t": field_label(rs.field_of_name(nm)), "raw": nm})
         return
     if k == "call":
+        if series:
+            out.append({"k": "fn", "t": node[1]})
+            out.append({"k": "paren", "t": "("})
+            for i, a in enumerate(node[2]):
+                if i:
+                    out.append({"k": "op", "t": ","})
+                _tok_stream(a, rs, base, out, defined, 0, series)
+            out.append({"k": "paren", "t": ")"})
+            return
         fld = rs.field_of_call(node[1], node[2])
         out.append({"k": "field", "t": field_label(fld), "raw": fld})
         return
+    if k == "named":
+        out.append({"k": "kw", "t": node[1] + " ="})
+        _tok_stream(node[2], rs, base, out, defined, 0, series)
+        return
+    if k == "idx":
+        _tok_stream(node[1], rs, base, out, defined, 99, series)
+        out.append({"k": "op", "t": "["})
+        _tok_stream(node[2], rs, base, out, defined, 0, series)
+        out.append({"k": "op", "t": "]"})
+        return
+    if k == "prop":
+        _tok_stream(node[1], rs, base, out, defined, 99, series)
+        out.append({"k": "op", "t": "." + node[2]})
+        return
+    if k == "if":
+        out.append({"k": "kw", "t": "如果"})
+        _tok_stream(node[1], rs, base, out, defined, 0, series)
+        out.append({"k": "kw", "t": "则"})
+        _tok_stream(node[2], rs, base, out, defined, 0, series)
+        out.append({"k": "kw", "t": "否则"})
+        _tok_stream(node[3], rs, base, out, defined, 0, series)
+        return
+    if k == "cross":
+        _tok_stream(node[2], rs, base, out, defined, 3, series)
+        out.append({"k": "op", "t": _CROSS_LABEL.get(node[1], "交叉")})
+        _tok_stream(node[3], rs, base, out, defined, 4, series)
+        return
+    if k == "within":
+        out.append({"k": "paren", "t": "("})
+        _tok_stream(node[1], rs, base, out, defined, 0, series)
+        out.append({"k": "paren", "t": ")"})
+        out.append({"k": "kw", "t": "在最近"})
+        _tok_stream(node[2], rs, base, out, defined, 0, series)
+        out.append({"k": "kw", "t": "根K线内出现"})
+        return
     if k == "un":
         out.append({"k": "op", "t": "非" if node[1] == "not" else "−"})
-        _tok_stream(node[2], rs, base, out, defined, 99)
+        _tok_stream(node[2], rs, base, out, defined, 99, series)
         return
     # bin
     op = node[1]
@@ -902,11 +1265,11 @@ def _tok_stream(node, rs, base: int, out: list, defined: dict, parent_prec: int 
     need_paren = prec < parent_prec
     if need_paren:
         out.append({"k": "paren", "t": "("})
-    _tok_stream(node[2], rs, base, out, defined, prec)
+    _tok_stream(node[2], rs, base, out, defined, prec, series)
     out.append({"k": "logic" if op in ("and", "or") else "op",
                 "t": _OP_LABEL.get(op, op)})
     # 右子树用 prec+1:同优先级的右结合要补括号(a - (b - c) 不能显示成 a - b - c)
-    _tok_stream(node[3], rs, base, out, defined, prec + 1)
+    _tok_stream(node[3], rs, base, out, defined, prec + 1, series)
     if need_paren:
         out.append({"k": "paren", "t": ")"})
 
@@ -924,12 +1287,13 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
     conditions = []
     plot_stmt = None
 
+    series = c.series is not None
     for st in c.stmts:
         if st.kind == "plot":
             plot_stmt = st
             continue
         toks: list = []
-        _tok_stream(st.node, rs, st.expr_start, toks, defined)
+        _tok_stream(st.node, rs, st.expr_start, toks, defined, 0, series)
         expr = src[st.expr_start:st.expr_end]
         # 数字用**源码原文**显示,不用格式化后的值:用户写 0.10,界面上就该是 0.10。
         # 归一化成 0.1 之后再回写,会在他没改任何东西的情况下把脚本改掉。
@@ -944,8 +1308,11 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
             "expr": expr,
             "tokens": toks,
             # 布尔条件才能独立开关;中间变量(如 def sma50 = Average(close,50))
-            # 不是条件,界面上要区别对待 —— 停用它会让引用它的条件直接报错
-            "is_bool": _is_boolean(st.node),
+            # 不是条件,界面上要区别对待 —— 停用它会让引用它的条件直接报错。
+            # input(参数)和递归定义(计数器)也不是条件
+            "is_bool": st.kind != "input" and not st.rec and _is_boolean(st.node),
+            # 'input' 要原样回写成 input(前端 buildScript 按它选关键字);'rec' 回写成 rec
+            "kind": st.kind if st.kind == "input" else ("rec" if st.rec else "def"),
         })
 
     combine = "custom"
@@ -965,6 +1332,9 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
     }
 
 
+_BOOL_FUNCS = {"isnan", "between", "crosses", "isascending", "isdescending"}
+
+
 def _is_boolean(node) -> bool:
     """这条 def 产出的是真假值还是数字?决定界面上能不能单独停用。"""
     k = node[0]
@@ -974,6 +1344,14 @@ def _is_boolean(node) -> bool:
         return node[1] == "not"
     if k == "bin":
         return node[1] in ("and", "or", ">", ">=", "<", "<=", "==", "!=")
+    if k in ("cross", "within"):
+        return True
+    if k == "if":
+        return _is_boolean(node[2]) and _is_boolean(node[3])
+    if k == "idx":
+        return _is_boolean(node[1])
+    if k == "call":
+        return node[1].lower() in _BOOL_FUNCS
     return False
 
 

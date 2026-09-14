@@ -155,7 +155,9 @@ def looks_like_script(text: str) -> bool:
     后者严重得多。
     """
     t = (text or "")
-    return bool(re.search(r"(^|\n)\s*(def|plot)\s+[A-Za-z_]", t))
+    # input / rec / declare 也是 ThinkScript 的语句开头(2026-09-15):一份以 input 开头的脚本
+    # 前几句没有 def,判据只看 def/plot 也能命中后面的 def;但纯 input + plot 的短脚本会被漏掉
+    return bool(re.search(r"(^|\n)\s*(def|plot|input|rec|declare)\s+[A-Za-z_]", t))
 
 
 def translate(text: str, market_label: str, sma: list[int], ema: list[int],
@@ -369,6 +371,13 @@ def _fix_system_prompt(market_label: str, sma: list[int], rsi: list[int]) -> str
 1. 只改报错点名的那一处,别的都不许动(数字、条件、名字都不许动)。
 2. 字段或周期取不到时,换成可用列表里最接近的那个。
 3. SMA50 / SMA150 / SMA200 / EMA20 / high_63d / low_21d / high_5d / rs_rating / vcp_ 开头的名字都是合法字段,不要改。
+4. 下面这些 ThinkScript 写法**已经支持,不是错,不要改写它们**:input 参数、rec 递归定义、x[n] K 线偏移、
+   if 条件 then 值 else 值、if(c, a, b)、a crosses above b、cond within n bars、&& || !、yes / no、
+   Sum / TotalSum / Highest / Lowest / HighestAll / LowestAll / StDev / Max / Min / AbsValue / Sqrt / Power / Round /
+   IsNaN / Between / Crosses / CompoundValue / GetValue / BarNumber / ExpAverage / WildersAverage / MovingAverage(AverageType.X, …) /
+   RSI() / ATR() / MACD().Diff / BollingerBands().UpperBand / VolumeAvg().VolAvg。
+   不支持的(报错里会点名):fold、AggregationPeriod(周线月线)、动态偏移、字符串、枚举型 input、ADX / DMI / 随机指标。
+   遇到这些就把那一句改写成支持的函数,改不了输出 NONE。
 
 # 可用写法
 Average(close, N) 与 SMA+N 字段:N 取 {', '.join(map(str, sma))}

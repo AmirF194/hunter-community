@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS rs_line_stat (
 ALTER TABLE rs_daily ADD COLUMN IF NOT EXISTS high   DOUBLE PRECISION;
 ALTER TABLE rs_daily ADD COLUMN IF NOT EXISTS low    DOUBLE PRECISION;
 ALTER TABLE rs_daily ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION;
+-- 2026-09-15 · 筛选器的时间序列脚本要判阳线阴线(close > open)。同一条腾讯响应里 b[1] 就是开盘价,
+-- 一直没存。老行为空,今晚整窗重拉后自然补齐;时间序列引擎对空的开盘价给 NaN(算不出),不拿收盘顶替。
+ALTER TABLE rs_daily ADD COLUMN IF NOT EXISTS open   DOUBLE PRECISION;
 ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS vcp_contractions   INT;
 ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS vcp_depths         TEXT;
 ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS vcp_first_depth    DOUBLE PRECISION;
@@ -427,9 +430,10 @@ def _session():
 
 
 def fetch_bars(sym: str, n: int = _BARS, end: str = "") -> list[tuple] | None:
-    """→ [(trade_date, close, high, low, volume), …];None = 请求失败(与"确实没数据"区分开,后者返回 [])
+    """→ [(trade_date, close, high, low, volume, open), …];None = 请求失败(与"确实没数据"区分开,后者返回 [])
 
-    high / low / volume 某根缺了就是 None —— 下游 VCP 算不出就给空,不拿收盘价顶替。
+    high / low / volume / open 某根缺了就是 None —— 下游 VCP 算不出就给空,不拿收盘价顶替。
+    open 放在最后一位(2026-09-15 加):现有消费方按 b[:5] 取前五项,一个都不用改。
 
     注意:腾讯对**代码写错**的请求不返回空,而是返回 1–2 根(2026-09-11 实测
     AAPL 配 .N 后缀给 1 根)。所以后缀必须按交易所映射(tx_symbol),不能靠试。
@@ -459,9 +463,9 @@ def fetch_bars(sym: str, n: int = _BARS, end: str = "") -> list[tuple] | None:
             out = []
             for b in bars:
                 try:
-                    # [日期, 开, 收, 高, 低, 量] —— b[2] 才是收盘价
+                    # [日期, 开, 收, 高, 低, 量] —— b[2] 才是收盘价;b[1] 开盘价放到元组最后
                     out.append((date.fromisoformat(str(b[0])[:10]), float(b[2]),
-                                _num(b, 3), _num(b, 4), _num(b, 5)))
+                                _num(b, 3), _num(b, 4), _num(b, 5), _num(b, 1)))
                 except (ValueError, IndexError, TypeError):
                     continue
             return out
@@ -507,10 +511,11 @@ def _upsert(conn, market: str, code: str, bars: list[tuple], replace_window: boo
                     (market, code, bars[0][0]))
     if bars:
         execute_values(cur,
-                       "INSERT INTO rs_daily (market, code, trade_date, close, high, low, volume) VALUES %s "
+                       "INSERT INTO rs_daily (market, code, trade_date, close, high, low, volume, open) VALUES %s "
                        "ON CONFLICT (market, code, trade_date) DO UPDATE SET close=EXCLUDED.close, "
-                       "high=EXCLUDED.high, low=EXCLUDED.low, volume=EXCLUDED.volume",
-                       [(market, code) + tuple(b[:5]) + (None,) * (5 - len(b)) for b in bars])
+                       "high=EXCLUDED.high, low=EXCLUDED.low, volume=EXCLUDED.volume, open=EXCLUDED.open",
+                       [(market, code) + tuple(b[:5]) + (None,) * (5 - len(b[:5]))
+                        + ((b[5] if len(b) > 5 else None),) for b in bars])
     conn.commit()
     cur.close()
 

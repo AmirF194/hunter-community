@@ -431,6 +431,10 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
 
     c: Compiled = screen_dsl.compile_script(
         script, has_field, meta.sma, meta.ema, meta.rsi)
+    if c.series is not None:
+        # 时间序列模式(K 线偏移 / 递归 / if / 滚动窗口):按自家全市场日线逐根算,不查快照。
+        # 必须在 build_resolver_cache 之前分流 —— 那一步会把 Sum() 当扫描源字段去映射
+        return _run_series(c, md, market_key, has_field, limit, sort_by, descending, as_of, keep_all, t_start=time.time())
     cache = screen_dsl.build_resolver_cache(
         c, has_field, meta.sma, meta.ema, meta.rsi)
 
@@ -695,6 +699,200 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
     return result
 
 
+# ─── 时间序列模式(2026-09-15)────────────────────────────────────────
+# 标准 ThinkScript 选股脚本(x[n] / if-then-else / input / 递归 def / Sum·Highest 等)
+# 靠一行快照算不出,按自家全市场日线(rs_daily,与时间回溯同一份)做「股票 × K 线」二维求值。
+# 引擎在 screen_series.py;这里只负责取数、拼行、拼 warnings,返回体和横截面模式**同一形状**。
+
+_SERIES_MISSING_LABEL = {"_bars": "日线根数不足", "open": "开盘价", "high": "最高价", "low": "最低价",
+                         "close": "收盘价", "volume": "成交量"}
+
+
+def _run_series(c: Compiled, md: MarketDef, market_key: str, has_field, limit: int,
+                sort_by: str | None, descending: bool, as_of, keep_all: bool, t_start: float) -> dict:
+    import numpy as np
+    from bisect import bisect_right
+    from app.services.quant import screen_asof, rs_history, screen_series
+
+    plan = c.series
+    # 快照只借:静态列(名字 / 交易所 / 板块)、拆股锚点、排名池判断的两列、脚本直接写的快照字段、
+    # 今天扫描时的展示列。今天的价格**不进**求值 —— 求值全部来自日线
+    snap_cols = [x for x in screen_asof.STATIC_COLS if x not in ALWAYS_COLS and has_field(x)]
+    snap_cols += list(rs_history._PERF_COLS) + ["exchange", "market_cap_basic"]
+    for f in c.fields:
+        if has_field(f) and f not in snap_cols:
+            snap_cols.append(f)
+    display: list[str] = []
+    if as_of is None:
+        for extra in _DISPLAY_EXTRA:
+            if has_field(extra):
+                display.append(extra)
+                if extra not in snap_cols:
+                    snap_cols.append(extra)
+    snap_rows, total = fetch_rows(market_key, snap_cols)
+    perf = {r["_code"]: r for r in snap_rows}
+    store = screen_asof.get_store(md.key, perf)
+    bench_dates = sorted(store["bench"])
+    if not bench_dates:
+        raise ScreenError(f"{md.label}的全市场日线还没建好(由每晚的定时任务拉取),这类逐根求值的脚本暂时跑不了")
+    target = as_of or store["last"]
+    k_b = bisect_right(bench_dates, target)
+    if k_b == 0:
+        raise ScreenError(f"时间回溯:{target} 早于日线的起点 {bench_dates[0]}")
+    as_of_actual = bench_dates[k_b - 1]
+    codes, bars, short = screen_series.bars_matrix(store, as_of_actual, plan.window)
+    snap_map = {r["_code"]: r for r in snap_rows}
+
+    def _f(v):
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if fv != fv else fv
+
+    snap_arr: dict = {}
+    for f in c.fields:
+        if as_of is not None:
+            snap_arr[f] = None                       # 回溯:快照字段没有历史,整批算不出
+            continue
+        snap_arr[f] = np.array([_f((snap_map.get(code) or {}).get(f)) if _f((snap_map.get(code) or {}).get(f)) is not None
+                                else np.nan for code in codes], dtype=float)
+    fetch_ms = (time.time() - t_start) * 1000
+
+    t1 = time.time()
+    if codes:
+        res = screen_series.evaluate(c, bars, snap_arr)
+        verdict, last = res["verdict"], res["last"]
+    else:
+        verdict, last = np.zeros(0), {}
+    eval_ms = (time.time() - t1) * 1000
+
+    # 结果列:求值那根的收盘 / 成交量 + 脚本里的数值型定义(bullStreak / cumRet 这类,一眼看出为什么命中)
+    # + 今天的展示列。布尔条件不列(命中的行每条都为真),input 常量不列(每行都一样)
+    numeric_defs = [st.name for st in c.stmts
+                    if st.kind != "plot" and st.name not in plan.consts
+                    and (st.rec or not screen_dsl._is_boolean(st.node))]
+    want = ["close", "volume"] + numeric_defs + [d for d in display if d not in ("close", "volume")]
+    need_series = [s for s in screen_series._PRICE if s in plan.needs]
+    span = plan.depth + 1
+    rows: list[dict] = []
+    hits: list[dict] = []
+    skipped = 0
+    missing: dict[str, int] = {}
+    for i, code in enumerate(codes):
+        s = snap_map.get(code) or {}
+        row = {"_code": code, "_symbol": s.get("_symbol") or code}
+        for col in screen_asof.STATIC_COLS:
+            if col in s:
+                row[col] = s.get(col)
+        row["close"] = _f(bars["close"][i, -1])
+        row["volume"] = _f(bars["volume"][i, -1])
+        for nm in numeric_defs:
+            row[nm] = _f(last[nm][i])
+        for extra in display:
+            row[extra] = s.get(extra)
+        v = verdict[i]
+        if v != v:
+            skipped += 1
+            if short[i] < span:
+                missing["_bars"] = missing.get("_bars", 0) + 1
+            for sname in need_series:
+                if np.isnan(bars[sname][i, -min(span, bars[sname].shape[1]):]).any():
+                    missing[sname] = missing.get(sname, 0) + 1
+            for f in c.fields:
+                arr = snap_arr.get(f)
+                if arr is None or np.isnan(arr[i]):
+                    missing[f] = missing.get(f, 0) + 1
+        elif v:
+            hits.append(row)
+        rows.append(row)
+
+    sort_note = None
+    if sort_by and sort_by not in want and sort_by not in ("close", "volume"):
+        sort_note = (f"这次结果没有「{screen_dsl.field_label_cn(sort_by) or sort_by}」这一列"
+                     f"(时间序列模式{'回溯时' if as_of is not None else ''}按日线求值),"
+                     f"结果改按收盘价{'降' if descending else '升'}序。")
+        sort_by = "close"
+    if sort_by:
+        has = [r for r in hits if r.get(sort_by) is not None]
+        has.sort(key=lambda r: r.get(sort_by), reverse=descending)
+        hits = has + [r for r in hits if r.get(sort_by) is None]
+
+    # ── warnings:怎么算的、数据到哪天、池子是谁、缺什么 ──
+    warnings = [screen_series.describe(plan)]
+    pool = ("RS 排名池:交易所上市、不含 OTC、市值 ≥5000 万美元" if md.key == "us"
+            else "RS 排名池:市值约 5000 万美元以上")
+    if as_of is None:
+        from app.services.quant import screen_quota as _sq
+        when = (f"今天({as_of_actual})收盘" if as_of_actual == _sq.today_sh()
+                else f"{as_of_actual} 收盘(日线最新一天,**不含今天盘中**;每晚更新)")
+        warnings.append(f"求值截至 {when};股票池是{pool}的 {len(codes)} 只(当天有收盘的)。"
+                        f"快照才有的字段(市值 / PE 等)按今天的值当常量参与计算。")
+    else:
+        warnings.append(
+            f"时间回溯:按 {as_of_actual} 收盘的自家日线逐根求值。股票池是{pool}的 {len(codes)} 只(当天有收盘)。"
+            + (f"你选的 {as_of} 不是交易日或还没有日线,取了它之前最近的一天。" if as_of != as_of_actual else ""))
+        if c.fields:
+            names = "、".join(screen_dsl.field_label_cn(f) or f for f in c.fields)
+            warnings.append(f"这些字段没有历史值(只有当天快照),回溯时整批为空:{names}。用到它们的条件全部「算不出」。")
+    if "open" in plan.needs and codes:
+        have = int((~np.isnan(bars["open"][:, -1])).sum())
+        if have < len(codes) * 0.9:
+            warnings.append(
+                f"日线里的开盘价还没补齐:{as_of_actual} 这天 {len(codes)} 只里只有 {have} 只有开盘价"
+                f"(开盘价 2026-09-15 起入库,老行要等每晚整窗重拉之后才有)。用到 open 的条件在其余票上「算不出」,不是「不满足」。")
+    if md.note:
+        warnings.append(md.note)
+    for n in plan.notes:
+        warnings.append(n)
+    if any("market_cap" in f for f in want):
+        warnings.append(MARKET_CAP_WARN)
+    missing_list = [
+        {"field": f, "label": _SERIES_MISSING_LABEL.get(f) or screen_dsl.field_label_cn(f), "count": n,
+         "reason": ("上市不足这份脚本要求的根数,或不在自家日线的覆盖范围里" if f == "_bars"
+                    else ("日线里还没有开盘价(每晚整窗重拉后才有)" if f == "open"
+                          else ("老日线只存了收盘,这几项要等整窗重拉后才有" if f in ("high", "low", "volume")
+                                else ("回溯模式没有这个字段的历史值(只有当天快照)" if as_of is not None
+                                      else screen_dsl.missing_reason(f)))))}
+        for f, n in sorted(missing.items(), key=lambda kv: -kv[1])
+    ]
+    if skipped:
+        parts = []
+        for m in missing_list[:4]:
+            nm = m["label"] or m["field"]
+            parts.append(f"缺「{nm}」{m['count']} 只" + (f"({m['reason']})" if m["reason"] else ""))
+        warnings.append(
+            f"{skipped} 只没能判断(是「算不出」,不是「不满足」):" + ";".join(parts) + "。")
+
+    def _pick(r: dict) -> dict:
+        return {"code": r.get("_code"), "symbol": r.get("_symbol"),
+                "name": r.get("description") or r.get("name"),
+                "close": r.get("close"), "currency": r.get("currency") or md.currency,
+                "fields": {k: v for k, v in r.items() if not k.startswith("_")}}
+
+    all_picks = [_pick(r) for r in hits] if keep_all else None
+    picks = all_picks[:limit] if keep_all else [_pick(r) for r in hits[:limit]]
+    labels = {f: screen_dsl.field_label_cn(f) for f in want}
+    for nm in numeric_defs:
+        labels[nm] = nm
+    result = {
+        "market": md.key, "market_label": md.label,
+        "universe_total": total, "scanned": len(rows), "matched": len(hits),
+        "skipped_incomplete": skipped, "missing_fields": missing_list, "rs": None,
+        "returned": len(picks), "picks": picks, "columns": want, "column_labels": labels,
+        "notes": c.notes, "warnings": warnings,
+        "source": "自家全市场日线 · 时间序列逐根求值" + (" · 时间回溯" if as_of is not None else ""),
+        "as_of": str(as_of_actual), "as_of_requested": str(as_of) if as_of is not None else None,
+        "asof_unavailable": list(c.fields) if as_of is not None else [],
+        "series": {"needs": sorted(plan.needs), "depth": plan.depth, "window": plan.window,
+                   "rec": list(plan.rec), "funcs": list(plan.funcs)},
+        "timing_ms": {"fetch": round(fetch_ms), "evaluate": round(eval_ms)},
+    }
+    if keep_all:
+        result["_all_picks"] = all_picks
+    return result
+
+
 # ─── 官方示例原样运行不扣扫描次数(2026-09-14 用户要求)─────────────────
 # 「原样」按**条件语义**判,不按原文比:界面加载示例后会把条件重新拼成脚本(注释没了、换行变了、
 # plot 里的顺序可能不同),逐字比会把没改过的也判成改过。所以两边都解析成语法树再比:
@@ -712,6 +910,15 @@ def _strip_pos(node):
             return ("num", node[1])
         return tuple(_strip_pos(x) for x in node)
     return node
+
+
+def _mentions(node, name: str) -> bool:
+    """表达式里有没有直接用到某个序列名(不分大小写)。"""
+    if not isinstance(node, (tuple, list)):
+        return False
+    if node and node[0] == "name" and str(node[1]).lower() == name:
+        return True
+    return any(_mentions(x, name) for x in node[1:] if isinstance(x, (tuple, list)))
 
 
 def _canon_script(script: str):
@@ -839,6 +1046,30 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     d = screen_dsl.decompose(script, c, has_field, meta.sma, meta.ema, meta.rsi)
 
     warnings = [DELAY_WARN]
+    if c.series is not None:
+        # 时间序列模式:在「生成」这一步就把「不支持 / 还没有的数据」说清楚(2026-09-15 用户要求),
+        # 不等到点扫描才 400。这两条不给 AI 按钮 —— 数据没有,模型改脚本也改不出来
+        from app.services.quant import screen_asof, screen_series
+        plan = c.series
+        avail = screen_asof.series_availability(md.key)
+        if not avail["has_bars"]:
+            raise ScreenError(
+                f"这份脚本用到了 K 线偏移 / 递归 / 滚动窗口,要按逐日 K 线计算;"
+                f"但{md.label}的全市场日线还没建好(由每晚的定时任务拉取)。目前只能写只用当天快照字段的条件。")
+        if "open" in plan.needs and avail["open_ratio"] < 0.9:
+            lines = [str(st.line) for st in c.stmts if _mentions(st.node, "open")]
+            raise ScreenError(
+                f"当前{md.label}日线只有收盘价、最高价、最低价和成交量,**还没有开盘价** —— "
+                f"这份脚本第 {'、'.join(lines) or '?'} 行用到了 open(阳线 / 阴线判断)。"
+                f"开盘价 2026-09-15 起入库,老行要等每晚整窗重拉之后才有"
+                f"(目前 {avail['last']} 这天 {avail['open_have']}/{avail['n']} 只有开盘价);届时同一份脚本不用改。"
+                f"现在想先跑,可以把 close > open 换成 close > close[1](收阳 → 收涨,口径不同,自己权衡)。")
+        warnings = [screen_series.describe(plan),
+                    f"求值截至 {avail['last']} 收盘(自家日线最新一天,不含今天盘中);股票池是 RS 排名池,不是快照的全部。"]
+        for n in plan.notes:
+            warnings.append(n)
+        d["series"] = {"needs": sorted(plan.needs), "depth": plan.depth, "window": plan.window,
+                       "rec": list(plan.rec), "funcs": list(plan.funcs), "as_of": str(avail["last"])}
     if md.note:
         warnings.append(md.note)
     if any("market_cap" in f for f in c.fields):

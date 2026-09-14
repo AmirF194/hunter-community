@@ -119,6 +119,39 @@ def _rs_table(market_key: str, store: dict, snap: dict) -> dict:
     return table
 
 
+def _hit_days_series(c, dates, arr, k_end: int, days: int, end, code: str, market_key: str) -> dict:
+    """一只票、整段历史、时间序列引擎:plot 整列的最后 days 个值 → 命中 / 未命中 / 算不出。"""
+    import numpy as np
+    from app.services.quant import screen_series
+    plan = c.series
+    seg = arr[:k_end]
+    ncol = seg.shape[1]
+    bars = {"close": seg[:, 0][None, :], "high": seg[:, 1][None, :], "low": seg[:, 2][None, :],
+            "volume": seg[:, 3][None, :],
+            "open": (seg[:, 4] if ncol > 4 else np.full(seg.shape[0], np.nan))[None, :]}
+    # 快照字段没有历史 —— 与时间回溯同口径,整段按算不出
+    snap = {f: None for f in c.fields}
+    res = screen_series.evaluate(c, bars, snap, keep={c.plot_name})
+    plot = res["full"][c.plot_name][0]
+    idxs = range(max(0, k_end - days), k_end)
+    hits = [str(dates[i]) for i in idxs if plot[i] == plot[i] and plot[i] != 0]
+    unknown = sum(1 for i in idxs if plot[i] != plot[i])
+    notes = []
+    if c.fields:
+        names = "、".join(screen_dsl_label(f) for f in c.fields)
+        notes.append(f"脚本用到没有历史的字段({names}),用到它们的条件每天都算不出")
+    if unknown:
+        notes.append(f"{unknown} 天算不出(历史不足 {plan.depth + 1} 根 / 那几天缺开盘价或高低量),不算命中也不算没命中")
+    return {"code": code, "market": market_key, "from": str(dates[idxs[0]]) if len(idxs) else None,
+            "to": str(end), "evaluated": len(idxs), "hits": hits, "unknown": unknown,
+            "unavailable": list(c.fields), "note": ";".join(notes) or None}
+
+
+def screen_dsl_label(f: str) -> str:
+    from app.services.quant import screen_dsl
+    return screen_dsl.field_label_cn(f) or f
+
+
 def hit_days(script: str, market: str, code: str, as_of: date | None = None, days: int = DAYS) -> dict:
     """→ {code, market, from, to, evaluated, hits: [YYYY-MM-DD], unknown, unavailable: [字段], note}"""
     from app.services.quant import screen_source, screen_dsl, screen_asof, screen_rs, rs_history as rh, vcp
@@ -132,7 +165,6 @@ def hit_days(script: str, market: str, code: str, as_of: date | None = None, day
         return n in meta.names
 
     c = screen_dsl.compile_script(script, has_field, meta.sma, meta.ema, meta.rsi)
-    rcache = screen_dsl.build_resolver_cache(c, has_field, meta.sma, meta.ema, meta.rsi)
     fields = list(c.fields)
     _rows, perf = _snapshot(market, md.key, has_field)
     store = screen_asof.get_store(md.key, perf)
@@ -152,6 +184,17 @@ def hit_days(script: str, market: str, code: str, as_of: date | None = None, day
         hit = _hit_cache.get(key)
     if hit and hit[0] == store["loaded_at"]:
         return hit[1]
+
+    if c.series is not None:
+        # 时间序列脚本:整段历史一次算出 plot 的整列,最后 days 列就是逐日命中。
+        # 与全市场扫描是同一个引擎、同一份日线,所以"表里命中的票,图上最后一天必有蓝线"
+        out = _hit_days_series(c, dates, arr, k_end, days, end, code, md.key)
+        with _lock:
+            if len(_hit_cache) > 2000:
+                _hit_cache.clear()
+            _hit_cache[key] = (store["loaded_at"], out)
+        return out
+    rcache = screen_dsl.build_resolver_cache(c, has_field, meta.sma, meta.ema, meta.rsi)
 
     unavailable = sorted({f for f in fields if not screen_asof.reconstructable(f)})
     plain = [f for f in fields if f not in screen_asof.STATIC_COLS and screen_asof.need_bars(f) is not None
