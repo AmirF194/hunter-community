@@ -1329,6 +1329,64 @@ try {
   console.log('FAIL 会员额度定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 列头排序不重新扫描、不扣次数(2026-09-14 用户要求 · GN-045)──────────────────────
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const scSrc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  inlineScripts(scSrc).forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    var RS = {}, POSTS = [], NEXT = null
+    localStorage.setItem('hunter_token', 't'); S.login = true
+    post = async function (u, b) { POSTS.push(b); return NEXT }
+    revealAfter = async function () { RS.revealed = true }
+    toast = function (m) { RS.toast = String(m) }
+    S.quota = { login: true, scan: { kind: 'scan', label: '扫描', remaining: 7, limit: 20 }, ai: { kind: 'ai', label: 'AI 识别', remaining: 1, limit: 10 } }
+    S.resultScan = { script: 'def c = close > 1;\\nplot scan = c;', market: 'us', asOf: null }
+    S.result = { matched: 3, columns: ['pe'], picks: [
+      { code: 'A', close: 1, fields: { pe: 5 } }, { code: 'B', close: 3, fields: { pe: null } }, { code: 'C', close: 2, fields: { pe: 9 } }] }
+    RS.done = (async function () {
+      S.sortBy = 'pe'; S.desc = true; await resortResult()
+      RS.localDesc = S.result.picks.map(function (p) { return p.code }).join(''); RS.localPosts = POSTS.length
+      S.desc = false; await resortResult()
+      RS.localAsc = S.result.picks.map(function (p) { return p.code }).join('')
+      S.result = { matched: 500, columns: [], picks: [{ code: 'A', close: 1, fields: {} }] }
+      NEXT = { ok: true, status: 200, data: { matched: 500, columns: [], resorted: true, picks: [{ code: 'Z', close: 9, fields: {} }] } }
+      S.sortBy = 'close'; S.desc = true; await resortResult()
+      RS.remote = { body: POSTS[POSTS.length - 1], first: S.result.picks[0].code, quota: S.quota.scan.remaining }
+      NEXT = { ok: false, status: 409, data: { detail: { kind: 'resort_expired', message: '这张结果已经超过 10 分钟,排序要重新运行一次扫描' } } }
+      const posts0 = POSTS.length
+      await resortResult()
+      RS.expired = { toast: RS.toast, still: S.result.picks[0].code, oneRequest: POSTS.length - posts0 }
+    })()
+  `, ctx, { filename: 'assert-resort' })
+  const RS = ctx.RS
+  const syncChecks = [
+    ['列头点击不再调用 runScan,改为 resortResult', /dataset\.sort[\s\S]{0,160}resortResult\(\)/.test(scSrc) && !/dataset\.sort[\s\S]{0,160}\brunScan\(\)/.test(scSrc)],
+  ]
+  for (const [name, ok] of syncChecks) {
+    if (ok) console.log('PASS 列头排序 ·', name)
+    else { failed++; console.log('FAIL 列头排序 ·', name) }
+  }
+  RS.done.then(() => {
+    const as = [
+      ['全部命中都在表里:前端直接排、不发请求', RS.localPosts === 0 && RS.localDesc === 'CAB'],
+      ['升序时空值仍排最后', RS.localAsc === 'ACB'],
+      ['命中比表里多:请求带 resort:true 与排序参数', RS.remote.body && RS.remote.body.resort === true && RS.remote.body.sort_by === 'close' && RS.remote.body.descending === true],
+      ['用后端重排结果替换表', RS.remote.first === 'Z'],
+      ['⭐重排不扣次数、不走 5 秒倒数', RS.remote.quota === 7 && !RS.revealed],
+      ['缓存过期:提示要重新运行、不自动重跑、表保持不变', /重新运行/.test(RS.expired.toast || '') && RS.expired.still === 'Z' && RS.expired.oneRequest === 1],
+    ]
+    for (const [name, ok] of as) {
+      if (ok) console.log('PASS 列头排序 ·', name)
+      else { failed++; console.log('FAIL 列头排序 ·', name, JSON.stringify(RS)) }
+    }
+  }).catch((e) => { failed++; console.log('FAIL 列头排序异步断言 ·', e && e.message) })
+} catch (e) {
+  failed++
+  console.log('FAIL 列头排序定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 标签页图标(2026-09-14 · 第一轮评审 GN-001:页面标题的图标也要是猎鹿人 logo)──────────
 // 静态页不走 Next 的 app/icon.png,不写 <link rel="icon"> 浏览器就显示空白图标。与主站同一个 /icon.png
 for (const page of ['index.html', 'factors.html', 'workbench.html', 'backtest.html', 'data.html', 'agent.html', 'screener.html']) {

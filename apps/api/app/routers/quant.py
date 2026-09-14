@@ -1200,6 +1200,7 @@ class ScreenIn(BaseModel):
     descending: bool = True
     as_of: str | None = None       # 时间回溯:YYYY-MM-DD,空 = 今天的快照
     probe: bool = False            # 条件行上的「单条测试」:不扣扫描次数,只回命中数
+    resort: bool = False           # 列头排序:按上一次扫描缓存的全部命中重排,不扣次数、不取数(screen_resort)
 
 
 # ─── 会员校验与额度(2026-09-14 用户定)─────────────────────────────
@@ -1393,6 +1394,17 @@ async def screener_run(body: ScreenIn, request: Request):
         # 按上海日期判「未来」:容器是 UTC,上海 0~8 点选「今天」原来会被当成未来拒掉(执行用例 GN-035 发现)
         if as_of > screen_quota.today_sh():
             raise HTTPException(400, f"时间回溯不能选未来的日期:{as_of}")
+    from app.services.quant import screen_resort
+    if body.resort:
+        # 列头排序(2026-09-14 用户要求):不扣次数、不受 5 秒间隔、不取数。只能重排自己上一次跑出的那张表
+        try:
+            return screen_resort.resort(uid, screen_resort.key_of(script, body.market, as_of),
+                                        body.sort_by, body.descending,
+                                        100 if body.limit is None else body.limit)
+        except screen_resort.Expired as e:
+            raise HTTPException(409, {"kind": "resort_expired", "message": str(e)})
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     kind = "probe" if body.probe else "scan"
     try:
         if not body.probe:
@@ -1411,7 +1423,8 @@ async def screener_run(body: ScreenIn, request: Request):
         # 同上 —— 拉全市场实测 1~3s,同步 httpx,不能占着事件循环
         out = await asyncio.to_thread(
             screen_source.run_script,
-            script, body.market, 1 if body.probe else body.limit, body.sort_by, body.descending, as_of)
+            script, body.market, 1 if body.probe else body.limit, body.sort_by, body.descending, as_of,
+            not body.probe)
     except ScreenError as e:
         # 脚本写错、周期映射不了、上游挂了 —— 都是 400,message 直接给用户看。
         # 不要吞成 500 空结果:用户看到"0 只命中"会以为是市场里真的没有票满足条件。
@@ -1423,10 +1436,13 @@ async def screener_run(body: ScreenIn, request: Request):
     finally:
         if not body.probe:
             screen_quota.mark_done(uid)
+    all_picks = out.pop("_all_picks", None)
     if body.probe:
         # 单条测试只要命中数。不回结果行 —— 否则「测一条」就成了不扣次数的扫描
         return {"probe": True, "matched": out.get("matched"), "scanned": out.get("scanned"),
                 "skipped_incomplete": out.get("skipped_incomplete")}
+    if all_picks is not None:
+        screen_resort.put(uid, screen_resort.key_of(script, body.market, as_of), out, all_picks)
     out["quota"] = q
     return out
 

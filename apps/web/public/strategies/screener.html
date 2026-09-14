@@ -1216,7 +1216,7 @@ function bind() {
     if (!c || !c.dataset.sort) return
     if (S.sortBy === c.dataset.sort) S.desc = !S.desc
     else { S.sortBy = c.dataset.sort; S.desc = true }
-    runScan()
+    resortResult()           // 不重新扫描、不扣次数(2026-09-14 用户要求,见 resortResult)
   })
   const q = document.getElementById('sc-fd-q')
   if (q) q.addEventListener('input', debounceFields)
@@ -1677,6 +1677,45 @@ async function runScan() {
   // 悬停日K 要标「这份脚本过去一年哪些天命中」—— 用的必须是**跑出这张结果表的那份脚本**,
   // 不是条件区此刻的样子(用户跑完可能又改了条件还没重跑)
   S.resultScan = { script: script, market: market, asOf: asOf }
+  render()
+}
+
+// ─── 列头排序:不重新扫描、不扣次数(2026-09-14 用户要求)─────────────────
+// 原来点列头 = runScan():扣 1 次扫描次数、等 5 秒倒数、再打一次上游(执行用例 GN-045 发现)。
+// 现在两条路:
+//   · 命中数不超过表里已有的行(全部命中都在手上)→ 前端直接排,不发请求
+//   · 命中比表里多(只带回了前 100 只)→ 请后端按上一次扫描缓存的全部命中重排(resort: true),
+//     不扣次数、不倒数、不取数。缓存过期(10 分钟 / 服务重启)就提示要重新运行,**不自动重跑** —— 不替用户花次数
+function sortPicksLocal(picks, key, desc) {
+  const val = function (p) { return key === 'close' ? p.close : (p.fields || {})[key] }
+  const has = picks.filter(function (p) { return val(p) != null })
+  const none = picks.filter(function (p) { return val(p) == null })
+  has.sort(function (a, b) {
+    const x = val(a), y = val(b)
+    const c = (typeof x === 'number' && typeof y === 'number') ? x - y : String(x).localeCompare(String(y))
+    return desc ? -c : c
+  })
+  return has.concat(none)                  // 空值不论升序降序都在最后,与后端口径一致
+}
+
+async function resortResult() {
+  const r = S.result, sc = S.resultScan
+  if (!r || !sc || S.running || S.reveal) return
+  const picks = r.picks || []
+  if (Number.isFinite(r.matched) && r.matched <= picks.length) {
+    r.picks = sortPicksLocal(picks, S.sortBy, S.desc)
+    render(); return
+  }
+  if (S.resorting) return
+  S.resorting = true
+  const resp = await post(RUN_API, {
+    script: sc.script, market: sc.market, as_of: sc.asOf, limit: 100,
+    sort_by: S.sortBy || null, descending: S.desc, resort: true,
+  })
+  S.resorting = false
+  if (resp.ok && resp.data) { S.result = resp.data; render(); return }
+  if (gateOf(resp)) { render(); return }
+  toast(errOf(resp, httpFail('排序失败', resp.status)), 'warn')
   render()
 }
 

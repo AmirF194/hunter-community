@@ -410,7 +410,7 @@ _DISPLAY_EXTRA = ["market_cap_basic", "price_earnings_ttm", "RSI", "change",
 
 def run_script(script: str, market_key: str = "us", limit: int = 100,
                sort_by: str | None = None, descending: bool = True,
-               as_of=None) -> dict:
+               as_of=None, keep_all: bool = False) -> dict:
     """编译 → 拉数 → 本地求值。返回体结构见 docs-hunter / 前端 screener.html。
 
     as_of(date)= 时间回溯:不用今天的快照,用自家日线重算「那天收盘」的字段再求值
@@ -652,18 +652,21 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
             f"(是「算不出」,不是「不满足」):" + ";".join(parts) + "。"
             + "如果某条条件缺得特别多,可以考虑去掉或换一个覆盖更全的字段。")
 
-    picks = []
-    for r in hits[:limit]:
-        picks.append({
+    def _pick(r: dict) -> dict:
+        return {
             "code": r.get("_code"),
             "symbol": r.get("_symbol"),
             "name": r.get("description") or r.get("name"),
             "close": r.get("close"),
             "currency": r.get("currency") or md.currency,
             "fields": {k: v for k, v in r.items() if not k.startswith("_")},
-        })
+        }
 
-    return {
+    # keep_all:把全部命中一起带回去,路由存进 screen_resort,点列头排序时直接重排、不扣次数
+    all_picks = [_pick(r) for r in hits] if keep_all else None
+    picks = all_picks[:limit] if keep_all else [_pick(r) for r in hits[:limit]]
+
+    result = {
         "market": md.key,
         "market_label": md.label,
         "universe_total": total,
@@ -687,6 +690,9 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
         "asof_unavailable": asof_info["unavailable"] if asof_info is not None else [],
         "timing_ms": {"fetch": round(fetch_ms), "evaluate": round(eval_ms)},
     }
+    if keep_all:
+        result["_all_picks"] = all_picks          # 下划线开头:路由必须 pop 掉,不进响应
+    return result
 
 
 def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
