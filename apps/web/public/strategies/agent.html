@@ -722,7 +722,7 @@ function renderResearch(r, notice) {
   }).join('')
   const killed = byStage.killed || []
   // 研究台首页不再放扫描筛选入口卡(2026-09-14 用户要求去掉;2026-09-13 曾加在分页和研究台之间)。
-  // 魔法筛选器已经是顶栏一级页面,这里再放一张是重复入口。运行看板里那一张照旧保留(vDashboard 里调用 vScreener)。
+  // 魔法筛选器已经是顶栏一级页面,这里再放一张是重复入口。运行看板那张同日也去掉了。
   const html = '<div class="ag-wrap">' + vBanner(notice) + vTopNav('research') +
     panel('研究台', (has ? esc(lines.length + ' 条研究线') : NA) + ' · 从左到右是一条线必经的先后阶段',
       strip + '<div class="rs-board">' + cols + '</div>') +
@@ -1502,47 +1502,10 @@ function vLessons(d) {
     '「已落地 / 暂不落地 + 理由」是判断智能体<b>真的在迭代</b>还是<b>在写日记</b>的唯一凭据。</div>')
 }
 
-// ═══ 扫描筛选入口 ═════════════════════════════════════════════════
-// 位置:净值曲线之后、当前生效的规则之前(用户 2026-09-10 指定)。
-// 叙事上讲得通 —— 看完"这套策略跑成什么样",下一步要么是改规则,
-// 要么是换一批票,扫描筛选就是后一条路的入口,摆在规则前面并列给出。
-//
-// 只做**入口**,不在这一页嵌编辑器:脚本编辑 + 结果表需要的版面
-// 跟这一页的叙事节奏冲突(这一页是"看智能体在干什么",是只读的)。
-// 真正的工作台在 screener.html(2026-09-13 起是一级页面「魔法筛选器」,顶栏在小鹿智能体左边)。
-//
-// 这里不显示任何扫描数据 —— 没跑过就是没跑过,不摆一个假的示例结果。
-function vScreener() {
-  const presets = [
-    ['uptrend', '上升趋势', '美股'],
-    ['value_oversold', '低估值超卖', 'A股'],
-    ['breakout_volume', '放量突破', '美股'],
-    ['hk_dividend', '高股息', '港股'],
-  ].map(function (p) {
-    return '<a class="btn small" href="/strategies/screener.html?preset=' + p[0] + '">' +
-      esc(p[1]) + ' <span style="color:var(--soft)">' + esc(p[2]) + '</span></a>'
-  }).join('')
-  return panel('扫描筛选 · 找候选票',
-    '<span class="cnt">全市场扫描</span>',
-    '<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">' +
-      '<div style="flex:1;min-width:260px;font-size:12.5px;line-height:1.75;color:var(--muted)">' +
-        '用 thinkScript 风格的脚本从<b style="color:var(--text)">整个市场</b>里筛票 —— ' +
-        'A股 5237 · 港股 2396 · 美股 7487,秒级出结果。' +
-        '写法例:<code style="background:var(--bg,#FAF7F3);border-radius:4px;padding:1px 5px;' +
-        'font-family:ui-monospace,menlo,monospace;font-size:11.5px">plot scan = close > Average(close, 50);</code>' +
-      '</div>' +
-      '<a class="btn" href="/strategies/screener.html">' +
-        '<span class="hi hi-search"></span> 打开扫描筛选</a>' +
-    '</div>' +
-    '<div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:11px">' +
-      '<span style="font-size:11.5px;color:var(--soft);align-self:center;margin-right:2px">直接跑示例</span>' +
-      presets +
-    '</div>' +
-    '<div class="ag-note" style="margin-top:11px;padding-top:10px;border-top:1px solid var(--line)">' +
-      '数据<b>延迟 15 分钟</b>,而且<b>只有当前快照、没有历史</b> —— ' +
-      '所以扫出来的是<b>候选池</b>,不能直接拿去回测,也不写进因子库。' +
-      '要验证一个想法,把候选票带到策略工作台用站内有历史的数据跑。</div>')
-}
+// ═══ 扫描筛选入口:已去掉 ════════════════════════════════════════════
+// 原来运行看板(净值曲线之后、规则之前,2026-09-10 加)和研究台首页(2026-09-13 加)各有一张
+// 「扫描筛选 · 找候选票」入口卡。2026-09-14 用户要求两张都去掉:魔法筛选器已是顶栏一级页面,
+// 这里再放入口是重复的。数据延迟 / 只有快照 / 不能回测这些边界提示在魔法筛选器页面里照常显示。
 
 // ═══ 组装 · 顺序即产品叙事 ════════════════════════════════════════
 // 它是谁 → 按什么做 → 今天跑了吗 → 成绩 → 曲线 → 从哪找候选 → 规则 →
@@ -1560,7 +1523,7 @@ function render(d, notice) {
   // 返回 html 而不只是写进 container:render_check.js 靠这个返回值断言区块顺序
   const html = '<div class="ag-wrap">' + vBanner(notice) + vTopNav('dash', d) + vLineBanner(d) +
     vStatus(d) + vBranches(d) + vStrategy(d) + vGuard(d) + vPipeline(d) + vKpi(d) + vNav(d) +
-    vScreener() + vRules(d) +
+    vRules(d) +
     '<div class="ag-two"><div class="ag-col" id="ag-col">' + vHoldings(d) + vHistory(d) + '</div>' + vWatch(d) + '</div>' +
     vVersions(d) + vLessons(d) +
     '<div class="ag-note" style="text-align:center;padding:6px 0 0">' +
