@@ -267,6 +267,7 @@ class Ctx:
         self.cache_dates: dict = {}        # 引擎 → 已算过的日期
         self.seen: dict = {}               # 引擎 → 已整段算过的代码
         self.earn = None                   # (代码 → 财报日列表, 拉取成功的日子);第一次用到时读库(突破买入 v14)
+        self.bars_idx: dict = {}           # 代码 → (整段日线, 日期 → 下标);ind_at 按需算指标用
 
     def earnings_view(self, d: date, trade_days: list[date]):
         from app.services.quant import earnings_dates as ed
@@ -291,12 +292,37 @@ class Ctx:
         for pool, td, items in cur.fetchall():
             self.screens.setdefault(pool, {})[td] = items
 
-    def ensure_cache(self, dates: list[date], pool: dict, engine_names: list[str] | None = None):
-        """指标缓存按 (code, date) 增量补:每只票从首次进池那天起到最后一天。只算 engine_names 这几个引擎(各池各算)。"""
+    def ind_at(self, eng_name: str, code: str, d: date):
+        """按需算一只票一天的指标,记进同一份缓存(2026-09-15)。
+
+        原来 ensure_cache 给每只票从首次进池起的**每一天**都算 —— 进过一次池的票之后天天算,绝大多数用不上。
+        v14 一年实测:回测步骤合计 413 秒,而当天真用到的(观察列表 + 持仓)只是其中一小部分。规则固定、
+        不走优化器的方向改成用到才算;可调参方向的优化器 / 模拟器直接读整段缓存,仍走 ensure_cache 提前算。
+        `__` 开头的键(市场 / 板块 / 财报视图)由 ensure_cache 提前放好,这里不算。"""
+        cache = self.cache[eng_name]
+        k = (code, d)
+        if k in cache:
+            return cache[k]
+        if code.startswith("__"):
+            return None
+        bi = self.bars_idx.get(code)
+        if bi is None:
+            bars = self.bars_of(code) or []
+            bi = self.bars_idx[code] = (bars, {b[0]: i for i, b in enumerate(bars)})
+        bars, idx = bi
+        i = idx.get(d)
+        v = ao.ENGINES[eng_name].indicators(bars[:i + 1], bench=self.store["bench"]) if i is not None else None
+        cache[k] = v
+        return v
+
+    def ensure_cache(self, dates: list[date], pool: dict, engine_names: list[str] | None = None, per_code: bool = True):
+        """指标缓存按 (code, date) 增量补:每只票从首次进池那天起到最后一天。只算 engine_names 这几个引擎(各池各算)。
+        per_code=False:不提前逐票算(用 ind_at 按需算),只放市场 / 板块 / 财报视图这些按日的键。"""
         first: dict = {}
-        for d in dates:
-            for code, _n, _s, _since in pool.get(d, []):
-                first.setdefault(code, d)
+        if per_code:
+            for d in dates:
+                for code, _n, _s, _since in pool.get(d, []):
+                    first.setdefault(code, d)
         bb = self.store.get("bench_bars") or []
         bdates = [b[0] for b in bb]
         for name in (engine_names or list(ao.ENGINES)):
@@ -408,13 +434,28 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
     # 2025 年那些天的轴只有当天一天 —— 前几天买进、今天不在池里的持仓算不到指标,永远不会被卖出
     dates = sorted({x for x in ctx.screens.get(PRESET, {}) if x <= d}
                    | {x for pk in needed for x in ctx.screens.get(pk, {}) if x <= d} | {d})
+    # 规则固定、不走优化器的研究线方向:指标按需算(ctx.ind_at);VCP 线 / 可调参方向的优化器要整段缓存,照旧提前算
+    from app.services.quant import agent_research as research_static
+
+    def _lazy_ok(b):
+        ln = next((k for k, v in research_static.LINES.items() if b in v["branches"]), None)
+        return ln not in (None, "vcp") and not ao.BRANCHES[b]["tunable"]
+
+    lazy_engs = {en for en in {ao.BRANCHES[b]["engine"] for b in todo}
+                 if all(_lazy_ok(b) for b in todo if ao.BRANCHES[b]["engine"] == en)}
     pooled: dict = {}
     pool_days: dict = {}
     for pool_key, engs in needed.items():
+        engs = list(dict.fromkeys(engs))
         pool_days[pool_key] = max(_pool_days(e) for e in engs)
         pooled[pool_key] = agent_sim.pooled_watch(dates, {k: [tuple(x) for x in v] for k, v in ctx.screens[pool_key].items()},
                                                   pool_days[pool_key])
-        ctx.ensure_cache(dates, pooled[pool_key], engs)
+        eager = [e for e in engs if e not in lazy_engs]
+        lazy = [e for e in engs if e in lazy_engs]
+        if eager:
+            ctx.ensure_cache(dates, pooled[pool_key], eager)
+        if lazy:
+            ctx.ensure_cache(dates, pooled[pool_key], lazy, per_code=False)
 
     out = {"date": str(d), "ran": True, "branches": {}}
     for branch in todo:
@@ -442,7 +483,8 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
             if _meta_get(cur, "started") is None:
                 _meta_set(cur, "started", str(d))
         res = eng.run_day(str(d), positions, float(cash), lambda c: [], watch_today, prev_equity, consec, p, av.GUARDS,
-                          ind_of=lambda c, _d=d, _e=eng_name: ctx.cache[_e].get((c, _d)))
+                          ind_of=((lambda c, _d=d, _e=eng_name: ctx.ind_at(_e, c, _d)) if eng_name in lazy_engs
+                                  else (lambda c, _d=d, _e=eng_name: ctx.cache[_e].get((c, _d)))))
         for w in res["watch_items"]:
             w["since"] = since_of.get(w["symbol"], str(d))
             if w["symbol"] in since_of:
