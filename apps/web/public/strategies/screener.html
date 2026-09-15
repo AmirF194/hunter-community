@@ -326,6 +326,7 @@ const S = {
   combine: 'all',            // all | custom
   plotName: 'scan', plotExpr: '',
   plotOrder: [],             // 条件行在 plot 里的先后(/parse 的 plot_order):名字项是 def 名,表达式项是 scan#1 …
+  termHost: '',              // 条件宿主(/parse 的 term_host):plot 只写一个名字、条件都在那条 def 里时是它的名字
   notes: [], parseWarnings: [],
   editing: null,             // 正在编辑原文的条件名
   pending: '',               // 正在生成的那段原文(S.input 会被清空,按钮文案要靠它)
@@ -386,6 +387,11 @@ function buildScript(allEnabled) {
   if (!lines.length && !on.length) return ''
   if (S.combine === 'custom' && S.plotExpr) {
     lines.push('plot ' + S.plotName + ' = ' + S.plotExpr + ';')
+  } else if (S.termHost) {
+    // 原脚本是 `def FOMO_Setup = a and b …; plot scan = FOMO_Setup;`(2026-09-15):按原结构写回,
+    // 不把条件搬进 plot —— 用户复制回 thinkorswim 时结构要和他粘进来的一样
+    lines.push('def ' + S.termHost + ' = ' + (on.length ? on.join(' and ') : 'false') + ';')
+    lines.push('plot ' + S.plotName + ' = ' + S.termHost + ';')
   } else if (on.length) {
     lines.push('plot ' + S.plotName + ' = ' + on.join(' and ') + ';')
   } else {
@@ -626,7 +632,7 @@ function vCond(c, i) {
   const isTerm = c.kind === 'term'
   return '<div class="cd' + (off ? ' off' : '') + '">' +
     // plot 里直接写的一项没有名字,标题用它引用的第一个定义名(bullStreak >= … 就叫 bullStreak)
-    '<span class="nm"' + (isTerm ? ' title="plot 里的一项"' : '') + '>' +
+    '<span class="nm"' + (isTerm ? ' title="' + esc(S.termHost ? S.termHost + ' 里的一项' : 'plot 里的一项') + '"' : '') + '>' +
       esc(isTerm ? (c.title || 'plot') : c.name) + '</span>' +
     '<span class="body">' + body + ' ' + probeTxt + '</span>' +
     '<span class="acts">' +
@@ -834,8 +840,10 @@ function vNotes() {
   const ws = dropSrc(S.notes).concat(dropSrc(S.parseWarnings))
   if (!ws.length) return ''
   return '<div class="sc-warn"><ul>' +
-    ws.map(function (w) { return '<li>' + esc(w) + '</li>' }).join('') + '</ul></div>'
+    ws.map(function (w) { return '<li>' + warnHtml(w) + '</li>' }).join('') + '</ul></div>'
 }
+// 后端提示里用 **…** 标重点(本地识别那段早就这么渲染);先转义再换成粗体,不给 HTML 注入留口子
+function warnHtml(w) { return esc(w).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>') }
 
 // ═══ 结果 ═════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════
@@ -1167,7 +1175,7 @@ function vWarn(r) {
   const ws = dropSrc(r.notes).concat(dropSrc(r.warnings))
   if (!ws.length) return ''
   return '<div class="sc-warn"><ul>' +
-    ws.map(function (w) { return '<li>' + esc(w) + '</li>' }).join('') + '</ul></div>'
+    ws.map(function (w) { return '<li>' + warnHtml(w) + '</li>' }).join('') + '</ul></div>'
 }
 
 function vTable(r) {
@@ -1324,7 +1332,7 @@ function bind() {
     const n = S.conditions.filter(function (c) { return c.is_bool }).length
     if (!confirm('清空全部 ' + n + ' 个条件和当前扫描结果?草稿也会一起清掉。')) return
     S.conditions = []; S.result = null; S.probe = {}; S.notes = []; S.parseWarnings = []
-    S.combine = 'all'; S.plotExpr = ''; S.plotOrder = []; S.loadedName = ''; S.officialPreset = null; saveDraft(); render()
+    S.combine = 'all'; S.plotExpr = ''; S.plotOrder = []; S.termHost = ''; S.loadedName = ''; S.officialPreset = null; saveDraft(); render()
   })
 
   const run = document.getElementById('sc-run')
@@ -1628,6 +1636,7 @@ function applyParsed(d) {
   S.plotName = d.plot_name || 'scan'
   S.plotExpr = d.combine === 'custom' ? (d.plot_expr || '') : ''
   S.plotOrder = d.plot_order || []
+  S.termHost = d.combine === 'custom' ? '' : (d.term_host || '')
   S.notes = d.notes || []
   S.parseWarnings = d.warnings || []
   // 后端判的「这套条件是不是原样的官方示例」(2026-09-14 · 原样运行不扣扫描次数)。只用于界面提示和按钮,
@@ -1741,6 +1750,7 @@ async function generate(allowAi) {
     S.plotName = d.plot_name || 'scan'
     S.plotExpr = d.combine === 'custom' ? (d.plot_expr || '') : ''
     S.plotOrder = d.plot_order || []
+    S.termHost = d.combine === 'custom' ? '' : (d.term_host || '')
   } else {
     mergeAppend(fresh)
   }

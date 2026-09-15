@@ -523,6 +523,17 @@ AI 修错也修不了。**这不是一句话的 bug,是整类写法没支持**:`
 
 用例:`test_screen_series.py` E 组 +25 条(含两条改口径的旧断言,注释写了为什么);`render_check.js`「条件行=plot项」13 条。
 
+**第 6 条 · 条件宿主(`term_host`,2026-09-15 同日第二份猎杀 FOMO)**:脚本写成
+`def FOMO_Setup = greenStreak >= minStreak and … and isGreen; plot scan = FOMO_Setup;`,界面显示「同时满足 1 个条件」一整行,
+和脚本里写明的 7 个条件对不上。**引擎算得没错**(合成 90 只逐项对暴力、真实日线 4063 只对暴力都一致),错在条件行:
+plot 是裸名字就只有一项。现在 plot 只写一个名字、那条 def 是顶层 and 链(≥2 项)、**没被别的语句引用**、不是 input / 递归时,
+它是「条件宿主」:条件行 = 它的 and 项(规则同 plot 项,名字 `宿主#k`),宿主本身不进条件列表。
+**回写必须按原结构**:前端 `buildScript` / 后端 `build_script(term_host=, plot_order=)` 都写 `def 宿主 = 启用项 and …; plot scan = 宿主;`,
+全停用写 `false` —— 把条件搬进 plot 虽然等价,用户复制回 thinkorswim 就和他粘进来的不一样了。
+宿主被别的 def 引用(它是中间量)、只有一项、顶层是 or / if 时**不展开**,用例 G 组各有反例。横截面脚本同样适用。
+同一轮顺带:提示条里的 `**重点**` 原来原样显示星号,前端 `warnHtml` 先转义再换粗体。
+用例:`test_screen_series.py` G 组 26 条;`render_check.js`「条件宿主」13 条。
+
 ## 部署坑:`apps/web/public/**` **新增**文件要 `restart web`,改动文件不用
 
 `docker-compose.yml` 里 web 有 `- ./apps/web/public:/app/public:ro`,所以

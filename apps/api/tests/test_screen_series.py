@@ -658,6 +658,208 @@ rr2 = ss.evaluate(compile("plot scan = close > Average(close, 20) and RSI() < 30
 dt2 = time.time() - t0
 check(f"F 4000 只 × 252 根 研究函数组合 {dt2:.2f}s(< 8s)", dt2 < 8.0)
 
+
+# ═══════════════════════════════════════════════════════════════
+# G · 条件宿主:plot 只写一个名字、条件都在那条 def 里(2026-09-15 用户第二份猎杀 FOMO)
+# ═══════════════════════════════════════════════════════════════
+# 用户截图:界面「同时满足 1 个条件」一整行 FOMO_Setup,脚本里写明的是 7 个条件。引擎算得没错(下面 G 值 · 对暴力),
+# 错在条件行:decompose 只把 plot 的顶层 and 项当条件,plot 是一个裸名字就只有一项。
+print("\n── G 条件宿主(猎杀 FOMO 第二份)──")
+USER_SCRIPT2 = """# 猎杀FOMO策略 Setup 扫描器
+# 用途：扫描连续强势上涨 + 加速 + 天量高潮的潜在做空标的
+
+# ==================== 可调参数 ====================
+input minStreak = 3;                  # 最少连续阳线天数
+input minTotalReturn = 0.80;          # 最小总涨幅（小市值建议1.0，中大市值0.6~0.8）
+input volMultiplier = 5.0;            # 高潮日成交量 ≥ 20日均量的倍数
+input maxRedRatio = 0.20;             # 波段内允许的最大阴线比例
+input lookbackVol = 20;               # 成交量均线周期
+input accelerateRatio = 1.2;          # 加速确认：最后一日涨幅 ≥ 前一日 × 此倍数
+
+# ==================== 基础计算 ====================
+def isGreen = close > close[1];
+def isRed   = close < close[1];
+def dailyReturn = (close - close[1]) / close[1];
+
+# 连续阳线长度
+def greenStreak = if isGreen then greenStreak[1] + 1 else 0;
+
+# 波段起点价格（连续阳线开始前一日的收盘价）
+def streakStartPrice = if greenStreak == 1 then close[1] else streakStartPrice[1];
+
+# 波段总涨幅
+def totalReturn = if greenStreak >= 1 then (close / streakStartPrice) - 1 else 0;
+
+# 波段内阴线数量（用于干净度）
+def redCountInStreak = if greenStreak == 1 then 0
+                       else if isRed then redCountInStreak[1] + 1
+                       else redCountInStreak[1];
+
+def redRatio = if greenStreak > 0 then redCountInStreak / greenStreak else 1;
+
+# 加速特征
+def isAccelerating = dailyReturn >= dailyReturn[1] * accelerateRatio and dailyReturn > 0;
+
+# 最后一日是否接近波段最大涨幅（简化加速确认）
+def maxReturnInStreak = if greenStreak == 1 then dailyReturn
+                        else Max(dailyReturn, maxReturnInStreak[1]);
+def isLastMax = dailyReturn >= maxReturnInStreak * 0.95;
+
+# 成交量条件
+def volMA = Average(volume, lookbackVol);
+def climaxVolRatio = volume / volMA;
+def volIncreasing = volume > volume[1] and volume[1] > volume[2];
+
+# ==================== 最终Setup条件 ====================
+def FOMO_Setup =
+    greenStreak >= minStreak and
+    totalReturn >= minTotalReturn and
+    (isAccelerating or isLastMax) and
+    redRatio <= maxRedRatio and
+    climaxVolRatio >= volMultiplier and
+    volIncreasing and
+    isGreen;                    # 当天必须是阳线
+
+# 扫描条件（必须放在最后）
+plot scan = FOMO_Setup;
+"""
+c2 = compile(USER_SCRIPT2)
+check("G 编译 · 时间序列模式", c2.series is not None)
+check("G 编译 · 递归定义 4 个", c2.series.rec == ["greenStreak", "streakStartPrice", "redCountInStreak", "maxReturnInStreak"], c2.series.rec)
+d2 = sd.decompose(USER_SCRIPT2, c2, has, SMA, EMA, RSI)
+rows2 = [x for x in d2["conditions"] if x["is_bool"]]
+names2 = [x["name"] for x in d2["conditions"]]
+check("G ⭐ term_host = FOMO_Setup", d2["term_host"] == "FOMO_Setup", d2.get("term_host"))
+check("G ⭐ 条件行 = FOMO_Setup 的 7 项(不是 1 行)", len(rows2) == 7 and len(d2["plot_order"]) == 7, [x["name"] for x in rows2])
+check("G 宿主本身不在条件列表里", "FOMO_Setup" not in names2)
+_terms2 = [x for x in d2["conditions"] if x["kind"] == "term"]
+check("G ⭐ 5 个表达式项原文与脚本一致", [x["expr"] for x in _terms2] == ["greenStreak >= minStreak", "totalReturn >= minTotalReturn",
+      "(isAccelerating or isLastMax)", "redRatio <= maxRedRatio", "climaxVolRatio >= volMultiplier"], [x["expr"] for x in _terms2])
+check("G 表达式项名字是 FOMO_Setup#k", [x["name"] for x in _terms2] == [f"FOMO_Setup#{k}" for k in range(1, 6)])
+check("G 裸名字项 volIncreasing / isGreen 是 def 条件行且启用", d2["plot_refs"] == ["volIncreasing", "isGreen"]
+      and all(x["is_bool"] for x in d2["conditions"] if x["name"] in ("volIncreasing", "isGreen")))
+check("G plot_order 与脚本里的先后一致", d2["plot_order"] == ["FOMO_Setup#1", "FOMO_Setup#2", "FOMO_Setup#3", "FOMO_Setup#4",
+      "FOMO_Setup#5", "volIncreasing", "isGreen"], d2["plot_order"])
+_b2 = {x["name"]: x["is_bool"] for x in d2["conditions"]}
+check("G 中间定义不是条件(isAccelerating / isLastMax / isRed / dailyReturn / volMA)",
+      not any(_b2[n] for n in ("isAccelerating", "isLastMax", "isRed", "dailyReturn", "volMA", "climaxVolRatio")))
+check("G 已带括号的 or 项不再要求补括号", [x["paren"] for x in _terms2] == [False] * 5)
+check("G input 6 个 kind=input", sum(1 for x in d2["conditions"] if x["kind"] == "input") == 6)
+
+
+def _rebuild(dd):
+    """照前端 buildScript 的规则回写(input/rec 关键字、宿主按原结构)。"""
+    lines, on = [], []
+    byname = {x["name"]: x for x in dd["conditions"]}
+    for x in dd["conditions"]:
+        if x["kind"] == "term":
+            continue
+        kw = x["kind"] if x["kind"] in ("input", "rec") else "def"
+        lines.append(f"{kw} {x['name']} = {x['expr']};")
+    for n in dd["plot_order"]:
+        x = byname[n]
+        on.append((f"({x['expr']})" if x.get("paren") else x["expr"]) if x["kind"] == "term" else n)
+    if dd.get("term_host"):
+        lines.append(f"def {dd['term_host']} = " + " and ".join(on) + ";")
+        lines.append(f"plot {dd['plot_name']} = {dd['term_host']};")
+    else:
+        lines.append(f"plot {dd['plot_name']} = " + " and ".join(on) + ";")
+    return "\n".join(lines)
+
+
+_rs2 = _rebuild(d2)
+check("G 回写:def FOMO_Setup = 7 项;plot scan = FOMO_Setup", "def FOMO_Setup = greenStreak >= minStreak and totalReturn >= minTotalReturn and "
+      "(isAccelerating or isLastMax) and redRatio <= maxRedRatio and climaxVolRatio >= volMultiplier and volIncreasing and isGreen;" in _rs2
+      and _rs2.rstrip().endswith("plot scan = FOMO_Setup;"), _rs2[-300:])
+_c2b = compile(_rs2)
+_d2b = sd.decompose(_rs2, _c2b, has, SMA, EMA, RSI)
+check("G ⭐ 往返:再解析一次条件行一模一样", [x["expr"] for x in _d2b["conditions"]] == [x["expr"] for x in d2["conditions"]]
+      and _d2b["term_host"] == "FOMO_Setup" and _d2b["plot_order"] == d2["plot_order"])
+check("G 往返两次不漂移", _rebuild(_d2b) == _rs2)
+check("G 后端 build_script 不传 plot_order 时老行为不变(按列表顺序)",
+      sd.build_script([{"name": "b", "expr": "close > 1", "is_bool": True}, {"name": "a", "expr": "close > 2", "is_bool": True}]).endswith("plot scan = b and a;"))
+_bs = sd.build_script([dict(x, enabled=True) for x in d2["conditions"]], "scan", None, d2["term_host"], d2["plot_order"])
+check("G 后端 build_script 与前端同规则(宿主按原结构)", "def FOMO_Setup = greenStreak >= minStreak and" in _bs and _bs.endswith("plot scan = FOMO_Setup;"), _bs[-200:])
+
+
+# 值 · 对暴力(ThinkScript 语义逐根)
+def _brute2(cl, vo):
+    g = sp = rc = mx = 0.0
+    res = None
+    for i in range(1, len(cl)):
+        isG, isR = cl[i] > cl[i - 1], cl[i] < cl[i - 1]
+        dr = (cl[i] - cl[i - 1]) / cl[i - 1]
+        g = g + 1 if isG else 0
+        sp = cl[i - 1] if g == 1 else sp
+        rc = 0 if g == 1 else (rc + 1 if isR else rc)
+        mx = dr if g == 1 else max(dr, mx)
+        if i == len(cl) - 1 and i >= 20:
+            tr = (cl[i] / sp) - 1 if g >= 1 else 0
+            rr = rc / g if g > 0 else 1
+            dr1 = (cl[i - 1] - cl[i - 2]) / cl[i - 2]
+            acc = dr >= dr1 * 1.2 and dr > 0
+            cvr = vo[i] / (sum(vo[i - 19:i + 1]) / 20)
+            vinc = vo[i] > vo[i - 1] > vo[i - 2]
+            res = {"greenStreak": g, "totalReturn": tr, "redRatio": rr, "maxReturnInStreak": mx, "climaxVolRatio": cvr,
+                   "FOMO_Setup": float(g >= 3 and tr >= 0.8 and (acc or dr >= mx * 0.95) and rr <= 0.2 and cvr >= 5.0 and vinc and isG)}
+    return res
+
+
+import random as _rnd  # noqa: E402
+_rnd.seed(11)
+_W2 = c2.series.window
+_sts = []
+for k in range(90):
+    n = _rnd.choice([_W2, _W2, 120, 60])
+    px, cl, vo = 10.0, [], []
+    for i in range(n):
+        if k % 3 == 0 and i >= n - 5:
+            px *= 1 + 0.08 * (i - (n - 6)); vo.append(1e5 * 3 ** (i - (n - 6)))
+        else:
+            px *= 1 + _rnd.uniform(-0.04, 0.045); vo.append(_rnd.uniform(5e4, 2e5))
+        cl.append(px)
+    _sts.append((cl, vo))
+_cm = np.full((len(_sts), _W2), np.nan); _vm = np.full((len(_sts), _W2), np.nan)
+for r_, (cl, vo) in enumerate(_sts):
+    _cm[r_, _W2 - len(cl):] = cl; _vm[r_, _W2 - len(vo):] = vo
+_bars2 = {"close": _cm, "volume": _vm, "high": _cm * 1.01, "low": _cm * 0.99, "open": _cm}
+_e2 = ss.evaluate(c2, {k: v.copy() for k, v in _bars2.items()}, {})
+_bad = []
+_hits = 0
+for r_, (cl, vo) in enumerate(_sts):
+    b = _brute2(cl, vo)
+    _hits += int(b["FOMO_Setup"])
+    for nm, bv in b.items():
+        ev = _e2["last"][nm][r_] if nm != "FOMO_Setup" else _e2["verdict"][r_]
+        if ev != ev or abs(ev - bv) > 1e-9 * max(1.0, abs(bv)):
+            _bad.append((r_, nm, ev, bv))
+check("G ⭐ 值 · 90 只合成票逐项对暴力(连续阳线 / 波段起点 / 总涨幅 / 阴线比例 / 波段最大涨幅 / 量比 / 最终结果)", not _bad, _bad[:3])
+check("G 值 · 合成数据里命中与不命中都有(用例确实测到东西)", 0 < _hits < len(_sts), _hits)
+_e2b = ss.evaluate(_c2b, {k: v.copy() for k, v in _bars2.items()}, {})
+check("G 值 · 往返后的脚本结果完全一致", np.array_equal(np.nan_to_num(_e2["verdict"], nan=-1), np.nan_to_num(_e2b["verdict"], nan=-1)))
+
+# 应当不展开的写法(反例,只加不删)
+_hs = "def a = close > close[1];\ndef b = close[1] > close[2];\ndef both = a and b;\ndef x = if both then 1 else 0;\nplot scan = both;"
+_dh = sd.decompose(_hs, compile(_hs), has, SMA, EMA, RSI)
+check("G 反例 · 宿主被别的定义引用 → 不展开(它是中间量)", _dh["term_host"] == "" and [x["name"] for x in _dh["conditions"] if x["is_bool"]] == ["both"], _dh["plot_order"])
+_hs = "def up = close > close[1];\nplot scan = up;"
+_dh = sd.decompose(_hs, compile(_hs), has, SMA, EMA, RSI)
+check("G 反例 · 宿主只有一项 → 不展开", _dh["term_host"] == "" and _dh["plot_order"] == ["up"])
+_hs = "def s = close > close[1] or close[1] > close[2];\nplot scan = s;"
+_dh = sd.decompose(_hs, compile(_hs), has, SMA, EMA, RSI)
+check("G 反例 · 宿主顶层是 or → 不展开", _dh["term_host"] == "" and _dh["plot_order"] == ["s"])
+_hs = "def s = close > close[1] and close[1] > close[2];\nplot scan = s and volume > 100000;"
+_dh = sd.decompose(_hs, compile(_hs), has, SMA, EMA, RSI)
+check("G 反例 · plot 自己有多项 → 按 plot 拆,不找宿主", _dh["term_host"] == "" and len(_dh["plot_order"]) == 2)
+_hs = "def s = if close > close[1] then close[1] > close[2] and close > 5 else close > 1;\nplot scan = s;"
+_dh = sd.decompose(_hs, compile(_hs), has, SMA, EMA, RSI)
+check("G 反例 · 宿主顶层是 if(里面的 and 不能拆)→ 不展开", _dh["term_host"] == "")
+_hs = "def c1 = close > 10;\ndef c2 = volume > 100000;\ndef all_ = c1 and c2;\nplot scan = all_;"
+_ch = compile(_hs)
+_dh = sd.decompose(_hs, _ch, has, SMA, EMA, RSI)
+check("G 横截面脚本同样展开:all_ = c1 and c2 → 条件行 c1 / c2", _ch.series is None and _dh["term_host"] == "all_"
+      and _dh["plot_refs"] == ["c1", "c2"] and "all_" not in [x["name"] for x in _dh["conditions"]], _dh)
+
 print(f"\n{'ALL OK' if not FAILS else 'SOME FAILED'} · 通过 {N_OK} · 失败 {len(FAILS)}")
 if FAILS:
     print("失败清单:")

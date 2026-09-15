@@ -1314,6 +1314,28 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
             terms = [(n, s, e) for n, (s, e) in zip(nodes, spans)]
     plot_refs = [n[1] for n, _, _ in terms if n[0] == "name" and n[1] in def_names]
 
+    # plot 只写了一个名字、条件都在那条 def 里(2026-09-15 用户第二份猎杀 FOMO:
+    # `def FOMO_Setup = greenStreak >= minStreak and … and isGreen; plot scan = FOMO_Setup;`)。
+    # 按上面的规则它只有一项 → 界面「同时满足 1 个条件」一整行,和脚本里写明的 7 个条件对不上。
+    # 这种 def 叫「条件宿主」(term_host):条件行 = 它的顶层 and 项,规则与 plot 的项完全相同;
+    # 宿主本身不进条件列表,前端回写时按原结构写回 `def 宿主 = 启用项 and …; plot scan = 宿主;`。
+    # 只在宿主**没被别的语句引用**、不是递归 / input、至少拆出 2 项时才展开 —— 被引用的话它是个中间量,拆开会改含义
+    term_host = ""
+    if len(terms) == 1 and terms[0][0][0] == "name" and terms[0][0][1] in def_names:
+        hn = terms[0][0][1]
+        hst = next(st for st in body if st.name == hn)
+        others: set[str] = set()
+        for st in body:
+            if st.name != hn:
+                others |= _names_in(st.node)
+        if hst.kind != "input" and not hst.rec and hn not in others and _is_boolean(hst.node):
+            hnodes = _and_terms(hst.node)
+            hspans = _split_top_and(src, hst.expr_start, hst.expr_end)
+            if len(hnodes) >= 2 and hspans is not None and len(hspans) == len(hnodes):
+                term_host = hn
+                terms = [(n, s, e) for n, (s, e) in zip(hnodes, hspans)]
+                plot_refs = [n[1] for n, _, _ in terms if n[0] == "name" and n[1] in def_names]
+
     # 谁被别人用到了:别的 def 里 + plot 里非裸名字的项里
     used: set[str] = set()
     for st in body:
@@ -1336,6 +1358,8 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
         return toks, expr
 
     for st in body:
+        if st.name == term_host:
+            continue                             # 宿主的内容已经拆成条件行,它自己不再单列
         toks, expr = _toks_of(st.node, st.expr_start, st.expr_end)
         if series:
             # 时间序列脚本里引用就显示**名字**:bullStreak / ret 这些是用户自己起的名,比内联展开好认;
@@ -1368,7 +1392,7 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
             continue
         k += 1
         toks, expr = _toks_of(n, s, e)
-        name = f"{c.plot_name}#{k}"           # 带 # 不可能是标识符,不会和 def 撞名、也不会被当成引用
+        name = f"{term_host or c.plot_name}#{k}"   # 带 # 不可能是标识符,不会和 def 撞名、也不会被当成引用
         first = next((t.get("ref") for t in toks if t["k"] == "ref"), None)
         conditions.append({
             "name": name,
@@ -1390,6 +1414,7 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
         "plot_expr": src[plot_stmt.expr_start:plot_stmt.expr_end] if plot_stmt else "",
         "plot_refs": plot_refs,
         "plot_order": plot_order,
+        "term_host": term_host,
         "notes": rs.notes,
     }
 
@@ -1495,7 +1520,8 @@ def _flatten_and_names(node) -> list[str]:
 
 
 def build_script(conditions: list[dict], plot_name: str = "scan",
-                 plot_expr: str | None = None) -> str:
+                 plot_expr: str | None = None, term_host: str | None = None,
+                 plot_order: list[str] | None = None) -> str:
     """条件行 → 脚本。界面改完之后回写用。
 
     停用的条件**保留在脚本里**(仍然是 `def`),只是不进 plot ——
@@ -1503,20 +1529,30 @@ def build_script(conditions: list[dict], plot_name: str = "scan",
     """
     lines = []
     enabled = []
-    for c in conditions:
+    # 启用项按 plot_order 排(与前端 condRows 同规则);不在里面的排后面、保持原顺序
+    pos = {n: k for k, n in enumerate(plot_order or [])}
+    ordered = sorted(range(len(conditions)), key=lambda i: pos.get(conditions[i].get("name"), 10 ** 9 + i))
+    rank = {i: r for r, i in enumerate(ordered)}
+    keyed: list[tuple[int, str]] = []
+    for idx, c in enumerate(conditions):
         if not c.get("expr"):
             continue
         if c.get("kind") == "term":
             # plot 里直接写的一项(decompose 的 kind='term'),不是 def
             if c.get("enabled", True):
-                enabled.append(f"({c['expr']})" if c.get("paren") else c["expr"])
+                keyed.append((rank[idx], f"({c['expr']})" if c.get("paren") else c["expr"]))
             continue
         kw = c.get("kind") if c.get("kind") in ("input", "rec") else "def"
         lines.append(f"{kw} {c['name']} = {c['expr']};")
         if c.get("enabled", True) and c.get("is_bool"):
-            enabled.append(c["name"])
+            keyed.append((rank[idx], c["name"]))
+    enabled = [t for _, t in sorted(keyed)]
     if plot_expr:
         lines.append(f"plot {plot_name} = {plot_expr};")
+    elif term_host:
+        # 条件宿主(decompose 的 term_host):按原结构写回,plot 仍只写宿主的名字
+        lines.append(f"def {term_host} = " + (" and ".join(enabled) if enabled else "false") + ";")
+        lines.append(f"plot {plot_name} = {term_host};")
     elif enabled:
         lines.append(f"plot {plot_name} = " + " and ".join(enabled) + ";")
     else:

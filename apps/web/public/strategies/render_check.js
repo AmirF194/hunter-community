@@ -926,6 +926,65 @@ try {
   console.log('FAIL 条件行=plot项定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 筛选器 · 条件宿主(2026-09-15)──────────────────────────────────────
+// 用户第二份猎杀 FOMO:`def FOMO_Setup = a and b … and isGreen; plot scan = FOMO_Setup;`,界面显示「同时满足 1 个条件」
+// 一整行,和脚本里写明的 7 个条件对不上。后端 term_host 把宿主的 and 项拆成条件行;前端回写必须按原结构
+// (def 宿主 = 启用项;plot scan = 宿主),停用一项只从宿主里去掉,全停用写 false,宿主不能被写成 def FOMO_Setup#1
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  inlineScripts(sc).forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    var TH_D = {
+      combine: 'all', plot_name: 'scan', term_host: 'FOMO_Setup', plot_refs: ['isGreen'],
+      plot_order: ['FOMO_Setup#1', 'FOMO_Setup#2', 'isGreen'],
+      conditions: [
+        { name: 'minStreak', expr: '3', kind: 'input', is_bool: false, tokens: [{ k: 'num', t: '3', s: 0, e: 1 }] },
+        { name: 'isGreen', expr: 'close > close[1]', kind: 'def', is_bool: true, tokens: [{ k: 'field', t: '收盘价' }, { k: 'op', t: '[1]' }] },
+        { name: 'greenStreak', expr: 'if isGreen then greenStreak[1] + 1 else 0', kind: 'rec', is_bool: false, tokens: [{ k: 'kw', t: '如果' }, { k: 'op', t: '[1]' }] },
+        { name: 'FOMO_Setup#1', title: 'greenStreak', expr: 'greenStreak >= minStreak', kind: 'term', is_bool: true, tokens: [{ k: 'ref', t: 'greenStreak' }] },
+        { name: 'FOMO_Setup#2', title: 'isAccelerating', expr: '(isAccelerating or isLastMax)', kind: 'term', is_bool: true, paren: false, tokens: [{ k: 'ref', t: 'isAccelerating' }] },
+      ],
+      warnings: ['按自家全市场日线**逐根**求值', '<img src=x>**不含今天盘中**'],
+    }
+    applyParsed(TH_D)
+    var TH_SCRIPT = buildScript(false)
+    var TH_HTML = vConditions()
+    S.conditions[3].enabled = false
+    var TH_OFF = buildScript(false)
+    var TH_ALL = buildScript(true)
+    S.conditions.forEach(function (c) { if (c.is_bool) c.enabled = false })
+    var TH_NONE = buildScript(false)
+    applyParsed(Object.assign({}, TH_D, { term_host: '' }))
+    var TH_NOHOST = buildScript(false)
+  `, ctx, { filename: 'assert-term-host' })
+  const html = String(ctx.TH_HTML)
+  const s = String(ctx.TH_SCRIPT)
+  const th = [
+    ['宿主按原结构写回:def 宿主 = 各项 and', /def FOMO_Setup = greenStreak >= minStreak and \(isAccelerating or isLastMax\) and isGreen;/.test(s)],
+    ['plot 仍只写宿主名', /plot scan = FOMO_Setup;$/.test(s)],
+    ['term 不写成 def FOMO_Setup#k', !/def FOMO_Setup#/.test(s)],
+    ['已带括号的 or 项不叠括号', !/\(\(isAccelerating/.test(s)],
+    ['宿主 def 写在所有定义之后、plot 之前', s.indexOf('def FOMO_Setup =') > s.indexOf('def isGreen =') && s.indexOf('def FOMO_Setup =') > s.indexOf('rec greenStreak =')],
+    ['表头条件数 = 宿主的项数(3)', /以下<b>3<\/b> 个条件/.test(html)],
+    ['term 行悬停写明是宿主里的一项', /title="FOMO_Setup 里的一项"/.test(html)],
+    ['停用一项:只从宿主里去掉', /def FOMO_Setup = \(isAccelerating or isLastMax\) and isGreen;/.test(String(ctx.TH_OFF))],
+    ['停用后 buildScript(true) 仍含该项(rebuild 靠它不丢)', /def FOMO_Setup = greenStreak >= minStreak and/.test(String(ctx.TH_ALL))],
+    ['全部停用:宿主写 false,plot 仍是宿主', /def FOMO_Setup = false;\nplot scan = FOMO_Setup;/.test(String(ctx.TH_NONE))],
+    ['没有宿主时照旧写进 plot(老行为不变)', /plot scan = greenStreak >= minStreak and \(isAccelerating or isLastMax\) and isGreen;/.test(String(ctx.TH_NOHOST)) && !/def FOMO_Setup =/.test(String(ctx.TH_NOHOST))],
+    ['提示里的 **重点** 渲染成粗体', /<li>按自家全市场日线<b>逐根<\/b>求值<\/li>/.test(html)],
+    ['提示先转义再加粗(不注入 HTML)', /&lt;img src=x&gt;<b>不含今天盘中<\/b>/.test(html) && !/<img src=x>/.test(html)],
+  ]
+  for (const [name, ok] of th) {
+    if (ok) console.log('PASS 条件宿主 ·', name)
+    else { failed++; console.log('FAIL 条件宿主 ·', name, ' | ', JSON.stringify([s, String(ctx.TH_OFF), String(ctx.TH_NONE), String(ctx.TH_NOHOST)])) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 条件宿主定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 筛选器悬停日K:当前脚本的历史命中日(2026-09-13)──────────────────────
 // 标记是异步来的(后端逐日回算),三件事钉住:
 //   ① 用的是「跑出结果表的那份脚本」,不是条件区此刻的样子;
