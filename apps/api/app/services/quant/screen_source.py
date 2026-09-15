@@ -1307,6 +1307,96 @@ plot scan = c_price and c_liq and c_trend and c_rs
 })
 
 
+# 2026-09-15 用户:「顶部信号和进场触发存成一个官方示例,合并一下,方便观察效果」+「一旦触发了信号 5 天之内都保存在选股器列表里」。
+# 规则是用户定的(连续收阳 · 小盘涨 80%+ · 逐日加速 · 几乎无阴线 · 递增放量 + 顶部天量 · 进场只在跌破前一日收盘),
+# 参数经 2022-01 ~ 2026-09 美股全市场验证后放宽四处(阴线 1 根 · 5 日涨幅 · 3 倍均量且 60 日天量 · 成交额 5000 万),
+# 结论与口径写在脚本注释里、仓内 CLAUDE.md「猎杀FOMO做空示例」节。
+#   · 列表条件用 `signal within keepDays + 1 bars`,**不要改成递归计数** daysSinceSignal <= 5:
+#     递归定义在热身期(信号算不出)是 NaN 并一路传下去,几千只从没出过信号的票会全部计入「算不出」。
+#   · 进场价只引用自己的上一根(IsNaN(entryPrice[1])),不引用别的递归定义当天的值 —— 不依赖引擎里递归定义之间的求值顺序。
+#   · 大小盘用 20 日均成交额代替市值:快照市值没有历史,时间回溯 / 悬停命中日里整批为空。
+PRESETS.append({
+    "key": "fomo_short",
+    "name": "猎杀FOMO做空",
+    "market": "us",
+    "desc": "散户狂热顶部:连续收阳 + 5 日暴涨(小盘 80% 起)+ 逐日加速 + 递增放量与 60 日天量。"
+            "信号出现后留在列表 5 天,stage 列看有没有跌破前一日收盘(= 进场),retSinceEntry 看进场后涨跌。"
+            "2022~2026 验证:跌破后第 5 天中位 -9.4%,样本少、须设止损。",
+    "script": """# ===== 猎杀FOMO 做空 · 顶部信号 + 5 天跟踪 =====
+# 收盘后扫描。列表 = 最近出过「散户狂热顶部」信号的票:信号当天起留 keepDays 天,方便看后续走势。
+# 顶部信号**不是进场点**。进场只有一个时机:之后盘中跌破前一日收盘价(看 stage 列)。
+#
+# 结果表里要看的列:
+#   daysSinceSignal  距信号第几天(0 = 今天刚出信号)
+#   signalClose      信号日收盘价
+#   stage            1 = 还没跌破前一日收盘,等;2 = 已跌破,进场
+#   entryPrice       进场价 = 第一次跌破那天的 min(开盘价, 前一日收盘)
+#   retSinceEntry    进场后到今天收盘的涨跌(负数 = 做空在赚)
+# 其余数值列(cumRet、amount 等)是**今天**的值,不是信号日的。
+#
+# 参数来自 2022-01 ~ 2026-09 美股全市场验证:信号次日跌破昨收进场,43 笔触发后第 5 天中位 -9.4%、
+# 72% 下跌、每一年中位都为负;没跌破昨收的信号之后 5 天中位 +16%(不跌破就别空)。
+# 样本少、有幸存者偏差、未计融券成本,5 天内最高价相对进场中位约 +17% —— 实际做空必须设止损。
+
+input lookback = 5;             # 看最近几根 K 线
+input minBullDays = 3;          # 连续阳线至少几天
+input maxBearInWindow = 1;      # 窗口内最多几根阴线
+input smallAmt = 20000000;      # 20 日均成交额低于它算小盘(没有历史市值,用成交额代替)
+input largeAmt = 200000000;     # 20 日均成交额高于它算大盘
+input minRetSmall = 0.80;       # 小盘:5 日至少涨多少
+input minRetMid = 0.50;         # 中盘
+input minRetLarge = 0.30;       # 大盘
+input volMult = 3;              # 顶部当天成交量至少是 20 日均量的几倍
+input minAmount = 50000000;     # 顶部当天成交额下限(美元)
+input keepDays = 5;             # 信号出现后在列表里留几天
+
+# ── 顶部信号 ──
+def isBull = close > open;
+def isBear = close < open;
+def bullStreak = if isBull then bullStreak[1] + 1 else 0;
+def bearCount = Sum(isBear, lookback);
+def cumRet = close / close[lookback] - 1;
+
+# 大小盘:20 日均成交额(不含今天)分三档,各档涨幅门槛不同
+def avgAmt = Average(close[1] * volume[1], 20);
+def needRet = if avgAmt < smallAmt then minRetSmall else if avgAmt < largeAmt then minRetMid else minRetLarge;
+
+# 加速:今天涨幅是窗口内最大且比昨天大;涨幅一天比一天大
+def ret = close / close[1] - 1;
+def maxRet = Highest(ret, lookback);
+def accel = ret >= maxRet and ret > ret[1];
+def rising = ret > ret[1] and ret[1] > ret[2];
+
+# 量:连续放大,顶部当天是 60 日天量且远超均量
+def volUp3 = volume > volume[1] and volume[1] > volume[2];
+def volMA20 = Average(volume[1], 20);
+def volHigh60 = Highest(volume, 60);
+def topVol = volume >= volHigh60 and volume > volMA20 * volMult;
+def amount = close * volume;
+
+def signal = bullStreak >= minBullDays
+    and bearCount <= maxBearInWindow
+    and cumRet >= needRet
+    and accel
+    and rising
+    and volUp3
+    and topVol
+    and amount >= minAmount;
+
+# ── 信号后跟踪 ──
+def daysSinceSignal = if signal then 0 else daysSinceSignal[1] + 1;
+def signalClose = if signal then close else signalClose[1];
+# 进场:信号之后第一次盘中跌破前一日收盘(低开就按开盘价成交)
+def entryPrice = if signal then Double.NaN
+    else if IsNaN(entryPrice[1]) and low < close[1] then (if IsNaN(open) then close[1] else Min(open, close[1]))
+    else entryPrice[1];
+def stage = if IsNaN(entryPrice) then 1 else 2;
+def retSinceEntry = close / entryPrice - 1;
+
+plot scan = signal within keepDays + 1 bars;
+""",
+})
+
 def preset(key: str) -> dict | None:
     for p in PRESETS:
         if p["key"] == key:
