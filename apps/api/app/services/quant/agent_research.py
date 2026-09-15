@@ -60,7 +60,8 @@ LINES: dict = {
     # 2026-09-13 用户给的「Patrick Walker Style Complete Strategy」完整脚本,取名「突破买入」。
     # 回测从 2025-09-12 起(用户要最近一年),比对照组(2026-01-02 起)多四个月 —— 回撤比较口径不同,研究台文案里写明
     "breakout": {
-        "label": "突破买入", "branches": ["breakout"], "best": "breakout",
+        # breakout3y(2026-09-15):同一套规则从 2023-09-15 起跑三年;回测关判定仍按一年的 breakout(best)
+        "label": "突破买入", "branches": ["breakout", "breakout3y"], "best": "breakout",
         "status": "backtest", "created_at": "2026-09-13",
         "hypothesis": "大盘向上时,整理得干净、振幅逐级收紧、量能干燥的强势股,放量站上前 21 日最高后会走出一段;加仓放大赢家,三种止损截断输家",
         "rules_draft": ("v14(2026-09-15)在 v13 上加财报风控:财报前 5 个交易日内不买不加仓;持仓离财报 2 个交易日时"

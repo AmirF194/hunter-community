@@ -1215,7 +1215,13 @@ def run_latest() -> dict:
     if not ctx.store["last"]:
         return {"ran": False, "reason": "还没有日线"}
     earn = _ensure_earnings(ctx.store["last"] - timedelta(days=14), ctx.store["last"])
-    out = run_date(ctx.store["last"], ctx)
+    # 一行都没有的方向不由每晚任务起步,要先 research-backfill(2026-09-15 加「突破买入 · 三年」时加的):
+    # 否则回填还没跑 / 中途失败时,每晚任务会让它从今天起步,三年那条的起点就被占了。全都没有行 = 全新安装,照常起步
+    started = set(_with_cur(lambda c: (c.execute("SELECT DISTINCT branch FROM agent_day"), [r[0] for r in c.fetchall()])[1]))
+    only = [b for b in BRANCHES if b in started] if started else None
+    if started and len(only) < len(BRANCHES):
+        log.info("[agent] 这些方向还没回填过,每晚任务不替它们起步:%s", [b for b in BRANCHES if b not in started])
+    out = run_date(ctx.store["last"], ctx, only)
     if earn is not None:
         out["earnings"] = earn
     out["research"] = research_evaluate()
@@ -1396,7 +1402,15 @@ def _main(argv=None) -> int:
             print(f"要 --line,且那条线得有方向:{[k for k, v in lines.items() if v['branches']]}")
             return 2
         start = date.fromisoformat(a.start) if a.start else date.fromisoformat(_with_cur(lambda c: _meta_get(c, "started")))
-        print(backfill(start, date.fromisoformat(a.end) if a.end else None, only=lines[a.line]["branches"]))
+        # --branch:一条线有几个方向、起点不同时只回填其中一个(2026-09-15 突破买入线加了三年方向,
+        # 不限定的话回填一年方向会连带把三年方向从 2025-09 起跑出行来,三年那条的起点就被占了)
+        only = lines[a.line]["branches"]
+        if a.branch:
+            if a.branch not in only:
+                print(f"--branch 要是这条线的方向之一:{only}")
+                return 2
+            only = [a.branch]
+        print(backfill(start, date.fromisoformat(a.end) if a.end else None, only=only))
         print(research_evaluate())
     elif a.cmd == "earnings":
         # 突破买入 v14:单独补拉财报日历(回填会自动补;这里给先拉好再回填、或排查某几天用)

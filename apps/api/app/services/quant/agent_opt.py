@@ -78,9 +78,14 @@ BRANCHES: dict = {
     "breakout": {"engine": "breakout", "label": "突破买入 · 基准",
                  "direction": "市场过滤 + Clean Simple Base 筛选 + 放量突破前 21 日最高 + 两次加仓 + 部分止盈 + 三种止损;规则固定",
                  "tunable": {}},
+    # 2026-09-15 用户:「新开一个方向『突破买入 · 三年』,保留现在的一年 v14 结果方便对比」。
+    # 同一个引擎、同一个池子(agent_watch_pool 的 breakout 行两个方向共用,算过的日子直接复用),只是从 2023-09-15 起跑
+    "breakout3y": {"engine": "breakout", "label": "突破买入 · 三年",
+                   "direction": "与「突破买入 · 基准」同一套规则(v14),回测从 2023-09-15 起跑三年,和一年结果对比",
+                   "tunable": {}},
 }
 # 方向键全局唯一(四张表按方向分行,不分研究线)。归属哪条研究线看 agent_research.LINES
-BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian", "breakout"]
+BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian", "breakout", "breakout3y"]
 
 
 def engine_of(branch: str):
