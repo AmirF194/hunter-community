@@ -2074,6 +2074,15 @@ VCP 迭代到 v3 效果一般,用户要保留成果、另起研究其他趋势�
    **每一天**都算,回测步骤合计 413 秒、每轮从头来。现在规则固定、不走优化器的研究线方向(`_lazy_ok`:不在 VCP 线、tunable 为空)
    改用 `Ctx.ind_at` 用到才算(观察列表 + 持仓);**VCP 线 / 可调参方向别改成按需** —— `ao.step` 的模拟器直接读整段缓存,缺键就当没指标,不报错。
    市场 / 板块 / 财报视图这些 `__` 开头的按日键仍由 `ensure_cache(per_code=False)` 提前放。
+   (ag) **研究数据落库复用(2026-09-15 用户:「计算出的通用数据统统保留……根本不需要全市场 4000 只,研究用的选股器扫到哪些就保留哪些的数据」)**。
+   `services/quant/agent_store.py` 两张表(幂等 DDL,单独连接 + 5 秒 lock_timeout):
+   `screen_hit_field(pool, trade_date, code, fields)` = 研究池那天命中票的选股器整行字段(原来 agent_watch_pool 只存代码 / 名称 / RS);
+   `agent_ind_cache(engine, ver, trade_date, code, ind)` = 引擎对这些票算出的指标(pickle + zlib)。四条别改坏:
+   ① **版本号 `ind_version()` = 算法基准号 `IND_BASE` + 指标里用到的参数哈希**。改参数自动换版本;**改 indicators / grade_features / supports /
+   vp_stats / accum 的算法必须手动改 `IND_BASE`**,否则读到旧算法的结果、不报错。
+   ② 读出的指标先 `valid`:当天收盘价和现在日线不一致(复权基准变了)就重算那一条,不拿旧基准价格和新基准的日子拼。
+   ③ 只存命中票,不存全市场:换选股条件时全市场照样要现算(不算不知道谁命中),这层只让「同一个研究反复重跑」变快。
+   ④ `_screen` 返回的 `ws["_hits"]` 必须在写 `agent_watch_pool.info` 之前 pop 掉(几百行、含 NaN,jsonb 不收);落库失败走 SAVEPOINT,不回滚当天事务。
    (d) 替用户做的决定写在引擎文件头(entryprice = 首笔价、完整仓位 = 总资产 20%、部分止盈每个持仓一次、
    止损 A 按最低价判断收盘价成交),**改之前先问用户**。回测关的回撤比较两边日期段不同(一年 vs 174 天),读结论时记住。
    筛选器里另存了用户的「即将突破」(用户 448b6300…):枢轴改 `vcp_pivot_dist`,**符号和用户原来的 pivot_dist 相反**

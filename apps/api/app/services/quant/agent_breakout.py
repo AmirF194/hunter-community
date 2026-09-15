@@ -331,6 +331,20 @@ RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Bas
 RULE_PARAM_KEY: dict = {}            # 规则固定,不进优化器
 
 
+# 指标落库(agent_store.agent_ind_cache)的版本。**改了 indicators / _core / pivot_zone / grade_features / supports /
+# vp_stats / accum 的算法,把基准号改掉**;指标里用到的参数值进哈希,改参数自动换版本、不会读到旧口径
+IND_BASE = "2026-09-15"
+IND_PARAM_KEYS = ("zone_lookback", "zone_depth", "zone_bin", "zone_keep", "zone_min_share", "extend", "vol_surge",
+                  "stop_atr", "stop_cap", "sup_look", "rej_close_pos", "key_vol")
+
+
+def ind_version(p: dict = PARAMS) -> str:
+    import hashlib
+    import json as _json
+    h = hashlib.md5(_json.dumps({k: p[k] for k in IND_PARAM_KEYS}, sort_keys=True).encode()).hexdigest()[:8]
+    return f"{IND_BASE}:{h}"
+
+
 def rules_for(p: dict = PARAMS) -> list[dict]:
     return [dict(r) for r in RULES]
 

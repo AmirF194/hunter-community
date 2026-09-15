@@ -45,6 +45,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from app.services.quant import agent_vcp as av, agent_opt as ao, agent_sim, commission as cm
+from app.services.quant import agent_store
 
 log = logging.getLogger(__name__)
 
@@ -237,8 +238,10 @@ def _screen(d: date, pool: str = PRESET) -> tuple[list, dict]:
     r = screen_source.run_script(_pool_script(pool), MARKET, _pool_limit(pool), "rs_rating", True, d)
     items = [[x["code"], x.get("name") or x["code"], x["fields"].get("rs_rating")] for x in r["picks"]]
     gate = next((w for w in r["warnings"] if "门槛" in w), None)
+    # 命中票当天选股器算出的整行字段:落 screen_hit_field(agent_store),以后分析 / 新规则直接查,不再回溯
+    hits = [(x["code"], x["fields"]) for x in r["picks"]]
     return items, {"matched": r["matched"], "scanned": r["scanned"], "skipped": r["skipped_incomplete"],
-                   "as_of": r["as_of"], "gate": gate}
+                   "as_of": r["as_of"], "gate": gate, "_hits": hits}
 
 
 def _stock_sharpe(bars: list[tuple], since: date) -> tuple[float | None, str | None]:
@@ -268,6 +271,9 @@ class Ctx:
         self.seen: dict = {}               # 引擎 → 已整段算过的代码
         self.earn = None                   # (代码 → 财报日列表, 拉取成功的日子);第一次用到时读库(突破买入 v14)
         self.bars_idx: dict = {}           # 代码 → (整段日线, 日期 → 下标);ind_at 按需算指标用
+        self.ind_store: dict = {}          # (引擎, 日期) → {代码: 上一轮落库的压缩指标}(agent_store.agent_ind_cache)
+        self.ind_new: dict = {}            # (引擎, 日期) → [(代码, 这一轮新算的指标)],当天跑完写库
+        self.ind_stat = {"reused": 0, "computed": 0, "stale": 0}
 
     def earnings_view(self, d: date, trade_days: list[date]):
         from app.services.quant import earnings_dates as ed
@@ -311,9 +317,39 @@ class Ctx:
             bi = self.bars_idx[code] = (bars, {b[0]: i for i, b in enumerate(bars)})
         bars, idx = bi
         i = idx.get(d)
+        # 先查库里上一轮存下的(agent_store.agent_ind_cache);收盘价对不上现在的日线(复权基准变了)就重算
+        stored = self.ind_store.get((eng_name, d))
+        blob = stored.get(code) if stored is not None and i is not None else None
+        if blob is not None:
+            v = agent_store.undump(blob)
+            if agent_store.valid(v, bars[i][1]):
+                cache[k] = v
+                self.ind_stat["reused"] += 1
+                return v
+            self.ind_stat["stale"] += 1
         v = ao.ENGINES[eng_name].indicators(bars[:i + 1], bench=self.store["bench"]) if i is not None else None
         cache[k] = v
+        self.ind_stat["computed"] += 1
+        if stored is not None and v is not None:
+            self.ind_new.setdefault((eng_name, d), []).append((code, v))
         return v
+
+    def preload_ind(self, cur, eng_name: str, d: date) -> None:
+        """这一天、这个引擎上一轮存下的指标先整批读进来(只读压缩数据,用到哪只解哪只)。引擎没有 ind_version 就不存不读。"""
+        fn = getattr(ao.ENGINES[eng_name], "ind_version", None)
+        if fn is None or (eng_name, d) in self.ind_store:
+            return
+        agent_store.ensure_tables()
+        self.ind_store[(eng_name, d)] = agent_store.load_day(cur, eng_name, fn(), d)
+
+    def flush_ind(self, cur, d: date) -> int:
+        """把这一天新算的指标写库,读进来的压缩数据用完就丢(回填三年时别一直攒在内存里)。"""
+        n = 0
+        for (en, dd) in [x for x in self.ind_new if x[1] == d]:
+            n += agent_store.save_inds(cur, en, ao.ENGINES[en].ind_version(), dd, self.ind_new.pop((en, dd)))
+        for x in [x for x in self.ind_store if x[1] == d]:
+            self.ind_store.pop(x)
+        return n
 
     def ensure_cache(self, dates: list[date], pool: dict, engine_names: list[str] | None = None, per_code: bool = True):
         """指标缓存按 (code, date) 增量补:每只票从首次进池那天起到最后一天。只算 engine_names 这几个引擎(各池各算)。
@@ -419,6 +455,17 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
             except Exception as e:                                    # noqa: BLE001
                 log.exception("[agent] %s 观察列表扫描失败(池 %s)", d, pool_key)
                 items, ws, scan_ok = [], {"error": str(e)[:200]}, False
+            # 命中票的整行字段单独落 screen_hit_field;先从 ws 拿出来,别塞进 info(几百行、还可能有 NaN,jsonb 不收)
+            hits = ws.pop("_hits", None)
+            if hits:
+                agent_store.ensure_tables()
+                cur.execute("SAVEPOINT hit_fields")       # 失败只撤这一步,不回滚当天整条事务
+                try:
+                    agent_store.save_hits(cur, pool_key, d, hits)
+                    cur.execute("RELEASE SAVEPOINT hit_fields")
+                except Exception:                                     # noqa: BLE001
+                    log.exception("[agent] %s 命中字段落库失败(池 %s),不影响当天运行", d, pool_key)
+                    cur.execute("ROLLBACK TO SAVEPOINT hit_fields")
             if pool_key == PRESET:
                 cur.execute("INSERT INTO agent_watch (trade_date, items, info) VALUES (%s, %s, %s) "
                             "ON CONFLICT (trade_date) DO UPDATE SET items=EXCLUDED.items, info=EXCLUDED.info",
@@ -456,6 +503,8 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
             ctx.ensure_cache(dates, pooled[pool_key], eager)
         if lazy:
             ctx.ensure_cache(dates, pooled[pool_key], lazy, per_code=False)
+    for en in lazy_engs:                    # 上一轮存下的指标先读进来,ind_at 用得上就不重算(agent_store)
+        ctx.preload_ind(cur, en, d)
 
     out = {"date": str(d), "ran": True, "branches": {}}
     for branch in todo:
@@ -560,12 +609,23 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
                      res["halt_reason"], res["consec_losses"], json.dumps(opt, default=str)))
         _meta_set(cur, f"cash:{branch}", res["cash"])
         out["branches"][branch] = {"equity": round(res["equity"]), "fills": len(fills), "opt": opt["action"], "v": st["version"]}
+    # 这一天新算的指标写库(agent_store);失败只撤这一步,当天的回测结果照常提交
+    n_saved = 0
+    cur.execute("SAVEPOINT ind_cache")
+    try:
+        n_saved = ctx.flush_ind(cur, d)
+        cur.execute("RELEASE SAVEPOINT ind_cache")
+    except Exception:                                                 # noqa: BLE001
+        log.exception("[agent] %s 指标落库失败,不影响当天运行", d)
+        cur.execute("ROLLBACK TO SAVEPOINT ind_cache")
     if _meta_get(cur, "state") is None:
         _meta_set(cur, "state", "running")
     conn.commit()
     cur.close()
     conn.close()
-    log.info("[agent] %s 跑完 %s · 观察 %s · %.1fs", d, out["branches"], {k: len(v[d]) for k, v in pooled.items()}, time.time() - t0)
+    log.info("[agent] %s 跑完 %s · 观察 %s · 指标 复用 %d / 现算 %d / 失效重算 %d · 落库 %d · %.1fs", d, out["branches"],
+             {k: len(v[d]) for k, v in pooled.items()}, ctx.ind_stat["reused"], ctx.ind_stat["computed"],
+             ctx.ind_stat["stale"], n_saved, time.time() - t0)
     return out
 
 
