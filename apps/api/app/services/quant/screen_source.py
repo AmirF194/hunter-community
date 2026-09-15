@@ -761,7 +761,14 @@ def _run_series(c: Compiled, md: MarketDef, market_key: str, has_field, limit: i
 
     t1 = time.time()
     if codes:
-        res = screen_series.evaluate(c, bars, snap_arr)
+        # 快照列先铺成和 K 线同形的 (N, W) 再交给引擎。screen_series 的 name() 把 (N,) 原样返回,
+        # and / or / 比较 / 四则直接走 numpy 广播:(N,) 对 (N, W) 会沿「列」方向广播 ——
+        # N≠W(线上常态:几千只 × 几根)直接 ValueError,整次扫描 500;N==W 时静默错位(第 j 只票的市值用在第 j 根 K 线上)。
+        # 例:`def up = close > close[1]; plot scan = up and market_cap_basic > 1e9;`(tests/test_screen_series_run.py)
+        # snap_arr 本身保持 (N,),下面统计「缺哪个字段」按行取值要用
+        w = bars["close"].shape[1]
+        snap_eval = {f: (None if a is None else np.repeat(a[:, None], w, axis=1)) for f, a in snap_arr.items()}
+        res = screen_series.evaluate(c, bars, snap_eval)
         verdict, last = res["verdict"], res["last"]
     else:
         verdict, last = np.zeros(0), {}
@@ -841,6 +848,9 @@ def _run_series(c: Compiled, md: MarketDef, market_key: str, has_field, limit: i
             warnings.append(
                 f"日线里的开盘价还没补齐:{as_of_actual} 这天 {len(codes)} 只里只有 {have} 只有开盘价"
                 f"(开盘价 2026-09-15 起入库,老行要等每晚整窗重拉之后才有)。用到 open 的条件在其余票上「算不出」,不是「不满足」。")
+    if sort_note:
+        # 原来只算了 sort_note 没加进 warnings:按市值排序的请求被静默改成按收盘价排,用户以为看到的还是按市值排的
+        warnings.append(sort_note)
     if md.note:
         warnings.append(md.note)
     for n in plan.notes:

@@ -563,6 +563,15 @@ plot 是裸名字就只有一项。现在 plot 只写一个名字、那条 def �
 官方示例跨层用例 `tests/test_screen_xlayer_official.py` + `strategies/xlayer_build.js`(真实前端回写 → 真实后端判定,三步命令见文件头)。
 render_check 的「数据源过滤」会读 `../../../api/app/services/quant/screen_source.py`,**打包到服务器跑时要带上这个文件并保持目录结构**
 (`tar -C apps web/public/strategies api/app/services/quant/screen_source.py`,在 `web/public/strategies` 里跑)。
+同一轮后端补测(`test_screen_router.py` 78 条 · `test_screen_saved.py` 54 条 · `test_screen_hits.py` 第 3 组 21 条 · `test_screen_series_run.py` 37 条)
+又实跑出两个线上问题,修在 `screen_source._run_series`:
+- **时间序列脚本里混用快照字段(`up and market_cap_basic > 1e9`)整次扫描 500**:引擎 `name()` 把快照列按 (N,) 原样返回,
+  and / or / 比较走 numpy 广播,(N,) 对 (N, W) 沿「列」对齐 —— 只数 ≠ 窗口根数就 ValueError,**恰好相等时静默错位**。
+  现在调用引擎前铺成 (N, W)。以后给引擎喂任何按票一个值的数组都要先铺开(用例测了只数 <、=、> 窗口根数三种)。
+- **时间序列模式把排序字段换成收盘价却不提示**:`sort_note` 算了没进 warnings。
+- 没改、要知道的:三值逻辑下 `if close > close[1] then s[1] + 1 else 0` 在窗口第 0 根没有前一根 → 算不出,之后没遇到 else 就一直算不出;
+  一路上涨、从未收跌的票连续计数给「算不出」。这是第 2 条(NaN 不当 false)的直接后果,真实数据里几乎只影响次新股;要改先和用户定口径。
+路由测试挂的是假登录与假额度,**没覆盖真实 auth 中间件与额度 SQL**。
 用例:`test_screen_series.py` G 组 26 条;`render_check.js`「条件宿主」13 条。
 
 ## 部署坑:`apps/web/public/**` **新增**文件要 `restart web`,改动文件不用

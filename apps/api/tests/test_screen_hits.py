@@ -63,6 +63,133 @@ for trial in range(30):
     check(f"Raw 逐位一致 · 第 {trial} 组", a == b, f"{a!r} vs {b!r}")
 check("不足 253 根 → None", sh.raw_at([10.0] * 300, 251) is None and rh.rs_raw_exact([10.0] * 252) is None)
 
+# ── 3. 时间序列脚本的命中日(_hit_days_series)与全市场扫描同口径 ─────────
+# 「表里命中的票,图上最后一天必有蓝线」:扫描走 bars_matrix(截 plan.window 根)+ evaluate,
+# 命中日走整段历史 + evaluate。两边任何一处窗口差一根,所有命中日整体平移一天,且不报错。
+from bisect import bisect_right  # noqa: E402
+from datetime import date as _date, timedelta as _td  # noqa: E402
+
+import numpy as np  # noqa: E402
+from app.services.quant import screen_dsl as sd, screen_series as sser  # noqa: E402
+
+_SMA = [5, 10, 20, 50, 200]
+_FIELDS = {"close", "open", "high", "low", "volume", "market_cap_basic"} | {f"SMA{n}" for n in _SMA}
+_has = lambda n: n in _FIELDS  # noqa: E731
+NL = chr(10)
+
+
+def _comp(script):
+    c = sd.compile_script(script, _has, _SMA, _SMA, [14])
+    assert c.series is not None, script
+    return c
+
+
+_DAYS: list = []
+_d = _date(2025, 11, 3)
+while len(_DAYS) < 90:
+    if _d.weekday() < 5:
+        _DAYS.append(_d)
+    _d += _td(days=1)
+
+
+def _bars(close, open_=None):
+    c = np.array(close, dtype=float)
+    o = np.array(open_, dtype=float) if open_ is not None else c * 0.99
+    return np.column_stack([c, c * 1.01, c * 0.98, np.full(len(c), 1e6), o])
+
+
+_n = len(_DAYS)
+jump = [10.0] * _n
+for _i in range(40, _n):
+    jump[_i] = 20.0
+nan_c = [10.0 + 0.1 * i for i in range(_n)]
+for _i in (60, 61, 62):
+    nan_c[_i] = float("nan")
+rnd2 = random.Random(915)
+zig = [10.0]
+for _ in range(_n - 1):
+    zig.append(max(1.0, zig[-1] * (1 + rnd2.gauss(0, 0.02))))
+zig_open = [x * (1 + rnd2.choice([-0.01, 0.01])) for x in zig]
+_store = {"codes": {
+    "JUMP": (list(_DAYS), _bars(jump)),
+    "NANS": (list(_DAYS), _bars(nan_c)),
+    "ZIG": (list(_DAYS), _bars(zig, zig_open)),
+    "LATE": (list(_DAYS[30:]), _bars(zig[30:], zig_open[30:])),          # 次新:第 30 天才上市
+    "UP": (list(_DAYS), _bars([10.0 + i for i in range(_n)])),
+}}
+
+J_SCRIPT = "plot scan = close > close[1] * 1.5;"
+c_jump = _comp(J_SCRIPT)
+dates_j, arr_j = _store["codes"]["JUMP"]
+out = sh._hit_days_series(c_jump, dates_j, arr_j, len(dates_j), 250, dates_j[-1], "JUMP", "us")
+check("⭐ 只在第 40 天跳涨 → 命中日恰好是那一天(差一根就会报成前一天或后一天)",
+      out["hits"] == [str(_DAYS[40])], out["hits"])
+check("整段 90 根 · evaluated=90、from=第一天、to=截止日", out["evaluated"] == 90 and out["from"] == str(_DAYS[0])
+      and out["to"] == str(_DAYS[-1]), (out["evaluated"], out["from"], out["to"]))
+out = sh._hit_days_series(c_jump, dates_j, arr_j, 45, 10, dates_j[44], "JUMP", "us")
+check("截到第 45 根、看 10 天 → from=第 35 天、仍命中第 40 天", out["from"] == str(_DAYS[35]) and out["hits"] == [str(_DAYS[40])]
+      and out["evaluated"] == 10 and out["to"] == str(_DAYS[44]), out)
+out = sh._hit_days_series(c_jump, dates_j, arr_j, 40, 10, dates_j[39], "JUMP", "us")
+check("⭐ 截到跳涨前一天(k_end=40)→ 不许看到第 40 天(不泄漏未来)", out["hits"] == [], out["hits"])
+out = sh._hit_days_series(c_jump, dates_j, arr_j, 41, 1, dates_j[40], "JUMP", "us")
+check("截到跳涨当天、只看 1 天 → 最后一天命中", out["hits"] == [str(_DAYS[40])] and out["evaluated"] == 1, out)
+
+c_up = _comp("plot scan = close > close[1];")
+dn, an = _store["codes"]["NANS"]
+out = sh._hit_days_series(c_up, dn, an, 70, 15, dn[69], "NANS", "us")
+check("⭐ 第 60~62 天收盘缺失 → 60/61/62/63 四天算不出(63 要用 62 的收盘)", out["unknown"] == 4, out)
+check("缺失那几天不算命中,其余 11 天都命中", len(out["hits"]) == 11 and str(_DAYS[60]) not in out["hits"]
+      and str(_DAYS[63]) not in out["hits"] and str(_DAYS[64]) in out["hits"], out["hits"])
+check("有算不出的天 → note 里写明天数", out["note"] and "4 天算不出" in out["note"], out["note"])
+dz, az = _store["codes"]["ZIG"]
+out = sh._hit_days_series(c_up, dz, az, len(dz), 250, dz[-1], "ZIG", "us")
+check("第 0 根没有前一根 → 算不出 1 天(不当成没命中)", out["unknown"] == 1, out["unknown"])
+
+c_snap = _comp("def up = close > close[1];" + NL + "plot scan = up and market_cap_basic > 1;")
+out = sh._hit_days_series(c_snap, dz, az, len(dz), 30, dz[-1], "ZIG", "us")
+ups = sum(1 for i in range(len(dz) - 30, len(dz)) if az[i, 0] > az[i - 1, 0])
+check("⭐ 用到快照字段 · 上涨的天算不出、下跌的天不满足、0 命中", out["hits"] == [] and out["unknown"] == ups,
+      (out["unknown"], ups))
+check("用到快照字段 · unavailable 点名、note 说明没有历史", out["unavailable"] == ["market_cap_basic"]
+      and "没有历史" in (out["note"] or ""), (out["unavailable"], out["note"]))
+
+# 与全市场扫描逐日逐票对照
+CONSIST = {
+    "偏移": "plot scan = close > close[1];",
+    "窗口": "def hi = Highest(high[1], 10);" + NL + "plot scan = close > hi * 0.99;",
+    # 光写 close > open 是横截面脚本(不进序列引擎),要带一个序列写法
+    "开盘": "def g = if close > open then 1 else 0;" + NL + "plot scan = g > 0;",
+    "递归连阳": "def s = if close > open then s[1] + 1 else 0;" + NL + "plot scan = s >= 2;",
+    "input+rec+宿主": NL.join(["input n = 3;", "input k = 2;",
+                             "rec g = if close > close[1] then g[1] + 1 else 0;",
+                             "def ret = close / close[n] - 1;",
+                             "def Setup = g >= k and ret > 0 and close > Average(close, 5);",
+                             "plot scan = Setup;"]),
+}
+for label, script in CONSIST.items():
+    c = _comp(script)
+    bad = []
+    n_hit = n_unk = 0
+    for d in _DAYS[-25:]:
+        codes, bars_m, _short = sser.bars_matrix(_store, d, c.series.window)
+        res = sser.evaluate(c, bars_m, {})
+        for code, v in zip(codes, res["verdict"]):
+            dates, arr = _store["codes"][code]
+            k_end = bisect_right(dates, d)
+            one = sh._hit_days_series(c, dates, arr, k_end, 1, d, code, "us")
+            if v != v:
+                n_unk += 1
+                ok = one["unknown"] == 1 and one["hits"] == []
+            elif v:
+                n_hit += 1
+                ok = one["hits"] == [str(d)]
+            else:
+                ok = one["hits"] == [] and one["unknown"] == 0
+            if not ok:
+                bad.append((code, str(d), v, one["hits"], one["unknown"]))
+    check(f"⭐ 扫描与命中日同口径 · {label}(25 天 × 5 只:命中 {n_hit} / 算不出 {n_unk})", not bad, bad[:4])
+    check(f"对照用例确实测到了东西 · {label}(有命中也有不命中)", n_hit > 0 and n_hit < 25 * 5, n_hit)
+
 print(f"{passed} passed, {len(fails)} failed")
 for x in fails:
     print("FAIL", x)
