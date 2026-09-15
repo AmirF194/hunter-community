@@ -647,11 +647,12 @@ function vCond(c, i) {
     (S.editing === c.name
       ? '<div class="cd-editbox">' +
           '<textarea class="cd-edit" id="cd-edit" spellcheck="false">' +
-            esc(S.editText != null ? S.editText : c.expr) + '</textarea>' +
+            esc(S.editText != null ? S.editText : withParams(c.expr)) + '</textarea>' +
           '<div class="cd-editbar">' +
             '<button class="btn small" id="cd-save">保存</button>' +
             '<button class="btn small" id="cd-cancel">取消</button>' +
             '<span class="sc-note" style="margin:0">写原始表达式,分号不用写 · ' +
+            (/\(/.test(withParams(c.expr)) && withParams(c.expr) !== c.expr ? '参数(括号里的数)直接改,保存后所有用到它的条件一起生效 · ' : '') +
             'Ctrl/Cmd + Enter 保存 · Esc 取消</span>' +
           '</div>' +
         '</div>'
@@ -1475,20 +1476,79 @@ async function commitEdit(text) {
   // 先留一份原样:写错的表达式不能把原条件冲掉(2026-09-14 执行用例 GN-026 发现 ——
   // 原来 c.expr 直接换成新写法再解析,解析失败只报错,条件区里留着一行坏表达式,之后的单条测试 / 运行全挂)
   const snapshot = S.conditions.map(function (o) { return Object.assign({}, o) })
-  const next = (text || '').trim().replace(/;+$/, '')
-  c.expr = next
+  // raw = 用户在框里看到并改过的原文(带参数值);失败时原样还给他,不能还一份把参数值剥掉的
+  const raw = (text || '').trim().replace(/;+$/, '')
+  const pp = applyParams(raw)
+  if (pp.err) { toast(pp.err, 'warn'); S.editText = raw; render(); return }
+  const changed = []
+  Object.keys(pp.changes).forEach(function (n) {
+    const inp = S.conditions.filter(function (o) { return o.kind === 'input' && o.name === n })[0]
+    if (inp && String(inp.expr).trim() !== pp.changes[n]) { inp.expr = pp.changes[n]; changed.push(n) }
+  })
+  c.expr = pp.text
   S.editing = null
   S.editText = null
   S.genError = null
   // 改完表达式可能把某个变量的最后一个引用去掉了 → rebuild 里会清孤儿
   await rebuild()
   if (S.genError) {
-    // 解析失败:恢复原条件,编辑框留着刚才写的内容,报错照常显示,用户改完再提交
+    // 解析失败:恢复原条件(参数值一起恢复),编辑框留着刚才写的内容,报错照常显示,用户改完再提交
     S.conditions = snapshot
     S.editing = c.name
-    S.editText = next
+    S.editText = raw
     render()
+  } else if (changed.length) {
+    // 参数是整份脚本共用的:改一处,别的条件里同名参数也变了 —— 必须说,不说用户会以为只改了这一条
+    toast(changed.map(function (n) {
+      const users = S.conditions.filter(function (o) { return o.kind !== 'input' && paramRe(n).test(o.expr || '') }).length
+      return '参数 ' + n + ' 改成 ' + pp.changes[n] + (users > 1 ? ',用到它的 ' + users + ' 处一起生效' : '')
+    }).join(';'), 'ok')
   }
+}
+
+// ─── 编辑框里的参数值(2026-09-15 用户)───────────────────────────────
+// 条件行显示 `minTotalReturn(0.80)`,点 ✎ 编辑框里原来只有 `minTotalReturn` —— 数字不见了,
+// 用户看不到也改不了阈值。编辑框因此显示成「参数名(当前值)」;保存时括号里的值写回那条 input、表达式里还原成参数名,
+// 脚本本身始终是合法 ThinkScript(`minTotalReturn(0.8)` 在 ThinkScript 里是函数调用,不能留在脚本里)。
+// 只认本脚本 input 的名字、整词匹配(`minStreak` 不会命中 `minStreak2` / `x.minStreak`),已经带 `(` / `[` 的不重复包
+function paramRe(n, tail) {
+  return new RegExp('(^|[^A-Za-z0-9_.])(' + String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')' + (tail || '(?![A-Za-z0-9_.])'), 'g')
+}
+function inputVals() {
+  const m = {}
+  S.conditions.forEach(function (c) { if (c.kind === 'input' && c.expr != null) m[c.name] = String(c.expr).trim() })
+  return m
+}
+function withParams(expr) {
+  const vals = inputVals()
+  let out = String(expr == null ? '' : expr)
+  Object.keys(vals).forEach(function (n) {
+    out = out.replace(paramRe(n, '(?![A-Za-z0-9_.(\\[])'), function (_, pre, nm) { return pre + nm + '(' + vals[n] + ')' })
+  })
+  return out
+}
+const PARAM_VAL = /^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|yes|no|true|false)$/i
+function applyParams(text) {
+  const vals = inputVals()
+  const changes = {}
+  let err = null
+  let out = String(text == null ? '' : text)
+  Object.keys(vals).forEach(function (n) {
+    out = out.replace(paramRe(n, '\\s*\\(([^()]*)\\)'), function (all, pre, nm, v) {
+      v = v.trim()
+      if (!PARAM_VAL.test(v)) {
+        err = err || ('参数 ' + nm + ' 括号里只能填数字(或 yes / no),这里是「' + v + '」')
+        return all
+      }
+      if (changes[nm] != null && changes[nm] !== v) {
+        err = err || ('参数 ' + nm + ' 在这一条里填了两个不同的值(' + changes[nm] + ' 和 ' + v + '),参数是整份脚本共用的,只能有一个值')
+        return all
+      }
+      changes[nm] = v
+      return pre + nm
+    })
+  })
+  return { text: out, changes: changes, err: err }
 }
 
 // ─── 会员校验与额度(2026-09-14 用户定)──────────────────────────────

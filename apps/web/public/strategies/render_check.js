@@ -926,6 +926,60 @@ try {
   console.log('FAIL 条件行=plot项定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 筛选器 · 编辑框里的参数值(2026-09-15)────────────────────────────────
+// 用户截图:条件行显示 totalReturn 大于等于 minTotalReturn(0.80),点 ✎ 编辑框里只有 `totalReturn >= minTotalReturn`,
+// 阈值看不到也改不了。编辑框要带「参数名(当前值)」,保存时值写回 input、脚本里还原成参数名
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  inlineScripts(sc).forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    applyParsed({
+      combine: 'all', plot_name: 'scan', term_host: 'FOMO_Setup', plot_refs: [], plot_order: ['FOMO_Setup#1', 'FOMO_Setup#2'],
+      conditions: [
+        { name: 'minTotalReturn', expr: '0.80', kind: 'input', is_bool: false, tokens: [{ k: 'num', t: '0.80', s: 0, e: 4 }] },
+        { name: 'minStreak', expr: '3', kind: 'input', is_bool: false, tokens: [{ k: 'num', t: '3', s: 0, e: 1 }] },
+        { name: 'minStreak2', expr: '5', kind: 'input', is_bool: false, tokens: [{ k: 'num', t: '5', s: 0, e: 1 }] },
+        { name: 'FOMO_Setup#1', title: 'totalReturn', expr: 'totalReturn >= minTotalReturn', kind: 'term', is_bool: true, tokens: [{ k: 'ref', t: 'totalReturn' }] },
+        { name: 'FOMO_Setup#2', title: 'greenStreak', expr: 'greenStreak >= minStreak and greenStreak < minStreak2 * minStreak', kind: 'term', is_bool: true, tokens: [{ k: 'ref', t: 'greenStreak' }] },
+      ],
+    })
+    S.editing = 'FOMO_Setup#1'
+    var EP_HTML = vConditions()
+    var EP_W = [withParams('totalReturn >= minTotalReturn'), withParams('greenStreak >= minStreak and greenStreak < minStreak2 * minStreak'),
+                withParams('x.minStreak > 1 and minStreak[1] > 0 and minStreak(3) > 0'), withParams('close > 10')]
+    var EP_A = applyParams('totalReturn >= minTotalReturn(0.9)')
+    var EP_B = applyParams('greenStreak >= minStreak( 4 ) and greenStreak < minStreak2(6) * minStreak')
+    var EP_C = applyParams('greenStreak >= minStreak(4) and greenStreak < minStreak(5)')
+    var EP_D = applyParams('totalReturn >= minTotalReturn(close)')
+    var EP_E = applyParams('totalReturn >= Average(close, 20)')
+    var EP_RT = applyParams(withParams('greenStreak >= minStreak and greenStreak < minStreak2 * minStreak'))
+  `, ctx, { filename: 'assert-edit-params' })
+  const html = String(ctx.EP_HTML)
+  const W = ctx.EP_W, A = ctx.EP_A, B = ctx.EP_B, C = ctx.EP_C, D = ctx.EP_D, E = ctx.EP_E, RT = ctx.EP_RT
+  const ep = [
+    ['⭐编辑框里带参数当前值', /<textarea class="cd-edit" id="cd-edit" spellcheck="false">totalReturn &gt;= minTotalReturn\(0\.80\)<\/textarea>/.test(html)],
+    ['编辑框提示参数可直接改', /参数\(括号里的数\)直接改/.test(html)],
+    ['同一个参数出现两次都带值', W[1] === 'greenStreak >= minStreak(3) and greenStreak < minStreak2(5) * minStreak(3)'],
+    ['整词匹配:x.minStreak / minStreak[1] / 已带括号的不动', W[2] === 'x.minStreak > 1 and minStreak[1] > 0 and minStreak(3) > 0'],
+    ['没有参数的表达式原样', W[3] === 'close > 10'],
+    ['⭐保存:括号里的值写回参数,表达式还原成参数名', A.text === 'totalReturn >= minTotalReturn' && A.changes.minTotalReturn === '0.9' && !A.err],
+    ['保存:括号里有空格 / 两个参数 / 没带括号的同名参数', B.text === 'greenStreak >= minStreak and greenStreak < minStreak2 * minStreak' && B.changes.minStreak === '4' && B.changes.minStreak2 === '6' && !B.err],
+    ['同一参数两个不同值 → 报错不保存', !!C.err && /两个不同的值/.test(C.err)],
+    ['括号里不是数字 → 报错不保存', !!D.err && /只能填数字/.test(D.err)],
+    ['真正的函数调用不受影响', E.text === 'totalReturn >= Average(close, 20)' && !Object.keys(E.changes).length && !E.err],
+    ['不改值原样往返', RT.text === 'greenStreak >= minStreak and greenStreak < minStreak2 * minStreak' && RT.changes.minStreak === '3' && RT.changes.minStreak2 === '5' && !RT.err],
+  ]
+  for (const [name, ok] of ep) {
+    if (ok) console.log('PASS 编辑框参数值 ·', name)
+    else { failed++; console.log('FAIL 编辑框参数值 ·', name, ' | ', JSON.stringify({ W, A, B, C, D, E, RT }), html.slice(html.indexOf('cd-edit"'), html.indexOf('cd-edit"') + 160)) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 编辑框参数值定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 筛选器 · 条件宿主(2026-09-15)──────────────────────────────────────
 // 用户第二份猎杀 FOMO:`def FOMO_Setup = a and b … and isGreen; plot scan = FOMO_Setup;`,界面显示「同时满足 1 个条件」
 // 一整行,和脚本里写明的 7 个条件对不上。后端 term_host 把宿主的 and 项拆成条件行;前端回写必须按原结构

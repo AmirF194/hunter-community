@@ -532,6 +532,13 @@ plot 是裸名字就只有一项。现在 plot 只写一个名字、那条 def �
 全停用写 `false` —— 把条件搬进 plot 虽然等价,用户复制回 thinkorswim 就和他粘进来的不一样了。
 宿主被别的 def 引用(它是中间量)、只有一项、顶层是 or / if 时**不展开**,用例 G 组各有反例。横截面脚本同样适用。
 同一轮顺带:提示条里的 `**重点**` 原来原样显示星号,前端 `warnHtml` 先转义再换粗体。
+
+**第 7 条 · 编辑框里的参数值(2026-09-15 用户截图)**:条件行显示 `minTotalReturn(0.80)`(参数带当前值,第 4 条),点 ✎ 编辑框里却只有
+`totalReturn >= minTotalReturn` —— 阈值看不到也改不了。**凡是界面显示成「参数名(值)」的地方,编辑入口必须同样带值**:
+编辑框用 `withParams` 显示 `minTotalReturn(0.80)`(值取那条 input 的原文,和条件行一致);保存走 `applyParams`:
+括号里的值写回 input、表达式还原成参数名(`minTotalReturn(0.8)` 在 ThinkScript 里是函数调用,**不能留在脚本里**)。
+只认本脚本 input 的名字、整词匹配;括号里不是数字、同一参数填两个不同值 → 报错不保存;解析失败时编辑框还给用户**带值的原文**;
+改了共用参数要 toast 说「用到它的 N 处一起生效」。render_check「编辑框参数值」11 条。
 用例:`test_screen_series.py` G 组 26 条;`render_check.js`「条件宿主」13 条。
 
 ## 部署坑:`apps/web/public/**` **新增**文件要 `restart web`,改动文件不用
