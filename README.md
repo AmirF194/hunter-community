@@ -18,6 +18,12 @@
 **对话 · 持仓 · 投资记忆体都在你磁盘 · 数据供给三选一(免费源 / 自接工具 / 平台管道)· 5 分钟跑起来**
 *Chat / positions / thesis on your disk · pick your data supply — free sources, bring-your-own tools, or Hunter data pipeline*
 
+> **HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案。**<br>
+> 推理在你机器上跑 · 仓位不出你硬盘 · 模型和因子由你自己定义 · 面向私募与专业个人投资者<br>
+> [与 WorkBuddy 金融版逐项对比(附官方来源)](https://www.agentpit.io/compare/workbuddy) · 🏆 入围世界人工智能开源大赛(GOAI)总决赛 · 赛道二 TOP 15
+
+<sub>腾讯、WorkBuddy 是腾讯公司的商标。HunterCode 与腾讯公司无隶属、合作或授权关系。</sub>
+
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue)](./LICENSE)
 [![CI](https://github.com/agentpit-io/hunter-community/actions/workflows/ci.yml/badge.svg)](https://github.com/agentpit-io/hunter-community/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/ghcr.io-agentpit--io-blue)](https://github.com/agentpit-io/hunter-community/pkgs/container/hunter-community-api)

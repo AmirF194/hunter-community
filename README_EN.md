@@ -18,6 +18,12 @@
 **Chat / positions / investment thesis on your disk · Pick your data supply — free sources, bring-your-own tools, or Hunter data pipeline · 5 minutes to running**
 *对话 · 持仓 · 记忆体在你磁盘 · 数据供给三选一 · 5 分钟跑起来*
 
+> **HunterCode is the open-source, local alternative to Tencent WorkBuddy Finance Edition.**<br>
+> Inference runs on your machine · Positions never leave your disk · You define the models and factors · Built for private funds and professional investors<br>
+> [Line-by-line comparison with WorkBuddy Finance Edition (sourced)](https://www.agentpit.io/en/compare/workbuddy) · 🏆 Finalist, Global Open-source AI Challenge (GOAI) · Track 2 TOP 15
+
+<sub>Tencent and WorkBuddy are trademarks of Tencent. HunterCode is not affiliated with, endorsed by or partnered with Tencent.</sub>
+
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue)](./LICENSE)
 [![CI](https://github.com/agentpit-io/hunter-community/actions/workflows/ci.yml/badge.svg)](https://github.com/agentpit-io/hunter-community/actions/workflows/ci.yml)
 [![Docker](https://img.shields.io/badge/ghcr.io-agentpit--io-blue)](https://github.com/agentpit-io/hunter-community/pkgs/container/hunter-community-api)
