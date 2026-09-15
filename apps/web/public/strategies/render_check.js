@@ -316,10 +316,12 @@ try {
       // 历史交易记录:第一笔是加过两次仓的(3 腿),第二笔是干净的一买一卖
       history:{fee_note:'手续费按阶梯式(当月累计 ≤30 万股 0.0035 美元/股…)买卖各收一次',
         scope_note:'这一列只进这张表 —— 上面的总览、净值曲线、胜率仍是引擎的零费用口径',
+        layers:{pool:'进候选池', setup:'形态就绪', setup_note:'P-02~P-05 + P-22 全过', entry:'买入条件全满足'},
         fee_total:1.98, pnl_gross_total:149.14, pnl_net_total:147.16, items:[
         {no:19, symbol:'ARMK', name:'ARMK', side:'long', entry_date:'2026-08-11', exit_date:'2026-08-25',
          shares:232, amount:14134.64, pnl_abs:-265.34, pnl_pct:-1.88, pnl_gross:-263.36, fee:1.9775, grade:'A',
          scan_dates:['2026-08-06','2026-08-07','2026-08-10'], grade:'A',
+         setup_dates:['2026-08-07','2026-08-10'], entry_dates:['2026-08-11'],
          hold_days:10, adds:2, legs:[
            {kind:'entry', date:'2026-08-11', rule_id:'R-04', rule_name:'VCP 突破买入', price:60.47, shares:133,
             rationale:'收盘 $60.47 突破前 20 日高点 $59.90 1.0%(<5%,未追高);量能 2.1 倍 50 日均量。'+
@@ -546,7 +548,13 @@ try {
     ['标记里有扫描命中日', /&quot;scan&quot;:\[&quot;2026-08-06&quot;/],
     ['标记里有买入日', /&quot;buy&quot;:\[&quot;2026-08-11&quot;,&quot;2026-08-13&quot;\]/],
     ['标记里有卖出日', /&quot;sell&quot;:\[&quot;2026-08-25&quot;\]/],
-    ['脚注说明了三种标记各是什么', /蓝色竖带<\/span>是扫描筛选命中的那些天/]]
+    // 2026-09-15:蓝线分三层(用户问「为什么每个都显示命中了很多天」—— 原来只有「进候选池」一层)
+    ['标记里有形态就绪日', /&quot;setup&quot;:\[&quot;2026-08-07&quot;,&quot;2026-08-10&quot;\]/],
+    ['标记里有买入条件全满足日', /&quot;entry&quot;:\[&quot;2026-08-11&quot;\]/],
+    ['候选池那层标成淡色(scanWeak)并写明名字', /&quot;scanLabel&quot;:&quot;进候选池&quot;,&quot;scanWeak&quot;:true/],
+    ['脚注:淡蓝是候选池、不代表满足买入条件', /淡蓝<\/span>是进了这条线候选池的日子\(池子只做粗筛,天数多是正常的,不代表满足了买入条件\)/],
+    ['脚注:中蓝是形态就绪并写出口径', /中蓝<\/b>是形态就绪\(P-02~P-05 \+ P-22 全过\)的日子/],
+    ['脚注:深蓝是买入条件全满足', /深蓝<\/b>是买入条件全满足的日子/]]
   for (const [name, re] of kNeed) {
     if (re.test(H)) console.log('PASS 智能体 ·', name)
     else { failed++; console.log('FAIL 智能体 ·', name) }
@@ -1008,6 +1016,43 @@ try {
 } catch (e) {
   failed++
   console.log('FAIL 日K拖动断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
+// ─── 悬停日K:小鹿看板三层蓝线(2026-09-15)──────────────────────────────
+// 候选池淡(1px)、形态就绪中(2px)、全满足深(2px),深的画在浅的后面(盖在上面);
+// 没给 scanWeak 的(筛选器)照旧 2px —— 那边的蓝线是整份脚本真命中,不是粗筛池。
+try {
+  const ctx = vm.createContext(makeContext('agent.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  vm.runInContext(
+    "var KL_ROWS = []; for (var i = 0; i < 30; i++) KL_ROWS.push({ ts: 'D' + String(i).padStart(9, '0'), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 });" +
+    "var KL_S = kcMarkSeries(KL_ROWS, { scan: [KL_ROWS[1].ts, KL_ROWS[2].ts, KL_ROWS[3].ts], scanWeak: true, setup: [KL_ROWS[2].ts, KL_ROWS[3].ts], entry: [KL_ROWS[3].ts], buy: [KL_ROWS[3].ts] });" +
+    "var KL_SC = kcMarkSeries(KL_ROWS, { scan: [KL_ROWS[1].ts] });" +
+    "var KL_NO = kcMarkSeries(KL_ROWS, { scan: [KL_ROWS[1].ts], scanWeak: true, setup: [], entry: [] });",
+    ctx, { filename: 'assert-kc-layers' })
+  const bands = ctx.KL_S.filter(function (x) { return x.markArea && x.markLine })
+  const w = function (s) { return s && s.markLine.lineStyle.width }
+  const col = function (s) { return s && s.markLine.lineStyle.color }
+  // 顶层 const 不挂在 vm 的 context 对象上(ctx.KC_X 是 undefined),要在 context 里求值取出来
+  const K = function (name) { return vm.runInContext(name, ctx) }
+  const kl = [
+    ['三层各一条标记序列', bands.length === 3],
+    ['候选池那层 1px 淡线', w(bands[0]) === 1 && col(bands[0]) === K('KC_POOL_LINE')],
+    ['形态就绪 2px 中蓝', w(bands[1]) === 2 && col(bands[1]) === K('KC_SETUP_LINE')],
+    ['全满足 2px 深蓝,画在最后', w(bands[2]) === 2 && col(bands[2]) === K('KC_ENTRY_LINE')],
+    ['三层颜色互不相同', new Set([col(bands[0]), col(bands[1]), col(bands[2])]).size === 3],
+    ['各层落在自己的日子上', JSON.stringify(bands.map(function (s) { return s.markLine.data.map(function (d) { return d.xAxis }) })) === '[[1,2,3],[2,3],[3]]'],
+    ['买卖标签照旧', ctx.KL_S.some(function (x) { return x.markPoint })],
+    ['筛选器(没有 scanWeak)照旧 2px', ctx.KL_SC.length === 1 && w(ctx.KL_SC[0]) === 2 && col(ctx.KL_SC[0]) === K('KC_SCAN_LINE')],
+    ['没有形态就绪 / 全满足日时只画候选池', ctx.KL_NO.length === 1],
+  ]
+  for (const [name, ok] of kl) {
+    if (ok) console.log('PASS 三层蓝线 ·', name)
+    else { failed++; console.log('FAIL 三层蓝线 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 三层蓝线断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
 // ─── 悬停日K:dispose 必须在清容器之前(app.js)────────────────────────

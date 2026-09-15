@@ -748,7 +748,14 @@ def dashboard(branch: str = "base") -> dict:
     except Exception:                                         # noqa: BLE001
         log.exception("[agent] 读扫描命中日失败,悬停日K 上就没有蓝线,其余照常")
         scan_of = {}
-    history = _trade_rounds(trades, rule_cond, scan_of)
+    setup_rules = getattr(eng, "SETUP_RULES", None)
+    try:
+        layers = _scan_layers(cur, branch, sorted({t[3] for t in trades}), setup_rules)
+    except Exception:                                         # noqa: BLE001
+        log.exception("[agent] 读形态就绪 / 全满足日失败,悬停日K 只画候选池那层,其余照常")
+        conn.rollback()
+        layers = {}
+    history = _trade_rounds(trades, rule_cond, scan_of, layers)
     cur.close()
     conn.close()
 
@@ -800,6 +807,11 @@ def dashboard(branch: str = "base") -> dict:
         "trades": {"date": str(L[0]), "items": today_trades},
         "history": {
             "items": history,
+            # 悬停日K 三层蓝线的名字(2026-09-15)。setup 为 None = 这个引擎没声明「形态就绪」规则,前端不画那层 ——
+            # VCP 那几个引擎的买入条件把趋势 / 枢轴 / 量能混在一起,替用户拆出「就绪」就是替他定口径
+            "layers": {"pool": "进候选池", "setup": getattr(eng, "SETUP_LABEL", None) if setup_rules else None,
+                       "setup_note": getattr(eng, "SETUP_NOTE", None) if setup_rules else None,
+                       "entry": "买入条件全满足"},
             "fee_total": round(sum(r["fee"] for r in history), 2),
             "pnl_gross_total": round(sum(r["pnl_gross"] for r in history), 2),
             "pnl_net_total": round(sum(r["pnl_abs"] for r in history), 2),
@@ -923,7 +935,45 @@ def _scan_hits(cur, pool: str = PRESET) -> dict:
     return out
 
 
-def _trade_rounds(trades, rule_cond: dict, scan_of: dict | None = None) -> list[dict]:
+def scan_layers(rows, setup_rules=None) -> dict:
+    """观察列表逐日记录 → {代码: {"setup": [日期], "entry": [日期]}}(悬停日K 的中蓝 / 深蓝两层)。
+
+    2026-09-15 用户问「为什么点开每只票都显示命中了很多天」:原来只画一层 = 进了这条线的候选池,
+    池子只做粗筛(突破买入每天约 224 只),KRYS 在池里 105 天,真正买入条件全满足只有买入那 1 天。
+
+    rows = [(日期, 代码, progress_pct, fails)],来自 agent_day.watchlist —— 就是引擎**当天**判过的结果,不重算,
+    口径与成交逐日一致(当天用 KRYS / STT / CVS / FLNG 逐日核对:全满足的日子 = 买入日,CVS 多一天是被挡下没买)。
+    - entry:progress_pct == 100,那天买入条件全满足(可能被持仓上限 / 护栏挡下没买)
+    - setup:引擎声明了 setup_rules,且那天记了 fails、里面没有任何一条 setup 规则 —— 只差突破 / 市场。
+      没有 fails 字段的老记录不算(不猜),用 `agent_run watch-fails --branch <方向>` 回填
+    """
+    rules = set(setup_rules or ())
+    out: dict = {}
+    for d, code, prog, fails in rows:
+        if not code:
+            continue
+        slot = None
+        if str(prog) == "100":
+            slot = out.setdefault(code, {"setup": [], "entry": []})
+            slot["entry"].append(str(d))
+        if rules and isinstance(fails, list) and not (rules & set(fails)):
+            slot = slot or out.setdefault(code, {"setup": [], "entry": []})
+            slot["setup"].append(str(d))
+    return out
+
+
+def _scan_layers(cur, branch: str, codes: list[str], setup_rules=None) -> dict:
+    """只取成交过的票(历史交易记录只给它们画日K)。watchlist 每天几百条、每条带大段 gap 文字,
+    整列读回来太重 —— 在库里拆 JSONB,只拿日期 / 代码 / 进度 / fails 四样。"""
+    if not codes:
+        return {}
+    cur.execute("SELECT d.trade_date, e->>'symbol', e->>'progress_pct', e->'fails' "
+                "FROM agent_day d, jsonb_array_elements(d.watchlist::jsonb) e "
+                "WHERE d.branch=%s AND e->>'symbol' = ANY(%s) ORDER BY d.trade_date", (branch, list(codes)))
+    return scan_layers(cur.fetchall(), setup_rules)
+
+
+def _trade_rounds(trades, rule_cond: dict, scan_of: dict | None = None, layers: dict | None = None) -> list[dict]:
     """逐笔成交 → 一个持仓周期一条记录(历史交易记录卡片用)。
 
     一个周期 = 同一只票从建仓到清仓的一整段,中间可能有多次买(倒三角加仓 level 1/2/3)
@@ -992,7 +1042,9 @@ def _trade_rounds(trades, rule_cond: dict, scan_of: dict | None = None) -> list[
             "hold_days": sells[-1][11], "adds": len(buys) - 1, "legs": legs,
             # 进场当天评定的档位(C-08),用户 2026-09-12 要求标在代号下方;方向 A/B/base 的引擎不评分 → None,前端不画
             "grade": (buys[0][18] if len(buys[0]) > 18 else None),
-            "scan_dates": (scan_of or {}).get(code, []),
+            "scan_dates": (scan_of or {}).get(code, []),          # 淡蓝:进了这条线的候选池
+            "setup_dates": ((layers or {}).get(code) or {}).get("setup", []),   # 中蓝:形态就绪(只有声明了 SETUP_RULES 的引擎有)
+            "entry_dates": ((layers or {}).get(code) or {}).get("entry", []),   # 深蓝:买入条件全满足
         })
     # 按平仓日排;编号按时间正序给(1 = 第一笔),前端倒序显示,和券商对账单一个习惯
     rounds.sort(key=lambda r: (r["exit_date"], r["entry_date"], r["symbol"]))
@@ -1201,6 +1253,76 @@ def backfill(start: date, end: date | None = None, only: list[str] | None = None
     return out
 
 
+def backfill_watch_fails(branch: str) -> dict:
+    """给老的观察列表记录补 fails(悬停日K「形态就绪」那层要用),只补**成交过的票**。
+
+    watch_item 从 2026-09-15 起才输出 fails,之前落库的 agent_day.watchlist 没有。重算口径与 run_date 相同:
+    指标 = eng.indicators(截到那天的日线, bench=…)(同 Ctx.ensure_cache)、市场 = eng.market_regime(基准截到那天)、
+    参数 = 这个方向的现行参数、score = 那条记录当时存的 RS。
+    - 方向换过版(versions 非空)不回填:按今天的参数判过去会画错,宁可那层空着
+    - 每条重算的 progress_pct 都和库里存的比一次,对不上的计数并给样例 —— 那是口径漂移的信号,不是小事
+    """
+    eng = ao.engine_of(branch)
+    if not getattr(eng, "SETUP_RULES", None):
+        return {"branch": branch, "skipped": "这个引擎没声明形态就绪规则(SETUP_RULES),不用补"}
+    conn = _conn()
+    cur = conn.cursor()
+    st = _branch_state(cur, branch)
+    if st.get("versions"):
+        cur.close()
+        conn.close()
+        return {"branch": branch, "skipped": f"这个方向换过 {len(st['versions'])} 版参数,按现行参数回填会判错过去,不补"}
+    p = st["params"]
+    cur.execute("SELECT DISTINCT code FROM agent_trade WHERE branch=%s", (branch,))
+    codes = {r[0] for r in cur.fetchall()}
+    cur.execute("SELECT trade_date, watchlist FROM agent_day WHERE branch=%s ORDER BY trade_date", (branch,))
+    days = cur.fetchall()
+    ctx = Ctx()
+    bb = ctx.store.get("bench_bars") or []
+    bdates = [b[0] for b in bb]
+    bars_of: dict = {}
+    stats = {"branch": branch, "codes": len(codes), "days": len(days), "filled": 0, "already": 0,
+             "no_indicator": 0, "progress_mismatch": 0, "mismatch_samples": []}
+    for d, wl in days:
+        items = json.loads(wl) if isinstance(wl, str) else (wl or [])
+        todo = [it for it in items if isinstance(it, dict) and it.get("symbol") in codes
+                and it.get("progress_pct") is not None]
+        if not todo:
+            continue
+        market = eng.market_regime(bb[:bisect_right(bdates, d)]) if hasattr(eng, "market_regime") else None
+        changed = False
+        for it in todo:
+            if "fails" in it:
+                stats["already"] += 1
+                continue
+            code = it["symbol"]
+            if code not in bars_of:
+                bars = ctx.bars_of(code) or []
+                bars_of[code] = (bars, {b[0]: i for i, b in enumerate(bars)})
+            bars, idx = bars_of[code]
+            i = idx.get(d)
+            ind = eng.indicators(bars[:i + 1], bench=ctx.store["bench"]) if i is not None else None
+            if ind is None:
+                stats["no_indicator"] += 1
+                continue
+            checks = eng.entry_checks(ind, p, it.get("score"), market)
+            it["fails"] = [c["rule"] for c in checks if not c["ok"]]
+            prog = int(sum(1 for c in checks if c["ok"]) / len(checks) * 100)
+            if prog != it.get("progress_pct"):
+                stats["progress_mismatch"] += 1
+                if len(stats["mismatch_samples"]) < 10:
+                    stats["mismatch_samples"].append([str(d), code, it.get("progress_pct"), prog])
+            stats["filled"] += 1
+            changed = True
+        if changed:
+            cur.execute("UPDATE agent_day SET watchlist=%s WHERE branch=%s AND trade_date=%s",
+                        (json.dumps(items), branch, d))
+            conn.commit()
+    cur.close()
+    conn.close()
+    return stats
+
+
 def reset() -> None:
     conn = _conn()
     cur = conn.cursor()
@@ -1214,8 +1336,9 @@ def reset() -> None:
 def _main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     p = argparse.ArgumentParser(prog="agent_run")
-    p.add_argument("cmd", choices=["daily", "backfill", "reset", "dashboard", "research-backfill", "research"])
+    p.add_argument("cmd", choices=["daily", "backfill", "reset", "dashboard", "research-backfill", "research", "watch-fails"])
     p.add_argument("--line", default=None)
+    p.add_argument("--branch", default=None)
     p.add_argument("--from", dest="start", default=None)
     p.add_argument("--to", dest="end", default=None)
     p.add_argument("--yes", action="store_true")
@@ -1237,6 +1360,12 @@ def _main(argv=None) -> int:
         start = date.fromisoformat(a.start) if a.start else date.fromisoformat(_with_cur(lambda c: _meta_get(c, "started")))
         print(backfill(start, date.fromisoformat(a.end) if a.end else None, only=lines[a.line]["branches"]))
         print(research_evaluate())
+    elif a.cmd == "watch-fails":
+        # 悬停日K「形态就绪」那层要的 fails,给 2026-09-15 之前落库的观察列表补上(只补成交过的票)
+        if not a.branch:
+            print("要 --branch(比如 breakout)")
+            return 2
+        print(json.dumps(backfill_watch_fails(a.branch), ensure_ascii=False, default=str))
     elif a.cmd == "research":
         b = research_board()
         for ln in b["lines"]:

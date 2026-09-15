@@ -253,6 +253,12 @@ GRADE_RULE = "P-20"
 ENTRY_RULE = "P-06"
 ADD_RULE = "P-08"
 WATCH_POOL_DAYS = 1                  # 突破是当天的事;筛选条件由引擎按前一天收盘重算,池子只要当天的
+# 悬停日K 的「形态就绪」那层(2026-09-15 用户要求蓝线分三层:候选池 / 形态就绪 / 买入条件全满足):
+# 这几条全过、只差突破(P-06)与市场(P-01)的日子。声明了 SETUP_RULES 的引擎,watch_item 必须输出 fails,
+# entry_checks 必须是 (ind, p, score, market) 签名 —— agent_run.backfill_watch_fails 按它回填老记录
+SETUP_RULES = ("P-02", "P-03", "P-04", "P-05", "P-22")
+SETUP_LABEL = "形态就绪"
+SETUP_NOTE = "P-02~P-05 + P-22 全过,只差突破 P-06 与市场 P-01"
 
 POOL = "breakout"
 POOL_LIMIT = 800
@@ -785,6 +791,7 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
     passed = sum(1 for c in checks if c["ok"])
     it["progress_pct"] = int(passed / len(checks) * 100)
     fails = [c for c in checks if not c["ok"]]
+    it["fails"] = [c["rule"] for c in fails]      # 悬停日K「形态就绪」那层按它判(agent_run.scan_layers)
     if held:
         it["gap"] = "已持仓 · 等加仓 / 出场信号"
     elif not fails:

@@ -366,7 +366,9 @@ Prompt 里写「严禁编造」对 flash 模型完全无效,必须强校验。
       "pnl_abs": -265.34, "pnl_pct": -1.88,       // **扣完手续费**的净损益与回报
       "pnl_gross": -263.36, "fee": 1.9775,        // 扣费前 / 这一笔全部腿的手续费合计
       "hold_days": 10, "adds": 2,                 // adds = 加仓次数
-      "scan_dates": ["2026-08-06", "2026-08-07"], // 这只票被扫描筛选命中过的日子(全段,不只这一笔)
+      "scan_dates": ["2026-08-06", "2026-08-07"], // 淡蓝:进了这条线候选池的日子(全段,不只这一笔)
+      "setup_dates": ["2026-08-07"],              // 中蓝:形态就绪(引擎没声明 SETUP_RULES 时恒为空)
+      "entry_dates": ["2026-08-11"],              // 深蓝:买入条件全满足(可能被持仓上限 / 护栏挡下没买)
       "legs": [
         { "kind": "entry", "date": "2026-08-11", "rule_id": "R-04", "rule_name": "VCP 突破买入",
           "rule_text": "…", "price": 60.47, "shares": 133 },
@@ -402,6 +404,20 @@ Prompt 里写「严禁编造」对 flash 模型完全无效,必须强校验。
 前端把它和这一笔的买卖日一起塞进 `data-kmark`,悬停日K(`app.js` 的公共模块)据此画:
 半透明蓝带 = 扫描命中,绿 Buy / 红 Sell = 规则买卖。对不上日线的日期直接丢弃,不硬凑最近一根 ——
 凑过去就等于把标记画在没发生那件事的那天上。
+
+**蓝线分三层(2026-09-15)。** 用户问「为什么点开每只票都显示命中了很多天,是不是弄混了」。没有混:
+`scan_dates` 按方向自己的池读(突破买入读 `agent_watch_pool` 的 breakout 池),但池子只做粗筛,
+突破买入每天约 224 只,KRYS 在池里 105 天,形态就绪 2 天,买入条件全满足 1 天(就是买入那天)。所以现在:
+
+| 层 | 字段 | 来源 | 画法 |
+|---|---|---|---|
+| 进候选池 | `scan_dates` | `agent_watch` / `agent_watch_pool` | 淡色带 + 1px 细线(`scanWeak`) |
+| 形态就绪 | `setup_dates` | `agent_day.watchlist` 每条的 `fails` 里没有 `eng.SETUP_RULES` 的任何一条 | 中蓝 2px |
+| 买入条件全满足 | `entry_dates` | `agent_day.watchlist` 每条 `progress_pct == 100` | 深蓝 2px |
+
+`history.layers = {pool, setup, setup_note, entry}` 给三层的名字;`setup` 为 `null` = 引擎没声明形态就绪规则,前端不画那层。
+两层都读**引擎当天落库的判定**,不重算。`fails` 从 2026-09-15 起才写,之前的记录用
+`python -m app.services.quant.agent_run watch-fails --branch breakout` 回填(只补成交过的票;换过参数版本的方向不补)。
 
 **手续费(2026-09-12 按用户指定的口径加上)。** 实现在 `services/quant/commission.py`,
 买卖各收一次,每条 `leg` 有自己的 `fee`:

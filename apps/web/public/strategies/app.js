@@ -924,6 +924,10 @@ const KC_BUY = '#1f9254', KC_SELL = '#c0392b'
 const KC_SCAN = 'rgba(46,134,222,.16)'    // 扫描命中:半透明蓝(色带,一根 K 线宽)
 const KC_SCAN_LINE = 'rgba(46,134,222,.55)' // 扫描命中:固定 2px 竖线(250 根挤在一起时色带看不见,靠它)
 const KC_HINT = '左键拖动平移 · 滚轮缩放 · 十字星读数'
+// 小鹿看板的三层(2026-09-15 用户要求):进候选池(淡,只是进了池子)/ 形态就绪(中)/ 买入条件全满足(深)
+const KC_POOL_LINE = 'rgba(46,134,222,.30)'
+const KC_SETUP = 'rgba(46,134,222,.26)', KC_SETUP_LINE = 'rgba(46,134,222,.80)'
+const KC_ENTRY = 'rgba(23,76,148,.30)', KC_ENTRY_LINE = 'rgba(23,76,148,.95)'
 const KC_HINT_TOUCH = '单指拖动平移 · 双指缩放 · 点一下读数 · 点 ✕ 或空白处关闭'
 function kcHint() { return KC.touch ? KC_HINT_TOUCH : KC_HINT }
 // 触屏补发的假鼠标事件在触摸后几百毫秒内到达;800ms 足够盖住,又不会误伤真鼠标(混合设备上手指离开后再用鼠标)
@@ -1073,23 +1077,31 @@ function kcMarkSeries(rows, mark) {
   // 一根 K 线不到 2px,16% 透明度的色带肉眼看不见 —— 一年只命中两三天、又不连着的票(实测 ZD 2 天)
   // 整张图像没标;命中天数多、连成片的(STT 24 天)才看得出来,于是表现成「偶现」。
   // 色带管放大后看清是哪一根,竖线管不缩放也看得见。z 压在 K 线下面,不挡十字星读数。
-  if (scan.length) {
+  const band = function (list, area, line, width) {
+    if (!list.length) return
     out.push({
       type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: [], silent: true, z: 1,
       markArea: {
         silent: true,
-        itemStyle: { color: KC_SCAN },
-        data: scan.map(function (i) { return [{ xAxis: i - 0.5 }, { xAxis: i + 0.5 }] }),
+        itemStyle: { color: area },
+        data: list.map(function (i) { return [{ xAxis: i - 0.5 }, { xAxis: i + 0.5 }] }),
       },
       markLine: {
         silent: true, symbol: ['none', 'none'], animation: false,
         label: { show: false },
-        lineStyle: { color: KC_SCAN_LINE, width: 2, type: 'solid' },
+        lineStyle: { color: line, width: width, type: 'solid' },
         emphasis: { disabled: true },
-        data: scan.map(function (i) { return { xAxis: i } }),
+        data: list.map(function (i) { return { xAxis: i } }),
       },
     })
   }
+  // scanWeak:小鹿看板把 scan 当「进候选池」画 —— 池子只做粗筛、天数多,只给淡色带 + 1px 细线;
+  // 不然整张图一片蓝,分不出哪天真的准备好了(2026-09-15 用户:「为什么每个都显示命中了很多天」)。
+  // 顺序 = 画的先后:候选池 → 形态就绪 → 全满足,深的盖在浅的上面
+  if (mark.scanWeak) band(scan, KC_SCAN, KC_POOL_LINE, 1)
+  else band(scan, KC_SCAN, KC_SCAN_LINE, 2)
+  band(kcIndexOf(rows, mark.setup), KC_SETUP, KC_SETUP_LINE, 2)
+  band(kcIndexOf(rows, mark.entry), KC_ENTRY, KC_ENTRY_LINE, 2)
   const tag = function (list, color, text, pos) {
     if (!list.length) return
     out.push({
@@ -1167,7 +1179,10 @@ function kcOption(rows, mark, zoom) {
         const day = String(r.ts || r.date || '').slice(0, 10)
         // 那天发生过什么,直接写进读数里 —— 光有色块还得对着图例猜
         const evt = []
-        if (mark && (mark.scan || []).some(function (d) { return String(d).slice(0, 10) === day })) evt.push('扫描命中')
+        const on = function (a) { return (a || []).some(function (d) { return String(d).slice(0, 10) === day }) }
+        if (mark && on(mark.scan)) evt.push(kcEsc(mark.scanLabel || '扫描命中'))
+        if (mark && on(mark.setup)) evt.push('<b style="color:' + KC_SETUP_LINE + '">' + kcEsc(mark.setupLabel || '形态就绪') + '</b>')
+        if (mark && on(mark.entry)) evt.push('<b style="color:' + KC_ENTRY_LINE + '">' + kcEsc(mark.entryLabel || '买入条件全满足') + '</b>')
         if (mark && (mark.buy || []).some(function (d) { return String(d).slice(0, 10) === day })) evt.push('<b style="color:' + KC_BUY + '">买入</b>')
         if (mark && (mark.sell || []).some(function (d) { return String(d).slice(0, 10) === day })) evt.push('<b style="color:' + KC_SELL + '">卖出</b>')
         return '<b>' + kcEsc(String(r.ts || r.date || '')) + '</b>' +
@@ -1209,6 +1224,13 @@ function kcLegend(rows, mark) {
   if (mark.unknown) {
     parts.push('<span title="' + kcEsc(mark.note || '') + '" style="border-bottom:1px dotted currentColor;cursor:help">' +
       mark.unknown + ' 天算不出</span>')
+  }
+  // 小鹿看板的中蓝 / 深蓝两层:给了名字就写天数(0 天也是结论);没给名字(引擎没这层)就不写
+  if (n(mark.setup) || mark.setupLabel) {
+    parts.push('<i style="background:' + KC_SETUP_LINE + '"></i>' + kcEsc(mark.setupLabel || '形态就绪') + ' ' + n(mark.setup) + ' 天')
+  }
+  if (n(mark.entry) || mark.entryLabel) {
+    parts.push('<i style="background:' + KC_ENTRY_LINE + '"></i>' + kcEsc(mark.entryLabel || '买入条件全满足') + ' ' + n(mark.entry) + ' 天')
   }
   if (n(mark.buy)) parts.push('<i style="background:' + KC_BUY + '"></i>买入 ' + n(mark.buy))
   if (n(mark.sell)) parts.push('<i style="background:' + KC_SELL + '"></i>卖出 ' + n(mark.sell))

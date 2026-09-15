@@ -1160,7 +1160,7 @@ function csvRows(rows) {
 const CSV_HEAD = ['编号', '代号', '评级', '方向', '类型', '日期', '信号编号', '信号名称',
   '信号条件(规则原文)', '触发情况(当时的数据)', '评级过程(进场当天)', '价格', '本腿股数', '本腿手续费',
   '事后跟踪', '本笔总股数', '本笔买入金额', '本笔净损益(已扣费)', '本笔回报%(已扣费)',
-  '本笔手续费合计', '本笔扣费前损益', '持有天数', '加仓次数', '建仓日', '清仓日', '扫描命中日']
+  '本笔手续费合计', '本笔扣费前损益', '持有天数', '加仓次数', '建仓日', '清仓日', '进候选池日', '形态就绪日', '买入条件全满足日']
 
 // 进场那条腿的 rationale 里,「评分 X 级(…)」之后是整段评级过程:
 // 五个维度各自的档位与明细 → 由它定的仓位、止损位、买入股数、这一笔的开放风险。
@@ -1243,6 +1243,8 @@ function buildHistoryCsv(d) {
   items.forEach(function (r) {
     const legs = Array.isArray(r.legs) ? r.legs : []
     const scan = Array.isArray(r.scan_dates) ? r.scan_dates.join(' ') : ''
+    const setup = Array.isArray(r.setup_dates) ? r.setup_dates.join(' ') : ''
+    const entry = Array.isArray(r.entry_dates) ? r.entry_dates.join(' ') : ''
     legs.forEach(function (g2) {
       // 这就是用户要的「当时是怎么触发的」+「评级过程」—— 后端按成交与行情表算好的数字,
       // 不是模型编的(仓内铁律:用户可见的数字不许 LLM 自由生成)
@@ -1254,7 +1256,7 @@ function buildHistoryCsv(d) {
         g2.date, g2.rule_id, g2.rule_name, g2.rule_text,
         parts[0], parts[1], g2.price, g2.shares, g2.fee, g2.followup,
         r.shares, r.amount, r.pnl_abs, r.pnl_pct, r.fee, r.pnl_gross,
-        r.hold_days, r.adds, r.entry_date, r.exit_date, scan,
+        r.hold_days, r.adds, r.entry_date, r.exit_date, scan, setup, entry,
       ])
     })
   })
@@ -1299,6 +1301,7 @@ function gradeTag(g) {
 function vHistory(d) {
   const h = d.history || {}
   const has = Array.isArray(h.items)
+  const layers = h.layers || {}      // 悬停日K 三层蓝线的名字;后端没给(老接口 / 404)就只画候选池那层
   if (has && !h.items.length) {
     return panel('历史交易记录', '0 笔', missing('还没有平掉的交易',
       '这里只记<b>已经平仓</b>的持仓周期;还拿在手里的在上面的持仓明细里'), 'ag-hist')
@@ -1308,17 +1311,25 @@ function vHistory(d) {
     const n = legs.length
     const span = ' rowspan="' + n + '"'
     // 悬停日K 的标记(公共模块在 app.js):
-    //   scan 扫描筛选命中当天 —— 半透明蓝色竖带,看得出扫描盯了它多久才买
+    //   scan  进了这条线候选池的日子 —— 淡蓝(scanWeak)。池子只做粗筛,天数多是正常的
+    //   setup 形态就绪 —— 中蓝(只有声明了形态就绪规则的引擎有,layers.setup 为空就不画)
+    //   entry 买入条件全满足 —— 深蓝(可能被持仓上限 / 护栏挡下没买)
     //   buy / sell 规则买卖当天 —— 绿 Buy / 红 Sell
-    // 日期全部来自成交与扫描记录,不是前端推的 —— 对不上日线的那天会被丢掉,不硬凑最近一根
+    // 2026-09-15 用户问「为什么每个都显示命中了很多天」:原来只有 scan 一层,看着像每天都命中了策略。
+    // 日期全部来自成交与观察列表记录,不是前端推的 —— 对不上日线的那天会被丢掉,不硬凑最近一根
     const mark = {
       scan: Array.isArray(r.scan_dates) ? r.scan_dates : [],
+      scanLabel: layers.pool || '进候选池', scanWeak: true,
+      setup: layers.setup && Array.isArray(r.setup_dates) ? r.setup_dates : [],
+      setupLabel: layers.setup || null,
+      entry: Array.isArray(r.entry_dates) ? r.entry_dates : [],
+      entryLabel: layers.entry || null,
       buy: legs.filter(function (g) { return g.kind === 'entry' && g.date }).map(function (g) { return g.date }),
       sell: legs.filter(function (g) { return g.kind === 'exit' && g.date }).map(function (g) { return g.date }),
     }
     const kattr = r.symbol
       ? ' data-kchart="' + esc(r.symbol) + '" data-kname="' + esc(r.name || '') + '"' +
-        ' data-kmark="' + esc(JSON.stringify(mark)) + '" title="悬停看近一年日K(含扫描命中 / 买卖标记)"'
+        ' data-kmark="' + esc(JSON.stringify(mark)) + '" title="悬停看近一年日K(含候选池 / 形态就绪 / 买入条件全满足 / 买卖标记)"'
       : ''
     return legs.map(function (g, i) {
       const isIn = g.kind === 'entry'
@@ -1378,9 +1389,12 @@ function vHistory(d) {
       ' —— 引擎是按收盘价、不扣现金跑出来的,要让净值曲线也扣费得改引擎重跑全部历史' +
       '(现金变少会买不起同样股数,仓位变了整条曲线和每一笔成交都会变)。' : '') +
     '<br><b>把鼠标放到代号上</b>看这只票近一年的日K:' +
-    '<span style="color:#2E86DE">蓝色竖带</span>是扫描筛选命中的那些天,' +
+    '<span style="color:#2E86DE">淡蓝</span>是进了这条线候选池的日子(池子只做粗筛,天数多是正常的,不代表满足了买入条件)' +
+    (layers.setup ? ',<b style="color:#2E86DE">中蓝</b>是' + esc(layers.setup) +
+      (layers.setup_note ? '(' + esc(layers.setup_note) + ')' : '') + '的日子' : '') +
+    ',<b style="color:#174c94">深蓝</b>是买入条件全满足的日子(可能被持仓上限或护栏挡下没买),' +
     '<span style="color:#1f9254">绿色 Buy</span> 与 <span style="color:#c0392b">红色 Sell</span> 是规则买卖的那天 —— ' +
-    '看得出扫描盯了它多久才买、买在什么位置。' +
+    '看得出盯了它多久、哪几天准备好了、哪天触发、买在什么位置。' +
     '<br><b>把鼠标放到信号上</b>看这一笔的买卖理由(以及卖出后的事后跟踪)—— ' +
     '理由里的数字来自成交记录与行情表,模型只负责把它们组织成人话、不参与计算。' +
     '</div>', 'ag-hist')
