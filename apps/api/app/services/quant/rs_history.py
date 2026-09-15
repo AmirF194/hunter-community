@@ -615,8 +615,11 @@ def fetch_market(market: str, limit: int | None = None) -> dict:
     cur = conn.cursor()
     # 2026-09-12 从 480 天放到 900 天:小鹿智能体要从年初回测,且 RS 评级要 253 根,
     # 多留一年历史才不会一到年初就整批算不出。存量约 1.2M 行 → 2.4M 行,库能扛
-    cur.execute("DELETE FROM rs_daily WHERE market=%s AND trade_date < now()::date - 900",
-                (market,))
+    # 2026-09-15 用户:「已有的美股日线数据不要删除」—— 美股不再按保留期删(突破买入要跑三年回测,
+    # 得有 2022 年起的日线,补一轮要 70 分钟,删了就白补)。A 股 / 港股仍留 900 天(用户只说了美股)
+    if market != "us":
+        cur.execute("DELETE FROM rs_daily WHERE market=%s AND trade_date < now()::date - 900",
+                    (market,))
     conn.commit()
     cur.close()
     conn.close()
