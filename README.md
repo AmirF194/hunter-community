@@ -20,7 +20,7 @@
 
 > **HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案。**<br>
 > 推理在你机器上跑 · 仓位不出你硬盘 · 模型和因子由你自己定义 · 面向私募与专业个人投资者<br>
-> [与 WorkBuddy 金融版逐项对比(附官方来源)](https://www.agentpit.io/compare/workbuddy) · 🏆 入围世界人工智能开源大赛(GOAI)总决赛 · 赛道二 TOP 15
+> [与 WorkBuddy 金融版逐项对比(附官方来源)](https://www.agentpit.io/compare/workbuddy) · 🏆 [入围世界人工智能开源大赛(GOAI)总决赛 · 赛道二 TOP 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg)
 
 <sub>腾讯、WorkBuddy 是腾讯公司的商标。HunterCode 与腾讯公司无隶属、合作或授权关系。</sub>
 

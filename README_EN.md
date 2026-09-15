@@ -20,7 +20,7 @@
 
 > **HunterCode is the open-source, local alternative to Tencent WorkBuddy Finance Edition.**<br>
 > Inference runs on your machine · Positions never leave your disk · You define the models and factors · Built for private funds and professional investors<br>
-> [Line-by-line comparison with WorkBuddy Finance Edition (sourced)](https://www.agentpit.io/en/compare/workbuddy) · 🏆 Finalist, Global Open-source AI Challenge (GOAI) · Track 2 TOP 15
+> [Line-by-line comparison with WorkBuddy Finance Edition (sourced)](https://www.agentpit.io/en/compare/workbuddy) · 🏆 [Finalist, Global Open-source AI Challenge (GOAI) · Track 2 TOP 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg)
 
 <sub>Tencent and WorkBuddy are trademarks of Tencent. HunterCode is not affiliated with, endorsed by or partnered with Tencent.</sub>
 
