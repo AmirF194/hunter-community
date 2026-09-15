@@ -327,6 +327,8 @@ const S = {
   plotName: 'scan', plotExpr: '',
   plotOrder: [],             // 条件行在 plot 里的先后(/parse 的 plot_order):名字项是 def 名,表达式项是 scan#1 …
   termHost: '',              // 条件宿主(/parse 的 term_host):plot 只写一个名字、条件都在那条 def 里时是它的名字
+  extraPlots: [],            // 前面的 plot(/parse 的 extra_plots):扫描只看最后一个,但要原样写回,别静默删掉用户的语句
+  draftPending: null,        // 启动时没解析成(没登录 / 额度)的草稿原文:留着,不许被之后的 saveDraft 覆盖成空串
   notes: [], parseWarnings: [],
   editing: null,             // 正在编辑原文的条件名
   pending: '',               // 正在生成的那段原文(S.input 会被清空,按钮文案要靠它)
@@ -360,6 +362,8 @@ const LS = 'hunter_screener_script_v2'
 const LS_MK = 'hunter_screener_market'
 function saveDraft() {
   try {
+    // 启动时草稿没解析成(没登录被 401 拦下)、界面上还一条条件都没有:别拿空脚本把草稿冲掉(审计 2026-09-15)
+    if (!S.conditions.length && S.draftPending) { localStorage.setItem(LS_MK, S.market); return }
     localStorage.setItem(LS, buildScript(true))
     localStorage.setItem(LS_MK, S.market)
   } catch (e) { /* 隐私模式会抛,草稿丢了不影响用 */ }
@@ -385,6 +389,7 @@ function buildScript(allEnabled) {
     on.push(c.kind === 'term' ? wrapTerm(c) : c.name)
   })
   if (!lines.length && !on.length) return ''
+  ;(S.extraPlots || []).forEach(function (p) { lines.push('plot ' + p.name + ' = ' + p.expr + ';') })
   if (S.combine === 'custom' && S.plotExpr) {
     lines.push('plot ' + S.plotName + ' = ' + S.plotExpr + ';')
   } else if (S.termHost) {
@@ -443,10 +448,12 @@ function looksLikeScript(t) {
 
 // 某个名字有没有被别的条件引用
 function referenced(name, exceptIdx) {
-  const re = new RegExp('\\b' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b')
-  return S.conditions.some(function (o, j) {
-    return j !== exceptIdx && re.test(o.expr || '')
-  })
+  const hit = function (t) { return paramRe(name).test(stripComments(t || '')) }
+  if (S.conditions.some(function (o, j) { return j !== exceptIdx && hit(o.expr) })) return true
+  // 自定义组合下 plot 原文也在引用;前面的 plot 同样 —— 不看它们的话,改个参数就把 plot 用到的定义当孤儿清掉,
+  // plot 引用了不存在的名字,解析失败(审计 2026-09-15 实跑)
+  if (S.combine === 'custom' && hit(S.plotExpr)) return true
+  return (S.extraPlots || []).some(function (p) { return hit(p.expr) })
 }
 
 // 清掉没人引用的中间变量。
@@ -476,13 +483,21 @@ function pruneVars() {
 // 停用状态:按 buildScript(true) 回写(停用的 term 才不会丢),解析回来再按 名字(def)/ 原文(term)关回去
 async function rebuild() {
   pruneVars()
+  return reparseKeepOff()
+}
+
+// 回写再解析、停用状态原样保留 → true = 解析成功。
+// 所有「改完回写」的地方都走这里(编辑 / 删除 / 复制 / 改数字 / 切市场 / 追加生成):
+// 用 buildScript(false) 回写的话,停用的 term 没有 def 可留,会被**永久**删掉(审计 2026-09-15:切市场、追加各漏了一处)
+async function reparseKeepOff() {
   const offDef = {}, offTerm = {}
   S.conditions.forEach(function (c) {
     if (!c.is_bool || c.enabled) return
     if (c.kind === 'term') offTerm[String(c.expr).trim()] = 1
     else offDef[c.name] = 1
   })
-  await reparse(buildScript(true))
+  const ok = await reparse(buildScript(true))
+  if (!ok) return false
   let changed = false
   S.conditions.forEach(function (c) {
     if (!c.is_bool) return
@@ -491,6 +506,29 @@ async function rebuild() {
     }
   })
   if (changed) { saveDraft(); render() }
+  return true
+}
+
+// 改动之前的整份状态。回写解析失败(报错 / 被登录或额度拦下)时整份退回 ——
+// 原来只有编辑框保存会回滚,改数字 / 删除 / 复制失败会把坏表达式留在条件区,之后单条测试和运行全挂(审计 2026-09-15)
+function snapState() {
+  return {
+    conditions: S.conditions.map(function (o) { return Object.assign({}, o) }),
+    plotOrder: (S.plotOrder || []).slice(), termHost: S.termHost, combine: S.combine,
+    plotExpr: S.plotExpr, plotName: S.plotName, extraPlots: (S.extraPlots || []).slice(),
+  }
+}
+function restoreState(sn) {
+  S.conditions = sn.conditions; S.plotOrder = sn.plotOrder; S.termHost = sn.termHost; S.combine = sn.combine
+  S.plotExpr = sn.plotExpr; S.plotName = sn.plotName; S.extraPlots = sn.extraPlots
+}
+async function mutateRebuild(mutate) {
+  const sn = snapState()
+  mutate()
+  S.genError = null
+  const ok = await rebuild()
+  if (!ok) { restoreState(sn); saveDraft(); render() }
+  return ok
 }
 
 // ═══ 魔法筛选(生成区) ═══════════════════════════════════════════
@@ -1283,7 +1321,7 @@ function bind() {
     if (!b || !b.dataset.mkt) return
     S.market = b.dataset.mkt; S.probe = {}; saveDraft()
     // 换市场要重新解析:字段在不同市场的可用性不一样(A 股没有的字段在美股有)
-    if (S.conditions.length) reparse(buildScript()); else render()
+    if (S.conditions.length) reparseKeepOff(); else render()
   })
   const eg = document.getElementById('mg-eg')
   if (eg) eg.addEventListener('click', function (e) {
@@ -1333,7 +1371,7 @@ function bind() {
     const n = S.conditions.filter(function (c) { return c.is_bool }).length
     if (!confirm('清空全部 ' + n + ' 个条件和当前扫描结果?草稿也会一起清掉。')) return
     S.conditions = []; S.result = null; S.probe = {}; S.notes = []; S.parseWarnings = []
-    S.combine = 'all'; S.plotExpr = ''; S.plotOrder = []; S.termHost = ''; S.loadedName = ''; S.officialPreset = null; saveDraft(); render()
+    S.combine = 'all'; S.plotExpr = ''; S.plotOrder = []; S.termHost = ''; S.extraPlots = []; S.draftPending = null; S.loadedName = ''; S.officialPreset = null; saveDraft(); render()
   })
 
   const run = document.getElementById('sc-run')
@@ -1430,15 +1468,14 @@ function onCondAction(e) {
     if (referenced(c.name, i)) {
       toast('「' + c.name + '」被别的条件引用着,先改那一条', 'warn'); return
     }
-    S.conditions.splice(i, 1); S.probe = {}
-    rebuild(); return
+    return mutateRebuild(function () { S.conditions.splice(i, 1); S.probe = {} })
   }
   if (act === 'edit') { S.editing = (S.editing === c.name ? null : c.name); S.editText = null; render(); return }
   if (act === 'dup') {
     if (c.kind === 'term') return
-    const copy = { name: uniqName(c.name), expr: c.expr, is_bool: c.is_bool, enabled: c.enabled }
-    S.conditions.splice(i + 1, 0, copy)
-    rebuild(); return
+    // 带上 kind(input / rec 关键字回写要靠它)
+    const copy = { name: uniqName(c.name), expr: c.expr, is_bool: c.is_bool, enabled: c.enabled, kind: c.kind || 'def' }
+    return mutateRebuild(function () { S.conditions.splice(i + 1, 0, copy) })
   }
   if (act === 'copy') {
     const sn = copySnippet(c)
@@ -1450,6 +1487,8 @@ function onCondAction(e) {
 function uniqName(base) {
   const taken = {}
   S.conditions.forEach(function (c) { taken[c.name] = 1 })
+  if (S.termHost) taken[S.termHost] = 1
+  ;(S.extraPlots || []).forEach(function (p) { taken[p.name] = 1 })
   let n = 2
   while (taken[base + '_' + n]) n++
   return base + '_' + n
@@ -1467,8 +1506,9 @@ function onNumChange(e) {
   if (!tok || tok.k !== 'num') return
   const v = (el.value || '').trim()
   if (!/^-?\d+(\.\d+)?$/.test(v)) { toast('要填一个数字', 'warn'); render(); return }
-  c.expr = c.expr.slice(0, tok.s) + v + c.expr.slice(tok.e)
-  rebuild()
+  // s / e 是后端按**码点**算的;JS 字符串按 UTF-16 切 —— 表达式里(比如注释)有 emoji 时差一位,改到别的字上(审计 2026-09-15 实跑)
+  const a = u16At(c.expr, tok.s), b = u16At(c.expr, tok.e)
+  return mutateRebuild(function () { c.expr = c.expr.slice(0, a) + v + c.expr.slice(b) })
 }
 
 async function commitEdit(text) {
@@ -1491,9 +1531,9 @@ async function commitEdit(text) {
   S.editText = null
   S.genError = null
   // 改完表达式可能把某个变量的最后一个引用去掉了 → rebuild 里会清孤儿
-  await rebuild()
-  if (S.genError) {
-    // 解析失败:恢复原条件(参数值一起恢复),编辑框留着刚才写的内容,报错照常显示,用户改完再提交
+  const ok = await rebuild()
+  if (!ok) {
+    // 解析失败或被登录 / 额度拦下:恢复原条件(参数值一起恢复),编辑框留着刚才写的内容,报错照常显示,用户改完再提交
     S.conditions = snapshot
     S.editing = c.name
     S.editText = raw
@@ -1513,7 +1553,7 @@ async function commitEdit(text) {
 // 只带直接引用的参数,和条件行上显示「参数名(值)」的范围一致;中间定义(totalReturn 怎么算)不带,那是整份脚本的事,用「复制脚本」
 function copySnippet(c) {
   const used = S.conditions.filter(function (o) {
-    return o.kind === 'input' && o.name !== c.name && paramRe(o.name).test(c.expr || '')
+    return o.kind === 'input' && o.name !== c.name && paramRe(o.name).test(stripComments(c.expr || ''))
   })
   const body = c.kind === 'term' ? String(c.expr || '').trim()
     : (c.kind === 'input' ? 'input ' : (c.kind === 'rec' ? 'rec ' : 'def ')) + c.name + ' = ' + c.expr + ';'
@@ -1539,9 +1579,36 @@ function withParams(expr) {
   const vals = inputVals()
   let out = String(expr == null ? '' : expr)
   Object.keys(vals).forEach(function (n) {
-    out = out.replace(paramRe(n, '(?![A-Za-z0-9_.(\\[])'), function (_, pre, nm) { return pre + nm + '(' + vals[n] + ')' })
+    // 注释里的参数名不动(审计:注释写 `# minStreak(小盘5)` 时,保存会报「只能填数字」)
+    out = mapCode(out, function (seg) {
+      return seg.replace(paramRe(n, '(?![A-Za-z0-9_.(\\[])'), function (_, pre, nm) { return pre + nm + '(' + vals[n] + ')' })
+    })
   })
   return out
+}
+// 只对代码部分做替换:ThinkScript 注释从 # 到行尾
+function mapCode(text, fn) {
+  return String(text == null ? '' : text).split('\n').map(function (line) {
+    const k = line.indexOf('#')
+    return k < 0 ? fn(line) : fn(line.slice(0, k)) + line.slice(k)
+  }).join('\n')
+}
+function stripComments(text) {
+  return String(text == null ? '' : text).split('\n').map(function (line) {
+    const k = line.indexOf('#')
+    return k < 0 ? line : line.slice(0, k)
+  }).join('\n')
+}
+// 后端 token 的 s / e 是码点偏移 → JS 字符串(UTF-16)里的下标
+function u16At(str, cp) {
+  str = String(str == null ? '' : str)
+  let i = 0, n = 0
+  while (n < cp && i < str.length) {
+    const code = str.charCodeAt(i)
+    i += (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) ? 2 : 1
+    n++
+  }
+  return i
 }
 const PARAM_VAL = /^(?:[-+]?(?:\d+(?:\.\d*)?|\.\d+)|yes|no|true|false)$/i
 function applyParams(text) {
@@ -1550,18 +1617,20 @@ function applyParams(text) {
   let err = null
   let out = String(text == null ? '' : text)
   Object.keys(vals).forEach(function (n) {
-    out = out.replace(paramRe(n, '\\s*\\(([^()]*)\\)'), function (all, pre, nm, v) {
-      v = v.trim()
-      if (!PARAM_VAL.test(v)) {
-        err = err || ('参数 ' + nm + ' 括号里只能填数字(或 yes / no),这里是「' + v + '」')
-        return all
-      }
-      if (changes[nm] != null && changes[nm] !== v) {
-        err = err || ('参数 ' + nm + ' 在这一条里填了两个不同的值(' + changes[nm] + ' 和 ' + v + '),参数是整份脚本共用的,只能有一个值')
-        return all
-      }
-      changes[nm] = v
-      return pre + nm
+    out = mapCode(out, function (seg) {
+      return seg.replace(paramRe(n, '\\s*\\(([^()]*)\\)'), function (all, pre, nm, v) {
+        v = v.trim()
+        if (!PARAM_VAL.test(v)) {
+          err = err || ('参数 ' + nm + ' 括号里只能填数字(或 yes / no),这里是「' + v + '」')
+          return all
+        }
+        if (changes[nm] != null && changes[nm] !== v) {
+          err = err || ('参数 ' + nm + ' 在这一条里填了两个不同的值(' + changes[nm] + ' 和 ' + v + '),参数是整份脚本共用的,只能有一个值')
+          return all
+        }
+        changes[nm] = v
+        return pre + nm
+      })
     })
   })
   return { text: out, changes: changes, err: err }
@@ -1713,6 +1782,8 @@ function applyParsed(d) {
   S.plotExpr = d.combine === 'custom' ? (d.plot_expr || '') : ''
   S.plotOrder = d.plot_order || []
   S.termHost = d.combine === 'custom' ? '' : (d.term_host || '')
+  S.extraPlots = d.extra_plots || []
+  if ((d.conditions || []).length) S.draftPending = null
   S.notes = d.notes || []
   S.parseWarnings = d.warnings || []
   // 后端判的「这套条件是不是原样的官方示例」(2026-09-14 · 原样运行不扣扫描次数)。只用于界面提示和按钮,
@@ -1752,20 +1823,23 @@ function canAi(r) {
 
 async function reparse(script) {
   if (!script) {
-    S.conditions = []; S.result = null; S.officialPreset = null; saveDraft(); render(); return
+    S.conditions = []; S.result = null; S.officialPreset = null; S.termHost = ''; S.extraPlots = []
+    saveDraft(); render(); return true
   }
   const r = await post(PARSE_API, { script: script, market: S.market })
   if (!r.ok) {
-    if (gateOf(r)) return
+    // 被登录 / 额度拦下也是失败:调用方要回滚,不能当成功(审计 2026-09-15:编辑保存被 401 吞掉后条件已被清过孤儿)
+    if (gateOf(r)) return false
     S.genError = errOf(r, httpFail('解析失败', r.status))
     S.canTryAi = false
-    render(); return
+    render(); return false
   }
   S.genError = null
   applyParsed(r.data)
   S.result = null           // 条件变了,旧结果就不是这套条件的结果了,不能留着骗人
   S.probe = {}
   saveDraft(); render()
+  return true
 }
 
 async function generate(allowAi) {
@@ -1819,6 +1893,7 @@ async function generate(allowAi) {
     render(); return
   }
 
+  const sn = snapState(), prevInput = S.input
   const fresh = condsOf(d)
   if (!appending) {
     S.conditions = fresh
@@ -1827,6 +1902,7 @@ async function generate(allowAi) {
     S.plotExpr = d.combine === 'custom' ? (d.plot_expr || '') : ''
     S.plotOrder = d.plot_order || []
     S.termHost = d.combine === 'custom' ? '' : (d.term_host || '')
+    S.extraPlots = d.extra_plots || []
   } else {
     mergeAppend(fresh)
   }
@@ -1835,7 +1911,10 @@ async function generate(allowAi) {
   S.result = null; S.probe = {}
   // 回写再解析一次 —— 保证 tokens / is_bool 与后端完全一致(合并后名字可能改过)。
   // reparse 送的是脚本,不会再触发 AI,所以 d.ai 要在这之后补回去。
-  await reparse(buildScript())
+  if (!(await reparseKeepOff())) {
+    // 合并 / 替换之后回写解析失败(比如追加的脚本里有和宿主同名的定义):条件区退回原样,生成框里的原文还给用户
+    restoreState(sn); S.input = prevInput || text; saveDraft(); render(); return
+  }
   S.ai = d.ai || null
   S.kw = d.kw || null
   render()
@@ -1863,9 +1942,15 @@ function condsOf(d) {
 // 两趟走 —— 先算完整张改名表再改写表达式,不然改到一半的名字会被二次替换。
 function mergeAppend(fresh) {
   const taken = {}
-  S.conditions.forEach(function (c) { taken[c.name] = 1 })
+  S.conditions.forEach(function (c) { if (c.kind !== 'term') taken[c.name] = 1 })
+  // 宿主、前面的 plot、plot 名字不在条件列表里,但名字同样被占着 —— 漏掉的话追加一句同名 def,
+  // 脚本里出现两句 def 宿主,编译报「定义了两次」(审计 2026-09-15)
+  if (S.termHost) taken[S.termHost] = 1
+  ;(S.extraPlots || []).forEach(function (p) { taken[p.name] = 1 })
+  if (S.plotName) taken[S.plotName] = 1
   const map = {}
   fresh.forEach(function (c) {
+    if (c.kind === 'term') return          // term 的名字(scan#k)只是界面标识,不进脚本
     if (!taken[c.name]) { taken[c.name] = 1; return }
     let k = 2
     while (taken[c.name + '_' + k]) k++
@@ -1874,7 +1959,10 @@ function mergeAppend(fresh) {
   })
   fresh.forEach(function (c) {
     Object.keys(map).forEach(function (old) {
-      c.expr = (c.expr || '').replace(new RegExp('\\b' + old + '\\b', 'g'), map[old])
+      // 整词替换,和参数匹配同一规则:原来用 \b,x.old / old_2 这类会被误改
+      c.expr = mapCode(String(c.expr || ''), function (seg) {
+        return seg.replace(paramRe(old), function (_, pre) { return pre + map[old] })
+      })
     })
   })
   fresh.forEach(function (c) {
@@ -2090,6 +2178,13 @@ function insertField(e) {
   try { ed.focus(); ed.setSelectionRange(pos, pos) } catch (err) { /* 老浏览器 */ }
 }
 
+// 恢复草稿:解析不成(没登录 / 额度 / 报错)就把原文记在 draftPending,saveDraft 不会覆盖它
+async function restoreDraft(draft) {
+  const ok = await reparse(draft)
+  if (!ok) S.draftPending = draft
+  return ok
+}
+
 // ─── 启动 ─────────────────────────────────────────────────────────
 async function boot() {
   try {
@@ -2125,7 +2220,7 @@ async function boot() {
   }
   let draft = null
   try { draft = localStorage.getItem(LS) } catch (e) { /* 隐私模式 */ }
-  if (draft && draft.trim()) { await reparse(draft); return }
+  if (draft && draft.trim()) { await restoreDraft(draft); return }
   render()
 }
 

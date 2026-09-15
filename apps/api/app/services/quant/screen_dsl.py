@@ -1302,6 +1302,8 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
     for st in c.stmts:
         if st.kind == "plot":
             plot_stmt = st
+    # 前面的 plot(扫描只看最后一个):不是条件,但要原样留在脚本里 —— 原来直接丢,用到的定义还被当成「停用条件」
+    extra_plots = [st for st in c.stmts if st.kind == "plot" and st is not plot_stmt]
     body = [st for st in c.stmts if st.kind != "plot"]
     def_names = {st.name for st in body}
 
@@ -1312,6 +1314,13 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
         spans = _split_top_and(src, plot_stmt.expr_start, plot_stmt.expr_end)
         if spans is not None and len(spans) == len(nodes):
             terms = [(n, s, e) for n, (s, e) in zip(nodes, spans)]
+    # plot 是常量:`plot scan = false / no` 是「一条都没启用」(前端全停用时就这么写),不是一条叫 false 的条件 ——
+    # 原来它被拆成一条启用的条件行,再打开任意一条就变成 `a and false`,永远 0 命中(审计 2026-09-15 实跑确认)。
+    # `yes / true` 等于「全部放行」,前端没法用开关表达,按自定义组合原样保留
+    const_plot = None
+    if plot_stmt is not None and plot_stmt.node[0] == "bool":
+        const_plot = bool(plot_stmt.node[1])
+        terms = []
     plot_refs = [n[1] for n, _, _ in terms if n[0] == "name" and n[1] in def_names]
 
     # plot 只写了一个名字、条件都在那条 def 里(2026-09-15 用户第二份猎杀 FOMO:
@@ -1328,7 +1337,12 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
         for st in body:
             if st.name != hn:
                 others |= _names_in(st.node)
-        if hst.kind != "input" and not hst.rec and hn not in others and _is_boolean(hst.node):
+        if hst.kind != "input" and not hst.rec and hn not in others and hst.node[0] == "bool" and not hst.node[1]:
+            # 宿主全停用时前端写成 `def 宿主 = false;`:仍是宿主,只是没有启用的项(不能当成一条叫 false 的条件)
+            term_host = hn
+            terms = []
+            plot_refs = []
+        elif hst.kind != "input" and not hst.rec and hn not in others and _is_boolean(hst.node):
             hnodes = _and_terms(hst.node)
             hspans = _split_top_and(src, hst.expr_start, hst.expr_end)
             if len(hnodes) >= 2 and hspans is not None and len(hspans) == len(hnodes):
@@ -1345,6 +1359,8 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
             used |= _names_in(n)
     if plot_stmt is not None and not terms:
         used |= _names_in(plot_stmt.node)
+    for ep in extra_plots:
+        used |= _names_in(ep.node)
 
     def _toks_of(node, start: int, end: int) -> tuple[list, str]:
         toks: list = []
@@ -1409,12 +1425,13 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
 
     return {
         "conditions": conditions,
-        "combine": "all" if terms else "custom",
+        "combine": "all" if (terms or term_host or const_plot is False) else "custom",
         "plot_name": c.plot_name,
         "plot_expr": src[plot_stmt.expr_start:plot_stmt.expr_end] if plot_stmt else "",
         "plot_refs": plot_refs,
         "plot_order": plot_order,
         "term_host": term_host,
+        "extra_plots": [{"name": ep.name, "expr": src[ep.expr_start:ep.expr_end]} for ep in extra_plots],
         "notes": rs.notes,
     }
 
@@ -1452,7 +1469,17 @@ def _split_top_and(src: str, start: int, end: int) -> list[tuple[int, int]] | No
         elif t.kind == "op" and t.val in (")", "]"):
             depth -= 1
         seg.append(t)
-    return spans
+    # 整段被括号包住、里面还是 and 链的项继续拆(`a and (b and (c or d))`):语法树不记括号,_and_terms 会摊平成 3 项,
+    # 这里不拆的话段数对不上,整个 plot 退成 custom、失去逐条开关(审计 2026-09-15 实跑确认)
+    out: list[tuple[int, int]] = []
+    for s, e in spans:
+        if _wrapped(src[s:e]):
+            inner = _split_top_and(src, s + 1, e - 1)
+            if inner is not None and len(inner) >= 2:
+                out.extend(inner)
+                continue
+        out.append((s, e))
+    return out
 
 
 def _wrapped(text: str) -> bool:

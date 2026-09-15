@@ -542,6 +542,27 @@ plot 是裸名字就只有一项。现在 plot 只写一个名字、那条 def �
 同日用户追加:**「复制这一条」(⎘)连同它直接用到的参数一起复制**(`copySnippet`):前面是 `input 参数 = 值;`(按脚本里 input 的先后、整词匹配),
 后面是这一条本身(term 原样、def 写成 `def 名 = …;`),整段能直接粘进 ThinkScript。只带直接引用的参数,和条件行显示「参数名(值)」的范围一致;
 中间定义不带(要完整的用「复制脚本」)。复制出来是「参数名(值)」那种显示形式就错了 —— 那在 ThinkScript 里是函数调用。render_check 同组 +5 条。
+
+**第 8 条 · 审计补测(2026-09-15,用户要求「都修了,遗漏的测试用例全部补上」)**。审计实跑出 5 个静默错,外加一批同类:
+1. **`plot scan = false / no` 不是一条条件**:前端全停用就这么写,旧 decompose 拆成一条启用的「false」,再开任意一条变成 `a and false` 永远 0 命中。
+   现在常量 false 不出条件行(combine=all);`yes / true` 按自定义组合原样保留;宿主全停用 `def H = false;` 仍是宿主、没有条件行。
+2. **所有「改完回写」都走 `reparseKeepOff()`**(`buildScript(true)` 回写 + 按名字 / 原文把停用关回去)。原来切市场、追加生成用
+   `reparse(buildScript())`,停用的 term 没 def 可留,被**永久**删掉。render_check 有源码断言:页面里不许再出现 `reparse(buildScript())`。
+3. **整段括号里的 and 继续拆**(`_split_top_and` 递归):`a and (b and (c or d))` 原来段数对不上、整体退成 custom、失去逐条开关。
+4. **后端 token 的 s / e 是码点偏移,前端必须 `u16At` 换算再切**:表达式注释里有 emoji 时,改数字会改到旁边的字。
+5. **前面的 plot 进 `extra_plots`,原样写回、它用到的定义是中间量**:原来前一个 plot 被静默删掉,它用到的定义变成「停用条件」。
+6. 改动类操作(改数字 / 删除 / 复制)一律 `mutateRebuild(改动)`:先 `snapState`,回写失败整份 `restoreState`;
+   `reparse` 返回成败,**被登录 / 额度拦下(gateOf)也算失败** —— 原来编辑保存被 401 吞掉后当成功,条件已被清过孤儿。
+   追加 / 替换生成失败同样整份退回,生成框原文还给用户。
+7. `referenced` 整词、跳注释,并且看自定义组合的 plot 原文与前面的 plot(原来 custom 下改参数会把 plot 用到的定义当孤儿清掉)。
+   `mergeAppend` 占用表含宿主、前面的 plot、plot 名(原来追加同名 def 会写出两句 `def 宿主`),改名按整词、跳注释;`uniqName` 同样避开。
+8. 参数值显示 / 保存 / 复制都跳过注释(注释写 `# minStreak(小盘5)` 原来存不了)。启动恢复草稿没解析成(没登录)时记 `draftPending`,
+   `saveDraft` 不再拿空脚本覆盖它。复制一条带上 kind。
+用例:`test_screen_series.py` H 组 22 条;`render_check.js`「审计补测」56 条(常量 plot / 停用不丢 / 追加合并 / 清孤儿 / 失败回滚 /
+单条测试 / 保存策略 / 草稿 / 数据源过滤与后端文案前缀对照 / 额度 / 字段插入 / emoji / 注释参数);
+官方示例跨层用例 `tests/test_screen_xlayer_official.py` + `strategies/xlayer_build.js`(真实前端回写 → 真实后端判定,三步命令见文件头)。
+render_check 的「数据源过滤」会读 `../../../api/app/services/quant/screen_source.py`,**打包到服务器跑时要带上这个文件并保持目录结构**
+(`tar -C apps web/public/strategies api/app/services/quant/screen_source.py`,在 `web/public/strategies` 里跑)。
 用例:`test_screen_series.py` G 组 26 条;`render_check.js`「条件宿主」13 条。
 
 ## 部署坑:`apps/web/public/**` **新增**文件要 `restart web`,改动文件不用
@@ -2090,6 +2111,9 @@ VCP 迭代到 v3 效果一般,用户要保留成果、另起研究其他趋势�
    ① 回填必须 `research-backfill --line breakout --branch breakout3y --from 2023-09-15`,**不带 `--branch` 会连带回填另一个方向**;
    ② `run_latest` 不替一行都没有的方向起步(全新安装除外)—— 否则回填没跑完时每晚任务让它从今天起步,三年的起点就被占了;
    ③ 研究线回测关判定仍按 `best = breakout`(一年),三年方向只作对照。
+   ④ **补历史后必须核对基准(`__BENCH__`)的最早日期**。2026-09-15 第 2 轮 `fetch-older --end 2022-12-19` 个股补到 2021-09-14(3,067 只、失败 0),
+   基准却停在 2022-12-19、统计里不报错;直接问腾讯是给得出的(探针 320 根从 2021-09-14 起),原因没查清,单独补了一次基准。
+   基准不够早时 P-01(200 日线)和 RS 全算不出,回填不报错、只是整段不开仓 —— `~/run_3y.sh` 起跑前卡了这一条才发现。
    (af) **回测提速:指标按需算(2026-09-15 用户:「同一个研究每一轮回测应该保留可以复用的数据,越跑越快才对」)**。实测 v14 一年:
    回溯筛选每天 7~8 秒但已按 (池, 日期) 落 `agent_watch_pool`,第二轮起直接复用;引擎指标每只票 2ms,可 `ensure_cache` 给每只票从首次进池起
    **每一天**都算,回测步骤合计 413 秒、每轮从头来。现在规则固定、不走优化器的研究线方向(`_lazy_ok`:不在 VCP 线、tunable 为空)

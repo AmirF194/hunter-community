@@ -926,6 +926,388 @@ try {
   console.log('FAIL 条件行=plot项定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+
+// ─── 筛选器 · 审计补测(2026-09-15)───────────────────────────────────────────
+// 覆盖审计列出的缺口:常量 plot、停用项在切市场 / 追加时丢失、追加合并、custom 下清孤儿、改动失败回滚、
+// 编辑被登录拦下、单条测试脚本、保存弹窗、草稿恢复、数据源名字过滤、额度提示、字段插入、emoji 偏移、注释里的参数名、前面的 plot。
+// 每条都注明它防的是哪种静默出错。网络一律用假的 post。
+function scCtx() {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  inlineScripts(fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8'))
+    .forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    var TOASTS = [], SENT = [], LOGINS = [], NL = String.fromCharCode(10)
+    toast = function (m, k) { TOASTS.push([String(m), k || '']) }
+    needLogin = function (m) { LOGINS.push(m || '') }
+    localStorage.setItem('hunter_token', 't'); S.login = true
+    // 假后端:按顺序取 RESP 里的回应;没有就回显当前状态(当成解析成功)
+    var RESP = []
+    function echo() {
+      return { ok: true, status: 200, data: {
+        combine: S.combine, plot_name: S.plotName || 'scan', term_host: S.termHost, extra_plots: S.extraPlots,
+        plot_expr: S.plotExpr, plot_order: S.plotOrder,
+        plot_refs: S.conditions.filter(function (c) { return c.is_bool && c.kind !== 'term' }).map(function (c) { return c.name }),
+        conditions: S.conditions.map(function (c) { return Object.assign({ tokens: c.tokens || [] }, c) }) } }
+    }
+    post = async function (url, body) { SENT.push({ url: url, body: body }); var x = RESP.shift(); return x ? (typeof x === 'function' ? x(url, body) : x) : echo() }
+    var ERR400 = { ok: false, status: 400, data: { detail: '假后端:解析失败' } }
+    var ERR401 = { ok: false, status: 401, data: { detail: '请先登录' } }
+  `, ctx, { filename: 'audit-setup' })
+  return ctx
+}
+const AUDIT_RESULTS = []
+function auditCheck(group, name, ok, detail) { AUDIT_RESULTS.push([group, name, !!ok, detail]) }
+
+const auditJobs = []
+function auditJob(group, fn) {
+  auditJobs.push(Promise.resolve().then(fn).catch(e => auditCheck(group, '执行异常', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)))
+}
+
+// A · 常量 plot:全停用写 false,解析回来一条都不启用
+auditJob('常量plot', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['c1', 'c2'], plot_order: ['c1', 'c2'], conditions: [
+      { name: 'c1', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'c2', expr: 'volume > 1000', kind: 'def', is_bool: true, tokens: [] } ] })
+    S.conditions.forEach(function (c) { c.enabled = false })
+    var A_OFF = buildScript(false)
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: [], plot_order: [], conditions: [
+      { name: 'c1', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'c2', expr: 'volume > 1000', kind: 'def', is_bool: true, tokens: [] } ] })
+    var A_ROWS = condRows().map(function (x) { return x.c.name + ':' + x.c.enabled })
+    var A_HTML = vConditions()
+  `, ctx)
+  auditCheck('常量plot', '全停用回写成 plot scan = false', /plot scan = false;$/.test(ctx.A_OFF), ctx.A_OFF)
+  auditCheck('常量plot', '⭐解析回来两条都停用、没有叫 false 的行', JSON.stringify(ctx.A_ROWS) === JSON.stringify(['c1:false', 'c2:false']), ctx.A_ROWS)
+  auditCheck('常量plot', '表头 0 个条件', /以下<b>0<\/b> 个条件/.test(ctx.A_HTML))
+})
+
+// B · 停用项在切市场 / 追加生成时不丢
+auditJob('停用不丢', async () => {
+  const ctx = scCtx()
+  const src = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  auditCheck('停用不丢', '⭐页面里没有 reparse(buildScript()) / reparse(buildScript(false)) 这种会丢停用 term 的回写',
+    !/reparse\(buildScript\(\)\)/.test(src) && !/reparse\(buildScript\(false\)\)/.test(src))
+  auditCheck('停用不丢', '切市场走 reparseKeepOff', /S\.market = b\.dataset\.mkt; S\.probe = \{\}; saveDraft\(\)[\s\S]{0,200}reparseKeepOff\(\)/.test(src))
+  vm.runInContext(`
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['c1'], plot_order: ['scan#1', 'c1'], conditions: [
+      { name: 'c1', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'scan#1', title: 'volume', expr: 'volume > volume[1]', kind: 'term', is_bool: true, tokens: [] } ] })
+    S.conditions[1].enabled = false
+  `, ctx)
+  await vm.runInContext(`reparseKeepOff()`, ctx)
+  auditCheck('停用不丢', '⭐回写的脚本里仍有停用的 term', /volume > volume\[1\]/.test(ctx.SENT[0].body.script), ctx.SENT[0] && ctx.SENT[0].body.script)
+  auditCheck('停用不丢', '解析回来仍是停用', vm.runInContext(`S.conditions.filter(function (c) { return c.kind === 'term' })[0].enabled`, ctx) === false)
+  // 追加生成:新脚本解析成功 → 合并 → 回写;停用 term 要在回写脚本里、合并后仍停用
+  vm.runInContext(`
+    S.mode = 'append'; S.input = 'def c9 = close > 9;' + NL + 'plot scan = c9;'
+    SENT.length = 0
+    RESP.push({ ok: true, status: 200, data: { combine: 'all', plot_name: 'scan', plot_refs: ['c9'], plot_order: ['c9'],
+      conditions: [{ name: 'c9', expr: 'close > 9', kind: 'def', is_bool: true, tokens: [] }] } })
+  `, ctx)
+  await vm.runInContext(`generate()`, ctx)
+  const s2 = ctx.SENT[1] && ctx.SENT[1].body.script
+  auditCheck('停用不丢', '⭐追加后回写的脚本含停用 term 与新条件', /volume > volume\[1\]/.test(s2) && /def c9 = close > 9;/.test(s2), s2)
+  auditCheck('停用不丢', '追加后停用 term 仍停用', vm.runInContext(`S.conditions.filter(function (c) { return c.kind === 'term' })[0].enabled`, ctx) === false)
+})
+
+// C · 追加合并
+auditJob('追加合并', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    applyParsed({ combine: 'all', plot_name: 'scan', term_host: 'H', plot_refs: ['a'], plot_order: ['H#1', 'a'], conditions: [
+      { name: 'n', expr: '3', kind: 'input', is_bool: false, tokens: [] },
+      { name: 'a', expr: 'close > close[n]', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'H#1', title: 'close', expr: 'close > n', kind: 'term', is_bool: true, tokens: [] } ] })
+    var FRESH = condsOf({ combine: 'all', plot_refs: ['a', 'H'], plot_order: ['a', 'scan#1', 'H'], conditions: [
+      { name: 'n', expr: '5', kind: 'input', is_bool: false, tokens: [] },
+      { name: 'a', expr: 'volume > volume[n] and MACD.n > n', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'H', expr: 'a and close > n # n 是周期', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'scan#1', title: 'high', expr: 'high > n_old', kind: 'term', is_bool: true, tokens: [] } ] })
+    mergeAppend(FRESH)
+    var C_BY = {}; S.conditions.forEach(function (c, i) { C_BY[c.name + '@' + i] = c.expr })
+    var C_NAMES = S.conditions.map(function (c) { return c.name })
+  `, ctx)
+  const names = ctx.C_NAMES, by = ctx.C_BY
+  const find = (nm) => Object.keys(by).filter(k => k.split('@')[0] === nm).map(k => by[k])
+  auditCheck('追加合并', '重名的 input / def 改名为 _2', names.includes('n_2') && names.includes('a_2'), names)
+  auditCheck('追加合并', '⭐和宿主同名的 def 也改名(原来会写出两句 def H)', names.includes('H_2') && names.filter(n => n === 'H').length === 0, names)
+  auditCheck('追加合并', '新条件内部引用跟着改名', find('a_2')[0] === 'volume > volume[n_2] and MACD.n > n_2', find('a_2'))
+  auditCheck('追加合并', '整词替换:MACD.n 不被改;n_old 不被改', /MACD\.n > n_2/.test(find('a_2')[0]) && find('scan#1')[0] === 'high > n_old', [find('a_2'), find('scan#1')])
+  auditCheck('追加合并', '注释里的名字不改', find('H_2')[0] === 'a_2 and close > n_2 # n 是周期', find('H_2'))
+  auditCheck('追加合并', '原有条件一个字不变', find('a')[0] === 'close > close[n]' && find('H#1')[0] === 'close > n' && find('n')[0] === '3')
+  // 追加之后回写解析失败 → 条件区与生成框退回原样
+  const ctx2 = scCtx()
+  vm.runInContext(`
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['c1'], plot_order: ['c1'], conditions: [
+      { name: 'c1', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] } ] })
+    S.mode = 'append'; S.input = 'def c2 = close > 2;' + NL + 'plot scan = c2;'
+    RESP.push({ ok: true, status: 200, data: { combine: 'all', plot_name: 'scan', plot_refs: ['c2'], plot_order: ['c2'],
+      conditions: [{ name: 'c2', expr: 'close > 2', kind: 'def', is_bool: true, tokens: [] }] } })
+    RESP.push(ERR400)
+  `, ctx2)
+  await vm.runInContext(`generate()`, ctx2)
+  auditCheck('追加合并', '⭐追加后解析失败:条件区退回原样', JSON.stringify(vm.runInContext(`S.conditions.map(function (c) { return c.name })`, ctx2)) === JSON.stringify(['c1']))
+  auditCheck('追加合并', '追加失败:生成框里的原文还给用户、报错可见', /def c2 = close > 2;/.test(vm.runInContext('S.input', ctx2)) && !!vm.runInContext('S.genError', ctx2))
+})
+
+// D · 自定义组合 / 前面的 plot:清孤儿不能删 plot 用到的定义
+auditJob('清孤儿', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    applyParsed({ combine: 'custom', plot_name: 'scan', plot_expr: 'if a and volume > 0 then yes else no', plot_refs: [], plot_order: [], conditions: [
+      { name: 'n', expr: '3', kind: 'input', is_bool: false, tokens: [] },
+      { name: 'a', expr: 'close > close[n]', kind: 'def', is_bool: false, tokens: [] } ] })
+    pruneVars()
+    var D_SCRIPT = buildScript(true)
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['a'], plot_order: ['a'], extra_plots: [{ name: 'p1', expr: 'b' }], conditions: [
+      { name: 'b', expr: 'volume > volume[1]', kind: 'def', is_bool: false, tokens: [] },
+      { name: 'a', expr: 'close > close[1]', kind: 'def', is_bool: true, tokens: [] } ] })
+    pruneVars()
+    var D_EXTRA = buildScript(false)
+    var D_REF = referenced('b', -1)
+  `, ctx)
+  auditCheck('清孤儿', '⭐custom:plot 原文用到的 a 与它用到的参数 n 都留着', /input n = 3;/.test(ctx.D_SCRIPT) && /def a = close > close\[n\];/.test(ctx.D_SCRIPT), ctx.D_SCRIPT)
+  auditCheck('清孤儿', '⭐前面的 plot 原样写回,且在最后一个 plot 之前', /plot p1 = b;\nplot scan = a;$/.test(ctx.D_EXTRA), ctx.D_EXTRA)
+  auditCheck('清孤儿', '前面的 plot 用到的 b 不被当孤儿', ctx.D_REF === true && /def b = /.test(ctx.D_EXTRA))
+})
+
+// E · 改动失败回滚:改数字 / 删除 / 复制 / 编辑保存(400 与 401)
+auditJob('失败回滚', async () => {
+  const setup = `
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['c1', 'c2'], plot_order: ['c1', 'c2'], conditions: [
+      { name: 'k', expr: '20', kind: 'input', is_bool: false, tokens: [{ k: 'num', t: '20', s: 0, e: 2 }] },
+      { name: 'c1', expr: 'volume > Average(volume, 20)', kind: 'def', is_bool: true, tokens: [{ k: 'num', t: '20', s: 25, e: 27 }] },
+      { name: 'c2', expr: 'close > k and high > k', kind: 'def', is_bool: true, tokens: [] } ] })
+  `
+  let ctx = scCtx()
+  vm.runInContext(setup + `RESP.push(ERR400)`, ctx)
+  await vm.runInContext(`onNumChange({ target: { classList: { contains: function () { return true } }, dataset: { c: '1', t: '0' }, value: '300' } })`, ctx)
+  auditCheck('失败回滚', '⭐改数字解析失败 → 表达式退回原样、报错可见', vm.runInContext(`S.conditions[1].expr`, ctx) === 'volume > Average(volume, 20)' && !!vm.runInContext('S.genError', ctx))
+  ctx = scCtx()
+  vm.runInContext(setup + `RESP.push(ERR400)`, ctx)
+  await vm.runInContext(`onCondAction({ target: { closest: function () { return { dataset: { i: '1', act: 'del' } } } } })`, ctx)
+  auditCheck('失败回滚', '删除解析失败 → 条件退回', vm.runInContext(`S.conditions.map(function (c) { return c.name }).join(',')`, ctx) === 'k,c1,c2')
+  ctx = scCtx()
+  vm.runInContext(setup + `RESP.push(ERR400)`, ctx)
+  await vm.runInContext(`onCondAction({ target: { closest: function () { return { dataset: { i: '1', act: 'dup' } } } } })`, ctx)
+  auditCheck('失败回滚', '复制解析失败 → 条件退回', vm.runInContext(`S.conditions.length`, ctx) === 3)
+  ctx = scCtx()
+  vm.runInContext(setup, ctx)
+  await vm.runInContext(`onCondAction({ target: { closest: function () { return { dataset: { i: '1', act: 'dup' } } } } })`, ctx)
+  auditCheck('失败回滚', '复制成功:回写脚本里有 def c1_2,且保留 kind', /def c1_2 = volume > Average\(volume, 20\);/.test(ctx.SENT[0].body.script)
+    && vm.runInContext(`S.conditions.filter(function (c) { return c.name === 'c1_2' })[0].kind`, ctx) === 'def', ctx.SENT[0] && ctx.SENT[0].body.script)
+  // 编辑保存:400 → 退回并保留带参数值的原文;401 → 同样退回、不当成功;成功改共用参数 → 提示影响几处
+  ctx = scCtx()
+  vm.runInContext(setup + `S.editing = 'c2'; RESP.push(ERR400)`, ctx)
+  await vm.runInContext(`commitEdit('close > k(30) and high > k')`, ctx)
+  auditCheck('失败回滚', '编辑 400:参数值与条件都退回,编辑框留着带值的原文',
+    vm.runInContext(`S.conditions[0].expr + '|' + S.conditions[2].expr + '|' + S.editing + '|' + S.editText`, ctx) === '20|close > k and high > k|c2|close > k(30) and high > k')
+  ctx = scCtx()
+  vm.runInContext(setup + `S.editing = 'c2'; RESP.push(ERR401)`, ctx)
+  await vm.runInContext(`commitEdit('close > k(30) and high > k')`, ctx)
+  auditCheck('失败回滚', '⭐编辑被 401 拦下:不当成功,参数值退回、弹登录', vm.runInContext(`S.conditions[0].expr + '|' + S.editing`, ctx) === '20|c2' && ctx.LOGINS.length === 1)
+  ctx = scCtx()
+  vm.runInContext(setup + `S.editing = 'c2'`, ctx)
+  await vm.runInContext(`commitEdit('close > k(30) and high > k')`, ctx)
+  auditCheck('失败回滚', '编辑成功改共用参数:提示用到它的处数', ctx.TOASTS.some(t => /参数 k 改成 30/.test(t[0])) && /input k = 30;/.test(ctx.SENT[0].body.script), ctx.TOASTS)
+})
+
+// F · 单条测试拼出的脚本
+auditJob('单条测试', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    applyParsed({ combine: 'all', plot_name: 'scan', term_host: 'FOMO_Setup', plot_refs: ['isGreen'], plot_order: ['FOMO_Setup#1', 'FOMO_Setup#2', 'isGreen'], conditions: [
+      { name: 'minStreak', expr: '3', kind: 'input', is_bool: false, tokens: [] },
+      { name: 'isGreen', expr: 'close > close[1]', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'greenStreak', expr: 'if isGreen then greenStreak[1] + 1 else 0', kind: 'rec', is_bool: false, tokens: [] },
+      { name: 'FOMO_Setup#1', title: 'greenStreak', expr: 'greenStreak >= minStreak', kind: 'term', is_bool: true, tokens: [] },
+      { name: 'FOMO_Setup#2', title: 'isGreen', expr: '(isGreen or close > 1)', kind: 'term', is_bool: true, tokens: [] } ] })
+    RESP.push({ ok: true, status: 200, data: { matched: 7 } })
+    RESP.push({ ok: true, status: 200, data: { matched: 2 } })
+    RESP.push({ ok: false, status: 429, data: { detail: '单条测试太频繁' } })
+  `, ctx)
+  await vm.runInContext(`probeOne(S.conditions[3]).then(function () { return probeOne(S.conditions[1]) }).then(function () { return probeOne(S.conditions[4]) })`, ctx)
+  const s1 = ctx.SENT[0].body.script, s2 = ctx.SENT[1].body.script
+  auditCheck('单条测试', '⭐term:plot 写原文,input / rec 关键字保留,不输出宿主与 term 的 def',
+    /plot scan = greenStreak >= minStreak;$/.test(s1) && /input minStreak = 3;/.test(s1) && /rec greenStreak = /.test(s1) && !/def FOMO_Setup/.test(s1) && !/#/.test(s1), s1)
+  auditCheck('单条测试', 'def 行:plot 写名字', /plot scan = isGreen;$/.test(s2), s2)
+  auditCheck('单条测试', '请求带 probe:true、limit 1', ctx.SENT[0].body.probe === true && ctx.SENT[0].body.limit === 1)
+  auditCheck('单条测试', '命中数记在这一条上', vm.runInContext(`S.probe['FOMO_Setup#1'] + ',' + S.probe['isGreen']`, ctx) === '7,2')
+  auditCheck('单条测试', '429 弹提示、这一条记为失败', ctx.TOASTS.some(t => t[1] === 'warn' && /太频繁/.test(t[0])) && vm.runInContext(`S.probe['FOMO_Setup#2']`, ctx) === null)
+})
+
+// G · 保存弹窗 / 保存 / 加载失败退回市场
+auditJob('保存策略', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    var MODAL_HTML = ''
+    var FIELDS = { '#sv-name': { value: '我的 FOMO', focus: function () {}, select: function () {}, addEventListener: function () {} },
+                   '#sv-err': { style: {}, textContent: '', innerHTML: '' }, '#sv-ok': { disabled: false, textContent: '', addEventListener: function () {} } }
+    var MODAL = { querySelector: function (q) { return FIELDS[q] || null }, remove: function () { MODAL.removed = true } }
+    openModal = function (h) { MODAL_HTML = h; return MODAL }
+    applyParsed({ combine: 'all', plot_name: 'scan', term_host: 'FOMO_Setup', plot_refs: ['isGreen'], plot_order: ['FOMO_Setup#1', 'FOMO_Setup#2', 'isGreen'], conditions: [
+      { name: 'minStreak', expr: '3', kind: 'input', is_bool: false, tokens: [] },
+      { name: 'isGreen', expr: 'close > close[1]', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'greenStreak', expr: 'if isGreen then greenStreak[1] + 1 else 0', kind: 'rec', is_bool: false, tokens: [] },
+      { name: 'FOMO_Setup#1', title: 'greenStreak', expr: 'greenStreak >= minStreak', kind: 'term', is_bool: true, tokens: [] },
+      { name: 'FOMO_Setup#2', title: 'close', expr: 'close > 5', kind: 'term', is_bool: true, tokens: [] } ] })
+    S.conditions[4].enabled = false
+    S.saved = []
+    openSaveDialog()
+    RESP.push({ ok: true, status: 200, data: { created: true } })
+    RESP.push({ ok: true, status: 200, data: { items: [] } })
+  `, ctx)
+  auditCheck('保存策略', '⭐弹窗明说停用的 term 不会存进去', /停用的 <b>1<\/b> 条是 plot 里直接写的比较式,<b>不会存进去<\/b>/.test(ctx.MODAL_HTML), ctx.MODAL_HTML.slice(0, 400))
+  await vm.runInContext(`doSave('我的 FOMO', MODAL)`, ctx)
+  const body = ctx.SENT[0] && ctx.SENT[0].body
+  auditCheck('保存策略', '⭐保存的脚本:input / rec 关键字、宿主结构、停用 term 不在里面',
+    body && /input minStreak = 3;/.test(body.script) && /rec greenStreak = /.test(body.script)
+    && /def FOMO_Setup = greenStreak >= minStreak and isGreen;\nplot scan = FOMO_Setup;$/.test(body.script), body && body.script)
+  auditCheck('保存策略', '保存带市场与排序', body && body.market === 'us' && 'sort_by' in body)
+  // 加载失败:市场退回原来的、不算加载成功
+  const ctx2 = scCtx()
+  vm.runInContext(`
+    S.market = 'us'; S.loadedName = '旧的'
+    S.saved = [{ id: 9, name: '港股那个', market: 'hk', script: 'def c = close > 1;' + NL + 'plot scan = c;' }]
+    RESP.push(ERR400)
+  `, ctx2)
+  await vm.runInContext(`loadSavedPreset(9)`, ctx2)
+  auditCheck('保存策略', '加载解析失败:市场退回、loadedName 清空', vm.runInContext(`S.market + '|' + S.loadedName`, ctx2) === 'us|')
+})
+
+// H · 草稿:宿主脚本能恢复;401 时草稿不被覆盖
+auditJob('草稿', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    var DRAFT = 'input n = 3;' + NL + 'def a = close > close[n];' + NL + 'def H = a and close > 1;' + NL + 'plot scan = H;'
+    RESP.push({ ok: true, status: 200, data: { combine: 'all', plot_name: 'scan', term_host: 'H', plot_refs: ['a'], plot_order: ['a', 'H#1'], conditions: [
+      { name: 'n', expr: '3', kind: 'input', is_bool: false, tokens: [] },
+      { name: 'a', expr: 'close > close[n]', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'H#1', title: 'close', expr: 'close > 1', kind: 'term', is_bool: true, tokens: [] } ] } })
+  `, ctx)
+  await vm.runInContext(`restoreDraft(DRAFT)`, ctx)
+  vm.runInContext(`saveDraft(); var H_SAVED = localStorage.getItem(LS)`, ctx)
+  auditCheck('草稿', '宿主脚本草稿恢复后再存,结构不变', ctx.H_SAVED === ctx.DRAFT, ctx.H_SAVED)
+  const ctx2 = scCtx()
+  vm.runInContext(`
+    S.conditions = []
+    localStorage.setItem(LS, 'def c = close > 1;' + NL + 'plot scan = c;')
+    RESP.push(ERR401)
+  `, ctx2)
+  await vm.runInContext(`restoreDraft(localStorage.getItem(LS))`, ctx2)
+  vm.runInContext(`S.market = 'hk'; saveDraft(); var H_AFTER = localStorage.getItem(LS); var H_MK = localStorage.getItem(LS_MK)`, ctx2)
+  auditCheck('草稿', '⭐没登录恢复草稿失败后,点市场不会把草稿覆盖成空', ctx2.H_AFTER === 'def c = close > 1;\nplot scan = c;' && ctx2.H_MK === 'hk', ctx2.H_AFTER)
+  vm.runInContext(`applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['c'], plot_order: ['c'], conditions: [{ name: 'c', expr: 'close > 2', kind: 'def', is_bool: true, tokens: [] }] }); saveDraft(); var H_NEW = localStorage.getItem(LS)`, ctx2)
+  auditCheck('草稿', '有了新条件之后草稿正常更新', /close > 2/.test(ctx2.H_NEW))
+})
+
+// I · 数据源名字过滤(和后端文案前缀耦合,2026-09-10 失效过一次)
+auditJob('数据源过滤', async () => {
+  const ctx = scCtx()
+  const pyPath = path.join(DIR, '..', '..', '..', 'api', 'app', 'services', 'quant', 'screen_source.py')
+  let py = null
+  try { py = fs.readFileSync(pyPath, 'utf8') } catch (e) { /* 下面 FAIL */ }
+  auditCheck('数据源过滤', '能读到后端 screen_source.py(与前端同仓对照)', !!py, pyPath)
+  if (!py) return
+  const firstLit = (name) => {
+    const i = py.indexOf(name + ' =')
+    if (i < 0) return null
+    const m = py.slice(i + name.length + 2).match(/^\s*\(?\s*[rfu]?"([^"\n]*)"/)
+    return m ? m[1] : null
+  }
+  const delay = firstLit('DELAY_WARN'), mcap = firstLit('MARKET_CAP_WARN')
+  const prefixes = vm.runInContext('DROP_PREFIX', ctx)
+  auditCheck('数据源过滤', '⭐后端 DELAY_WARN 以前端 DROP_PREFIX 某一项开头(改文案要同步)', delay && prefixes.some(p => delay.indexOf(p) === 0), delay)
+  auditCheck('数据源过滤', '⭐后端 MARKET_CAP_WARN 以前端 DROP_PREFIX 某一项开头', mcap && prefixes.some(p => mcap.indexOf(p) === 0), mcap)
+  ctx.DELAY = delay; ctx.MCAP = mcap
+  vm.runInContext(`
+    var I_KEEP = dropSrc([DELAY + '……', MCAP + '……', 'TradingView 的提示', '按日线**逐根**求值'])
+    var I_MASK = maskSrc('来自 TradingView 的字段 TradingView')
+    var I_WARN = vWarn({ notes: [], warnings: [DELAY + 'x', '<b>x</b> **重点**'] })
+  `, ctx)
+  auditCheck('数据源过滤', 'dropSrc 丢掉两条后端提示与带厂商名的,保留其余', JSON.stringify(ctx.I_KEEP) === JSON.stringify(['按日线**逐根**求值']), ctx.I_KEEP)
+  auditCheck('数据源过滤', 'maskSrc 报错文案只换名字不丢整条', ctx.I_MASK === '来自 行情源 的字段 行情源')
+  auditCheck('数据源过滤', 'vWarn:过滤 + 先转义再加粗', !/延迟|免订阅/.test(ctx.I_WARN) && /&lt;b&gt;x&lt;\/b&gt; <b>重点<\/b>/.test(ctx.I_WARN), ctx.I_WARN)
+})
+
+// J · 额度 / 登录提示的其余分支
+auditJob('额度', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    S.mode = 'replace'; S.input = '成交量大于100万'; S.aiText = '成交量大于100万'   // AI 识别读的是 aiText
+    RESP.push({ ok: false, status: 400, data: { detail: { message: 'AI 没给出可用结果', quota: { ai: { remaining: 3, limit: 10 } }, quota_note: 'AI 识别已计 1 次' } } })
+  `, ctx)
+  await vm.runInContext(`generate(true)`, ctx)
+  auditCheck('额度', '生成 400 但模型已调用:提示已计次', ctx.TOASTS.some(t => t[1] === 'warn' && /已计 1 次/.test(t[0])), ctx.TOASTS)
+  vm.runInContext(`
+    S.resultScan = { script: 'plot scan = close > 1;', market: 'us', asOf: null }
+    RESP.push(ERR401)
+    RESP.push({ ok: true, status: 200, data: { hits: ['2026-09-10'], evaluated: 250, unknown: 0 } })
+  `, ctx)
+  const h1 = await vm.runInContext(`hitDaysOf('AAA')`, ctx)
+  const h2 = await vm.runInContext(`hitDaysOf('AAA')`, ctx)
+  auditCheck('额度', '⭐命中日 401 不缓存:登录后再悬停能算出来', /登录/.test(h1.error) && Array.isArray(h2.scan) && h2.scan[0] === '2026-09-10', [h1, h2])
+  const h3 = await vm.runInContext(`hitDaysOf('AAA')`, ctx)
+  auditCheck('额度', '算成功的命中日会缓存(不重复请求)', h3 === h2 && ctx.SENT.filter(x => /hit-days/.test(x.url)).length === 2)
+})
+
+// K · 字段插入、复制名字规则、emoji 偏移、注释里的参数名
+auditJob('杂项', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    var ED = { value: 'abc def', selectionStart: 3, selectionEnd: 3, focus: function () {}, setSelectionRange: function (a, b) { ED.sel = [a, b] } }
+    var _gid = document.getElementById
+    document.getElementById = function (id) { return id === 'mg-input' ? ED : _gid(id) }
+    insertField({ target: { dataset: { f: 'close' } } })
+    var K_INS = [S.input, ED.sel.join(',')]
+    ED.value = 'abcdef'; ED.selectionStart = 1; ED.selectionEnd = 4
+    insertField({ target: { dataset: { f: 'RSI' } } })
+    K_INS.push(S.input)
+    insertField({ target: { dataset: { fam: 'EMA' } } })
+    var K_FAM = S.fieldOpen.EMA === true
+    S.conditions = [{ name: 'c1', kind: 'def', expr: '1' }, { name: 'c1_2', kind: 'def', expr: '1' }]
+    S.termHost = 'c1_3'; S.extraPlots = [{ name: 'c1_4', expr: 'c1' }]
+    var K_UNIQ = uniqName('c1')
+  `, ctx)
+  auditCheck('杂项', '字段插在光标处,光标移到插入之后', ctx.K_INS[0] === 'abccloseemsp def'.replace('emsp', '') && ctx.K_INS[1] === '8,8', ctx.K_INS)
+  auditCheck('杂项', '有选区时替换选区', ctx.K_INS[2] === 'aRSIef', ctx.K_INS)
+  auditCheck('杂项', '点族标签只展开不插入', ctx.K_FAM === true && ctx.K_INS.length === 3)
+  auditCheck('杂项', '新名字避开已有条件、宿主与前面的 plot', ctx.K_UNIQ === 'c1_5', ctx.K_UNIQ)
+  // emoji 偏移:后端给码点偏移,前端要按 UTF-16 切
+  const ctx2 = scCtx()
+  const expr = 'volume > Average(volume, 20) # 量能😀 放大\n  * 7'
+  const cp = Array.from(expr).indexOf('7')
+  ctx2.EXPR = expr; ctx2.CP = cp
+  vm.runInContext(`
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['v'], plot_order: ['v'], conditions: [
+      { name: 'v', expr: EXPR, kind: 'def', is_bool: true, tokens: [{ k: 'num', t: '7', s: CP, e: CP + 1 }] } ] })
+  `, ctx2)
+  await vm.runInContext(`onNumChange({ target: { classList: { contains: function () { return true } }, dataset: { c: '0', t: '0' }, value: '8' } })`, ctx2)
+  const sent = ctx2.SENT[0] && ctx2.SENT[0].body.script
+  auditCheck('杂项', '⭐注释里有 emoji 时改数字改对位置(* 7 → * 8)', /\* 8;/.test(sent) && /放大/.test(sent) && !/8\*|> 8/.test(sent), sent)
+  vm.runInContext(`
+    S.conditions = [{ name: 'minStreak', kind: 'input', expr: '3' }, { name: 'c', kind: 'term', expr: 'g >= minStreak # minStreak(小盘5)' },
+                    { name: 'd', kind: 'def', expr: 'close > 1 # 不用 minStreak' }]
+    var K_W = withParams(S.conditions[1].expr)
+    var K_A = applyParams(K_W)
+    var K_CP = copySnippet(S.conditions[2])
+  `, ctx)
+  auditCheck('杂项', '⭐注释里的参数名不加值', ctx.K_W === 'g >= minStreak(3) # minStreak(小盘5)', ctx.K_W)
+  auditCheck('杂项', '⭐注释里写着「参数名(文字)」也能保存', !ctx.K_A.err && ctx.K_A.text === 'g >= minStreak # minStreak(小盘5)', ctx.K_A)
+  auditCheck('杂项', '只在注释里提到的参数不复制', ctx.K_CP.params === 0)
+})
+
+Promise.all(auditJobs).then(() => {
+  for (const [group, name, ok, detail] of AUDIT_RESULTS) {
+    if (ok) console.log('PASS 审计补测 ·', group, '·', name)
+    else { failed++; console.log('FAIL 审计补测 ·', group, '·', name, detail !== undefined ? ' | ' + (typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 600) : '') }
+  }
+  console.log('INFO 审计补测 · 共', AUDIT_RESULTS.length, '条')
+})
+
 // ─── 筛选器 · 编辑框里的参数值(2026-09-15)────────────────────────────────
 // 用户截图:条件行显示 totalReturn 大于等于 minTotalReturn(0.80),点 ✎ 编辑框里只有 `totalReturn >= minTotalReturn`,
 // 阈值看不到也改不了。编辑框要带「参数名(当前值)」,保存时值写回 input、脚本里还原成参数名

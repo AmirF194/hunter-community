@@ -860,6 +860,69 @@ _dh = sd.decompose(_hs, _ch, has, SMA, EMA, RSI)
 check("G 横截面脚本同样展开:all_ = c1 and c2 → 条件行 c1 / c2", _ch.series is None and _dh["term_host"] == "all_"
       and _dh["plot_refs"] == ["c1", "c2"] and "all_" not in [x["name"] for x in _dh["conditions"]], _dh)
 
+
+# ═══════════════════════════════════════════════════════════════
+# H · 审计补测(2026-09-15):常量 plot / 全停用宿主 / 嵌套括号 / 多个 plot / 重名 / 宿主不在最后 / 注释与 emoji
+# ═══════════════════════════════════════════════════════════════
+print("\n── H 审计补测 ──")
+
+
+def _dd(src):
+    cc = compile(src)
+    return cc, sd.decompose(src, cc, has, SMA, EMA, RSI)
+
+
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\nplot scan = false;")
+check("H ⭐ plot scan = false:不出条件行(原来多一条启用的「false」)", not any(x["kind"] == "term" for x in _d["conditions"]) and _d["plot_order"] == [], _d["plot_order"])
+check("H plot scan = false:combine=all,a / b 是停用的条件", _d["combine"] == "all" and _d["plot_refs"] == []
+      and all(x["is_bool"] for x in _d["conditions"] if x["name"] in ("a", "b")))
+_c, _d = _dd("def a = close > close[1];\nplot scan = no;")
+check("H plot scan = no 与 false 同样处理", _d["plot_order"] == [] and _d["combine"] == "all")
+_c, _d = _dd("def a = close > close[1];\nplot scan = yes;")
+check("H plot scan = yes(全部放行)按自定义组合原样保留", _d["combine"] == "custom" and _d["plot_expr"] == "yes" and _d["plot_order"] == [])
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\ndef H1 = false;\nplot scan = H1;")
+check("H ⭐ 宿主全停用 def H1 = false:仍是宿主、没有条件行、H1 不单列", _d["term_host"] == "H1" and _d["plot_order"] == []
+      and "H1" not in [x["name"] for x in _d["conditions"]] and _d["combine"] == "all", _d)
+check("H 宿主全停用:a / b 是停用的条件(能重新打开)", all(x["is_bool"] for x in _d["conditions"] if x["name"] in ("a", "b")) and _d["plot_refs"] == [])
+_c, _d = _dd("def H1 = false;\ndef x = if H1 then 1 else 0;\nplot scan = H1;")
+check("H 反例 · 值为 false 的定义被别处引用 → 不当宿主", _d["term_host"] == "")
+
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\nplot scan = a and (b and (close > 5 or close < 1));")
+check("H ⭐ 嵌套括号 a and (b and (c or d)) → 3 条可开关的条件(原来整体退成自定义组合)", _d["combine"] == "all" and len(_d["plot_order"]) == 3, (_d["combine"], _d["plot_order"]))
+check("H 嵌套括号:or 项原文带括号、不再补括号", [x["expr"] for x in _d["conditions"] if x["kind"] == "term"] == ["(close > 5 or close < 1)"]
+      and not [x for x in _d["conditions"] if x["kind"] == "term"][0]["paren"])
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\nplot scan = ((a and b)) and close > 1;")
+check("H 双层括号 ((a and b)) and c → 3 条", _d["combine"] == "all" and len(_d["plot_order"]) == 3, _d["plot_order"])
+_c, _d = _dd("def a = close > close[1];\nplot scan = (if a then close > 1 and close < 9 else close > 2) and volume > 1;")
+check("H 括号里是 if(里面的 and 不能拆)→ 这一段整体一条", _d["combine"] == "all" and len(_d["plot_order"]) == 2, _d["plot_order"])
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\nplot scan = not (a and b) and close > 1;")
+check("H not (a and b) 不拆", _d["combine"] == "all" and len(_d["plot_order"]) == 2)
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\ndef H2 = a and (b and close > 3);\nplot scan = H2;")
+check("H 宿主里的嵌套括号也拆", _d["term_host"] == "H2" and len(_d["plot_order"]) == 3, _d["plot_order"])
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\nplot scan = a && (b && close > 3);")
+check("H && 写法的嵌套括号也拆", _d["combine"] == "all" and len(_d["plot_order"]) == 3)
+
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\nplot p1 = b;\nplot scan = a;")
+check("H ⭐ 两个 plot:前一个原样进 extra_plots", _d["extra_plots"] == [{"name": "p1", "expr": "b"}], _d.get("extra_plots"))
+check("H ⭐ 两个 plot:前一个用到的 b 是中间定义,不是「停用条件」", not [x for x in _d["conditions"] if x["name"] == "b"][0]["is_bool"] and _d["plot_refs"] == ["a"])
+_c, _d = _dd("def a = close > close[1];\nplot scan = a;")
+check("H 只有一个 plot 时 extra_plots 为空", _d["extra_plots"] == [])
+
+check("H 重名定义被拒并点名", "定义了两次" in err_of("def a = close > 1;\ndef a = close > 2;\nplot scan = a;"))
+check("H input 与 def 重名也被拒", "定义了两次" in err_of("input a = 3;\ndef a = close > a;\nplot scan = a;"))
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\ndef H3 = a and b and close > 2;\ndef z = close > 1;\nplot scan = H3;")
+check("H 宿主不是最后一句:照样展开,后面的 z 是停用条件", _d["term_host"] == "H3" and len(_d["plot_order"]) == 3
+      and [x for x in _d["conditions"] if x["name"] == "z"][0]["is_bool"] and "z" not in _d["plot_refs"])
+
+_src = "def v = volume > Average(volume, 20) # 量能😀 放大\n  * 7;\nplot scan = v;"
+_c, _d = _dd(_src)
+_v = [x for x in _d["conditions"] if x["name"] == "v"][0]
+_num7 = [t for t in _v["tokens"] if t["k"] == "num" and t["t"] == "7"]
+check("H ⭐ 注释里有 emoji:数字 token 的 s/e 是**码点**偏移(前端要换算成 UTF-16 再切)", _num7 and _v["expr"][_num7[0]["s"]:_num7[0]["e"]] == "7", _num7)
+_c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\ndef H4 = a and  # 第一条\n  b and   # 第二条\n  close > 3;\nplot scan = H4;")
+check("H 宿主里每项后面跟注释:条件原文不含注释", [x["expr"] for x in _d["conditions"] if x["kind"] == "term"] == ["close > 3"]
+      and _d["plot_refs"] == ["a", "b"], _d["plot_order"])
+
 print(f"\n{'ALL OK' if not FAILS else 'SOME FAILED'} · 通过 {N_OK} · 失败 {len(FAILS)}")
 if FAILS:
     print("失败清单:")
