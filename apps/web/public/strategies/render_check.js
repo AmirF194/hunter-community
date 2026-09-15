@@ -955,9 +955,13 @@ try {
     var EP_D = applyParams('totalReturn >= minTotalReturn(close)')
     var EP_E = applyParams('totalReturn >= Average(close, 20)')
     var EP_RT = applyParams(withParams('greenStreak >= minStreak and greenStreak < minStreak2 * minStreak'))
+    var EP_CP = [copySnippet(S.conditions[3]), copySnippet(S.conditions[4]),
+                 copySnippet({ name: 'up', kind: 'def', expr: 'close > close[1]' }),
+                 copySnippet({ name: 'ma', kind: 'def', expr: 'Average(close, minStreak2)' })]
+    var EP_COPY_HTML = vConditions()
   `, ctx, { filename: 'assert-edit-params' })
   const html = String(ctx.EP_HTML)
-  const W = ctx.EP_W, A = ctx.EP_A, B = ctx.EP_B, C = ctx.EP_C, D = ctx.EP_D, E = ctx.EP_E, RT = ctx.EP_RT
+  const W = ctx.EP_W, A = ctx.EP_A, B = ctx.EP_B, C = ctx.EP_C, D = ctx.EP_D, E = ctx.EP_E, RT = ctx.EP_RT, CP = ctx.EP_CP
   const ep = [
     ['⭐编辑框里带参数当前值', /<textarea class="cd-edit" id="cd-edit" spellcheck="false">totalReturn &gt;= minTotalReturn\(0\.80\)<\/textarea>/.test(html)],
     ['编辑框提示参数可直接改', /参数\(括号里的数\)直接改/.test(html)],
@@ -970,10 +974,15 @@ try {
     ['括号里不是数字 → 报错不保存', !!D.err && /只能填数字/.test(D.err)],
     ['真正的函数调用不受影响', E.text === 'totalReturn >= Average(close, 20)' && !Object.keys(E.changes).length && !E.err],
     ['不改值原样往返', RT.text === 'greenStreak >= minStreak and greenStreak < minStreak2 * minStreak' && RT.changes.minStreak === '3' && RT.changes.minStreak2 === '5' && !RT.err],
+    ['⭐复制 term:前面带用到的参数 input 行', CP[0].text === 'input minTotalReturn = 0.80;\ntotalReturn >= minTotalReturn' && CP[0].params === 1],
+    ['复制:多个参数按脚本里 input 的先后,同名参数只带一次,整词匹配', CP[1].text === 'input minStreak = 3;\ninput minStreak2 = 5;\ngreenStreak >= minStreak and greenStreak < minStreak2 * minStreak' && CP[1].params === 2],
+    ['复制:没用参数的 def 原样一句', CP[2].text === 'def up = close > close[1];' && CP[2].params === 0],
+    ['复制:函数参数里的参数也带上', CP[3].text === 'input minStreak2 = 5;\ndef ma = Average(close, minStreak2);'],
+    ['复制按钮说明会带参数', /title="复制这一条的脚本文本\(连同它用到的参数\)"/.test(String(ctx.EP_COPY_HTML))],
   ]
   for (const [name, ok] of ep) {
     if (ok) console.log('PASS 编辑框参数值 ·', name)
-    else { failed++; console.log('FAIL 编辑框参数值 ·', name, ' | ', JSON.stringify({ W, A, B, C, D, E, RT }), html.slice(html.indexOf('cd-edit"'), html.indexOf('cd-edit"') + 160)) }
+    else { failed++; console.log('FAIL 编辑框参数值 ·', name, ' | ', JSON.stringify({ W, A, B, C, D, E, RT, CP }), html.slice(html.indexOf('cd-edit"'), html.indexOf('cd-edit"') + 160)) }
   }
 } catch (e) {
   failed++

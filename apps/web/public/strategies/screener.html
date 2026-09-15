@@ -639,7 +639,7 @@ function vCond(c, i) {
       '<button data-act="edit" data-i="' + i + '" title="编辑原文">✎</button>' +
       // 复制一条 = 再来一句同样的 def;term 不是 def,复制出来是 plot 里两句一模一样的 and,没意义
       (isTerm ? '' : '<button data-act="dup" data-i="' + i + '" title="复制一条">⧉</button>') +
-      '<button data-act="copy" data-i="' + i + '" title="复制脚本文本">⎘</button>' +
+      '<button data-act="copy" data-i="' + i + '" title="复制这一条的脚本文本(连同它用到的参数)">⎘</button>' +
       '<button data-act="probe" data-i="' + i + '" title="只用这一条扫一次">🐞</button>' +
       sw +
       '<button class="del" data-act="del" data-i="' + i + '" title="删除">✕</button>' +
@@ -1441,7 +1441,8 @@ function onCondAction(e) {
     rebuild(); return
   }
   if (act === 'copy') {
-    copyText(c.kind === 'term' ? c.expr : 'def ' + c.name + ' = ' + c.expr + ';', '这一条'); return
+    const sn = copySnippet(c)
+    copyText(sn.text, sn.params ? '这一条(连同 ' + sn.params + ' 个参数)' : '这一条'); return
   }
   if (act === 'probe') { probeOne(c); return }
 }
@@ -1504,6 +1505,21 @@ async function commitEdit(text) {
       return '参数 ' + n + ' 改成 ' + pp.changes[n] + (users > 1 ? ',用到它的 ' + users + ' 处一起生效' : '')
     }).join(';'), 'ok')
   }
+}
+
+// ─── 复制这一条:连同用到的参数(2026-09-15 用户)───────────────────────
+// 原来复制出来只有 `totalReturn >= minTotalReturn`,阈值 0.80 在另一句 input 里,粘到别处就丢了。
+// 现在前面带上**这一条直接用到的** input 行(按脚本里 input 的先后),后面是这一条本身 —— 整段是合法 ThinkScript,能直接粘。
+// 只带直接引用的参数,和条件行上显示「参数名(值)」的范围一致;中间定义(totalReturn 怎么算)不带,那是整份脚本的事,用「复制脚本」
+function copySnippet(c) {
+  const used = S.conditions.filter(function (o) {
+    return o.kind === 'input' && o.name !== c.name && paramRe(o.name).test(c.expr || '')
+  })
+  const body = c.kind === 'term' ? String(c.expr || '').trim()
+    : (c.kind === 'input' ? 'input ' : (c.kind === 'rec' ? 'rec ' : 'def ')) + c.name + ' = ' + c.expr + ';'
+  const lines = used.map(function (o) { return 'input ' + o.name + ' = ' + String(o.expr).trim() + ';' })
+  lines.push(body)
+  return { text: lines.join('\n'), params: used.length }
 }
 
 // ─── 编辑框里的参数值(2026-09-15 用户)───────────────────────────────
