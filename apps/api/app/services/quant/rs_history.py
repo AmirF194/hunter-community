@@ -162,11 +162,44 @@ ALTER TABLE rs_line_stat ADD COLUMN IF NOT EXISTS acc_dn_excess_42d  DOUBLE PREC
 """
 
 
+_DDL_DONE_PIDS: set = set()
+
+
 def _ensure_tables(conn) -> None:
+    """幂等建表 / 加列。**每个进程只真跑一次,且带 lock_timeout**(2026-09-15 事故)。
+
+    `ALTER TABLE … ADD COLUMN IF NOT EXISTS` 即使列已经存在也要拿 ACCESS EXCLUSIVE 锁。
+    凌晨一条对 rs_daily 的慢查询(关联子查询,跑了 9 小时)占着共享锁,A 股每晚任务算完拉取后
+    在这里排了 7 个半小时;更糟的是**排在它后面的所有读**(api 的时间回溯 / 序列脚本 parse)
+    也一起堵死,06:30 的美股任务因锁被占而跳过。
+    现在:① 同一进程第二次起不再发 DDL;② 等锁最多 5 秒,拿不到就记 warning 继续 ——
+    表几乎总是早就建好的,拿不到锁不该让整条链停下。真缺表时后面的语句会自己报错,
+    比静默排队几小时好定位得多。
+    """
+    import os
+    pid = os.getpid()
+    if pid in _DDL_DONE_PIDS:
+        return
     cur = conn.cursor()
-    cur.execute(_DDL)
-    conn.commit()
-    cur.close()
+    try:
+        cur.execute("SET lock_timeout = '5s'")
+        cur.execute(_DDL)
+        conn.commit()
+        _DDL_DONE_PIDS.add(pid)
+    except Exception as e:                                        # noqa: BLE001
+        conn.rollback()
+        if "lock timeout" in str(e).lower() or "lock_timeout" in str(e).lower() or "55P03" in str(e):
+            log.warning("[rs_history] 建表 / 加列的 DDL 等锁超过 5 秒,先跳过(有人正长时间读 rs_daily?"
+                        " 用 pg_stat_activity 查 pg_blocking_pids);表通常早已存在,不影响本次: %s", e)
+        else:
+            raise
+    finally:
+        try:
+            cur.execute("SET lock_timeout = 0")
+            conn.commit()
+        except Exception:                                         # noqa: BLE001
+            conn.rollback()
+        cur.close()
 
 
 # ═══════════════════════════════════════════════════════════════

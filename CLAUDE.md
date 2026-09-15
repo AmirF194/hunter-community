@@ -195,6 +195,16 @@ https://github.com/tjdwls101010/IBD-RS-Rating(MIT,Copyright (c) 2026 성진)。
    哪天多几只拉不到就会整批退回插值 —— 这是按设计降级,不是故障。
    日线超过 6 天没更新 → RS 线天数全空并提示(用过期的"连续 N 天"筛今天的票是在给错答案)。
 
+5. **别对 rs_daily 跑没有 `statement_timeout` 的即席大查询;停掉 ssh 客户端不等于停掉后端**(2026-09-15 事故)。
+   凌晨为看开盘价覆盖率跑了一条按市场取 MAX(trade_date) 的关联子查询,本地"停止"只杀了 ssh,Postgres 后端继续跑了
+   **8 小时 58 分**,占着 rs_daily 的 ACCESS SHARE;A 股每晚任务拉完 5229 只之后进 `compute_market` → `_ensure_tables`
+   的 `ALTER TABLE … ADD COLUMN IF NOT EXISTS`(列已存在**照样**要 ACCESS EXCLUSIVE)排在它后面等了 7 小时 34 分,
+   **再后面的所有读**(时间回溯、序列脚本 parse 里的 `series_availability`)全部排队;flock 一直被占,06:30 的美股任务
+   打出「上一轮还在跑,本轮跳过」。`pg_terminate_backend` 那条查询后 A 股任务当场恢复。
+   规矩:即席查询先 `SET statement_timeout = '60s'`,而且按 (market, code, trade_date) 的主键写条件(`trade_date = X`
+   单独过滤是整个市场分区的顺序扫);排查"任务卡住 0% CPU"先查 `pg_stat_activity` 的 `wait_event_type = Lock` 和
+   `pg_blocking_pids`。`_ensure_tables` 现在每进程只跑一次、DDL 带 5 秒 `lock_timeout`,拿不到锁记 warning 继续,不再排队。
+
 ## VCP 字段(`quant/vcp.py`)· 收缩次数 / 每次深度 / 量能递减 · 五条别改坏的
 
 2026-09-11 用户要「收缩次数 / 每次深度 / 量能是否递减」能直接筛。字段:
