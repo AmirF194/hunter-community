@@ -1226,6 +1226,11 @@ def _tok_stream(node, rs, base: int, out: list, defined: dict, parent_prec: int 
         return
     if k == "idx":
         _tok_stream(node[1], rs, base, out, defined, 99, series)
+        if node[2][0] == "num":
+            # K 线偏移是「第几根之前」,不是阈值 —— 显示成一个 `[1]`,不给内联编辑框。
+            # 2026-09-15 用户截图:`成交量 [ 1 ] 且 成交量 [ 1 ] 大于 成交量 [ 2 ]` 三个深色数字框,看着像要填的参数
+            out.append({"k": "op", "t": "[" + _fmt_num(node[2][1]) + "]"})
+            return
         out.append({"k": "op", "t": "["})
         _tok_stream(node[2], rs, base, out, defined, 0, series)
         out.append({"k": "op", "t": "]"})
@@ -1278,9 +1283,15 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
               rsi_periods) -> dict:
     """把编译结果拆成可视化条件行。
 
-    返回 conditions + combine:
-      · combine='all'    plot 是若干 def 名字的纯 and 链 → "同时满足以下全部"
-      · combine='custom' plot 里有 or / 算术 / 直接写的表达式 → 原样保留,界面上只读
+    界面上的「条件」= plot 顶层 and 链的每一项(2026-09-15 起,见仓内 CLAUDE.md「条件行 = plot 的 and 项」):
+      · 裸名字、指向一个 def            → 那条 def 就是条件行(plot_refs 里有它 = 启用)
+      · 其余表达式(bullStreak >= 3 …) → kind='term' 的条件行,expr 是 plot 里那一段原文
+    combine='all' 表示 plot 能按 and 拆开;拆不开(`a within 3 bars` 这类优先级比 and 低的写法)才是
+    'custom',plot 原样只读。
+
+    **被别的语句引用、自己又不是 plot 的一项的布尔 def 是中间定义,不是条件**(is_bool=False):
+    猎杀 FOMO 脚本里 `isBull = close > open` / `isBear = close < open` 只是给 bullStreak / bearCount 用的,
+    旧逻辑把它们和真正的条件并排列在「同时满足」下面,界面上就成了两条互斥的条件。
     """
     rs = _FieldResolver(has_field, sma_periods, ema_periods, rsi_periods)
     defined: dict[str, str] = {}
@@ -1291,45 +1302,161 @@ def decompose(src: str, c: Compiled, has_field, sma_periods, ema_periods,
     for st in c.stmts:
         if st.kind == "plot":
             plot_stmt = st
-            continue
+    body = [st for st in c.stmts if st.kind != "plot"]
+    def_names = {st.name for st in body}
+
+    # plot 顶层 and 项。原文按词法切(节点上没有位置),切出来的段数必须与语法树一致,否则不拆
+    terms: list[tuple] = []          # (node, 原文起点, 原文终点)
+    if plot_stmt is not None:
+        nodes = _and_terms(plot_stmt.node)
+        spans = _split_top_and(src, plot_stmt.expr_start, plot_stmt.expr_end)
+        if spans is not None and len(spans) == len(nodes):
+            terms = [(n, s, e) for n, (s, e) in zip(nodes, spans)]
+    plot_refs = [n[1] for n, _, _ in terms if n[0] == "name" and n[1] in def_names]
+
+    # 谁被别人用到了:别的 def 里 + plot 里非裸名字的项里
+    used: set[str] = set()
+    for st in body:
+        used |= _names_in(st.node) - {st.name}
+    for n, _, _ in terms:
+        if not (n[0] == "name" and n[1] in def_names):
+            used |= _names_in(n)
+    if plot_stmt is not None and not terms:
+        used |= _names_in(plot_stmt.node)
+
+    def _toks_of(node, start: int, end: int) -> tuple[list, str]:
         toks: list = []
-        _tok_stream(st.node, rs, st.expr_start, toks, defined, 0, series)
-        expr = src[st.expr_start:st.expr_end]
+        _tok_stream(node, rs, start, toks, defined, 0, series)
+        expr = src[start:end]
         # 数字用**源码原文**显示,不用格式化后的值:用户写 0.10,界面上就该是 0.10。
         # 归一化成 0.1 之后再回写,会在他没改任何东西的情况下把脚本改掉。
         for t in toks:
             if t["k"] == "num":
                 t["t"] = expr[t["s"]:t["e"]]
-        # 条件行的中文标题:纯展示,给 plot 里引用它时用
-        label = "".join(t["t"] for t in toks if t["k"] != "paren")
-        defined[st.name] = label if len(label) <= 24 else st.name
+        return toks, expr
+
+    for st in body:
+        toks, expr = _toks_of(st.node, st.expr_start, st.expr_end)
+        if series:
+            # 时间序列脚本里引用就显示**名字**:bullStreak / ret 这些是用户自己起的名,比内联展开好认;
+            # 内联会把 `Highest(ret, lookback)` 摊成一串没括号的字(2026-09-15 截图里的「Highest收盘价÷收盘价[1]−1,5」)。
+            # 参数带上当前值,条件行一眼能看出阈值是多少
+            defined[st.name] = f"{st.name}({expr})" if st.kind == "input" else st.name
+        else:
+            # 条件行的中文标题:纯展示,给 plot 里引用它时用
+            label = "".join(t["t"] for t in toks if t["k"] != "paren")
+            defined[st.name] = label if len(label) <= 24 else st.name
+        is_bool = st.kind != "input" and not st.rec and _is_boolean(st.node)
+        if is_bool and st.name in used and st.name not in plot_refs:
+            is_bool = False                      # 中间定义(isBull),见函数说明
         conditions.append({
             "name": st.name,
             "expr": expr,
             "tokens": toks,
-            # 布尔条件才能独立开关;中间变量(如 def sma50 = Average(close,50))
-            # 不是条件,界面上要区别对待 —— 停用它会让引用它的条件直接报错。
-            # input(参数)和递归定义(计数器)也不是条件
-            "is_bool": st.kind != "input" and not st.rec and _is_boolean(st.node),
+            # 能独立开关的条件才是 True;中间变量(如 def sma50 = Average(close,50))、中间布尔定义、
+            # input(参数)、递归定义(计数器)都不是 —— 停用它们会让引用方直接报错
+            "is_bool": is_bool,
             # 'input' 要原样回写成 input(前端 buildScript 按它选关键字);'rec' 回写成 rec
             "kind": st.kind if st.kind == "input" else ("rec" if st.rec else "def"),
         })
 
-    combine = "custom"
-    plot_names: list[str] = []
-    if plot_stmt is not None:
-        plot_names = _flatten_and_names(plot_stmt.node)
-        if plot_names:
-            combine = "all"
+    plot_order: list[str] = []
+    k = 0
+    for n, s, e in terms:
+        if n[0] == "name" and n[1] in def_names:
+            plot_order.append(n[1])
+            continue
+        k += 1
+        toks, expr = _toks_of(n, s, e)
+        name = f"{c.plot_name}#{k}"           # 带 # 不可能是标识符,不会和 def 撞名、也不会被当成引用
+        first = next((t.get("ref") for t in toks if t["k"] == "ref"), None)
+        conditions.append({
+            "name": name,
+            "title": first or "",
+            "expr": expr,
+            "tokens": toks,
+            "is_bool": True,
+            "kind": "term",
+            # 回写进 `a and b` 时要不要补括号:只有 `x or y` 这一种(crosses / within 在比较那层,比 and 紧)。
+            # 原文已经是 `(x or y)` 就不补 —— 否则每往返一次多包一层
+            "paren": n[0] == "bin" and n[1] == "or" and not _wrapped(expr),
+        })
+        plot_order.append(name)
 
     return {
         "conditions": conditions,
-        "combine": combine,
+        "combine": "all" if terms else "custom",
         "plot_name": c.plot_name,
         "plot_expr": src[plot_stmt.expr_start:plot_stmt.expr_end] if plot_stmt else "",
-        "plot_refs": plot_names,
+        "plot_refs": plot_refs,
+        "plot_order": plot_order,
         "notes": rs.notes,
     }
+
+
+def _and_terms(node) -> list:
+    """`a and b and c` → [a, b, c](左结合的 bin-and 摊平);不是 and 就是一项。"""
+    if node[0] == "bin" and node[1] == "and":
+        return _and_terms(node[2]) + _and_terms(node[3])
+    return [node]
+
+
+def _split_top_and(src: str, start: int, end: int) -> list[tuple[int, int]] | None:
+    """plot 原文按括号外的 and / && 切段 → [(起, 止), ...](绝对位置,去掉首尾空白与注释)。
+
+    `if … then … else` 里的 and 也在括号外,切出来段数会比语法树多 —— 调用方比段数,对不上就不拆。
+    """
+    try:
+        toks = _tokenize(src[start:end])
+    except ScreenError:
+        return None
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    seg: list[_Tok] = []
+    for t in toks + [None]:
+        if t is None or (depth == 0 and (t.kind == "and" or (t.kind == "op" and t.val == "&&"))):
+            if not seg:
+                return None
+            spans.append((start + seg[0].pos, start + seg[-1].pos + len(seg[-1].val)))
+            seg = []
+            continue
+        if t.kind in ("if", "then", "else") and depth == 0:
+            return None
+        if t.kind == "op" and t.val in ("(", "["):
+            depth += 1
+        elif t.kind == "op" and t.val in (")", "]"):
+            depth -= 1
+        seg.append(t)
+    return spans
+
+
+def _wrapped(text: str) -> bool:
+    """整段被一对最外层括号包住?`(a) or (b)` 不算。"""
+    t = text.strip()
+    if not (t.startswith("(") and t.endswith(")")):
+        return False
+    depth = 0
+    for i, ch in enumerate(t):
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth == 0 and i < len(t) - 1:
+            return False
+    return True
+
+
+def _names_in(node) -> set[str]:
+    """表达式里出现的所有名字(递归定义里的 x[1] 也算)。"""
+    out: set[str] = set()
+    if isinstance(node, tuple) and node and isinstance(node[0], str):
+        if node[0] == "name":
+            out.add(node[1])
+            return out
+        for ch in node[1:]:
+            out |= _names_in(ch)
+    elif isinstance(node, list):
+        for ch in node:
+            out |= _names_in(ch)
+    return out
 
 
 _BOOL_FUNCS = {"isnan", "between", "crosses", "isascending", "isdescending"}
@@ -1379,7 +1506,13 @@ def build_script(conditions: list[dict], plot_name: str = "scan",
     for c in conditions:
         if not c.get("expr"):
             continue
-        lines.append(f"def {c['name']} = {c['expr']};")
+        if c.get("kind") == "term":
+            # plot 里直接写的一项(decompose 的 kind='term'),不是 def
+            if c.get("enabled", True):
+                enabled.append(f"({c['expr']})" if c.get("paren") else c["expr"])
+            continue
+        kw = c.get("kind") if c.get("kind") in ("input", "rec") else "def"
+        lines.append(f"{kw} {c['name']} = {c['expr']};")
         if c.get("enabled", True) and c.get("is_bool"):
             enabled.append(c["name"])
     if plot_expr:

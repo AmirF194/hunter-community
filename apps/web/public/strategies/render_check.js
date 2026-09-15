@@ -862,6 +862,62 @@ try {
   console.log('FAIL 时间序列脚本定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 筛选器 · 条件行 = plot 的 and 项(2026-09-15)──────────────────────────
+// 用户截图:猎杀 FOMO 脚本「同时满足」下面列着 isBull(收盘价>开盘价)和 isBear(收盘价<开盘价)两条互斥条件,
+// 真正 plot 里的 bullStreak >= minBullDays 等一条没列。后端现在把 plot 按 and 拆成条件行(kind='term'),
+// 中间布尔定义 is_bool=false。前端要做到:按 plot 顺序渲染、term 回写进 plot 不写成 def、停用的 term 在 rebuild 后不丢
+try {
+  const ctx = vm.createContext(makeContext('screener.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  inlineScripts(sc).forEach((src, i) => vm.runInContext(src, ctx, { filename: `screener#${i + 1}` }))
+  vm.runInContext(`
+    var PT_D = {
+      combine: 'all', plot_name: 'scan', plot_refs: ['accel'], plot_order: ['scan#1', 'accel', 'scan#2'],
+      conditions: [
+        { name: 'minBullDays', expr: '3', kind: 'input', is_bool: false, tokens: [{ k: 'num', t: '3', s: 0, e: 1 }] },
+        { name: 'isBull', expr: 'close > open', kind: 'def', is_bool: false, tokens: [{ k: 'field', t: '收盘价' }, { k: 'op', t: '大于' }, { k: 'field', t: '开盘价' }] },
+        { name: 'bullStreak', expr: 'if isBull then bullStreak[1] + 1 else 0', kind: 'def', is_bool: false, tokens: [{ k: 'kw', t: '如果' }, { k: 'op', t: '[1]' }] },
+        { name: 'accel', expr: 'close > close[1]', kind: 'def', is_bool: true, tokens: [{ k: 'field', t: '收盘价' }, { k: 'op', t: '[1]' }] },
+        { name: 'scan#1', title: 'bullStreak', expr: 'bullStreak >= minBullDays', kind: 'term', is_bool: true, tokens: [{ k: 'ref', t: 'bullStreak' }, { k: 'op', t: '大于等于' }, { k: 'ref', t: 'minBullDays(3)' }] },
+        { name: 'scan#2', title: 'isBull', expr: 'isBull or volume > volume[1]', kind: 'term', is_bool: true, paren: true, tokens: [{ k: 'ref', t: 'isBull' }] },
+      ],
+    }
+    applyParsed(PT_D)
+    var PT_ROWS = condRows().map(function (x) { return x.c.name })
+    var PT_SCRIPT = buildScript(false)
+    var PT_HTML = vConditions()
+    S.conditions[4].enabled = false
+    var PT_OFF = buildScript(false)
+    var PT_ALL = buildScript(true)
+    var PT_WRAP = [wrapTerm({ expr: '(a or b)', paren: true }), wrapTerm({ expr: 'a || b' }), wrapTerm({ expr: 'close > 1' }), wrapTerm({ expr: '(a) or (b)' })]
+  `, ctx, { filename: 'assert-plot-terms' })
+  const html = String(ctx.PT_HTML)
+  const s = String(ctx.PT_SCRIPT)
+  const pt = [
+    ['条件行按 plot 顺序', JSON.stringify(ctx.PT_ROWS) === JSON.stringify(['scan#1', 'accel', 'scan#2'])],
+    ['term 不写成 def', !/def scan#/.test(s)],
+    ['plot 按原顺序拼回,or 项补括号', /plot scan = bullStreak >= minBullDays and accel and \(isBull or volume > volume\[1\]\);/.test(s)],
+    ['input 关键字保留', /input minBullDays = 3;/.test(s)],
+    ['表头条件数 = plot 项数(3),不数中间定义', /以下<b>3<\/b> 个条件/.test(html)],
+    ['中间定义 isBull 不在条件行里', !/<span class="nm">isBull<\/span><span class="body">/.test(html.split('cd-defs')[0])],
+    ['中间定义折叠区里列出 isBull / bullStreak', /脚本里的中间定义 2 个/.test(html) && /cd-def"><span class="nm">isBull/.test(html)],
+    ['参数区显示 minBullDays 且可改', /cd-param"><span class="tk r">minBullDays<\/span> <input class="sc-num"/.test(html)],
+    ['term 行标题用引用名', /<span class="nm" title="plot 里的一项">bullStreak<\/span>/.test(html)],
+    ['term 行没有「复制一条」', (html.match(/data-act="dup"/g) || []).length === 1],
+    ['停用 term:buildScript(false) 去掉这一项', /plot scan = accel and \(isBull or volume > volume\[1\]\);/.test(String(ctx.PT_OFF))],
+    ['停用 term:buildScript(true) 仍含这一项(rebuild 靠它不丢)', /plot scan = bullStreak >= minBullDays and accel/.test(String(ctx.PT_ALL))],
+    ['wrapTerm 不叠括号 / 认 || / 比较式不包 / (a) or (b) 要包', JSON.stringify(ctx.PT_WRAP) === JSON.stringify(['(a or b)', '(a || b)', 'close > 1', '((a) or (b))'])],
+  ]
+  for (const [name, ok] of pt) {
+    if (ok) console.log('PASS 条件行=plot项 ·', name)
+    else { failed++; console.log('FAIL 条件行=plot项 ·', name, name.startsWith('plot') || name.startsWith('停用') ? s + ' | ' + ctx.PT_OFF : '') }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 条件行=plot项定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 筛选器悬停日K:当前脚本的历史命中日(2026-09-13)──────────────────────
 // 标记是异步来的(后端逐日回算),三件事钉住:
 //   ① 用的是「跑出结果表的那份脚本」,不是条件区此刻的样子;

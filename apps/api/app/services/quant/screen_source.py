@@ -1110,9 +1110,12 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
         # 学失败只记日志,绝不影响这次的结果 —— 用户要的是条件,不是对照表。
         ai["learned"] = 0
         try:
+            # plot 里有直接写的表达式项(decompose 的 kind='term')时不学:plot_refs 只含裸名字那几项,
+            # 学进去的是整句话 → 一部分条件,下次同一句话会静默少条件
+            has_term = any(x.get("kind") == "term" for x in d.get("conditions") or [])
             exprs = screen_kw.inline_conditions(
                 d.get("conditions") or [],
-                d.get("plot_refs") or [] if d.get("combine") == "all" else [])
+                d.get("plot_refs") or [] if d.get("combine") == "all" and not has_term else [])
             if exprs:
                 # 每条都得能**单独**编译 —— 下次是拆开、换了数字再用的
                 for e in exprs:

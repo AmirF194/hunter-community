@@ -490,6 +490,30 @@ AI 修错也修不了。**这不是一句话的 bug,是整类写法没支持**:`
    D 用户那份脚本三只票(命中 / 不满足 / 缺开盘价算不出)、E decompose 与 bars_matrix、F 4000 只 × 252 根性能。
    **只加不删**。写用例时注意:脚本里一个序列写法都没有会走横截面,`run()` 会直接报出来 —— 那不是引擎的 bug,是用例没测到东西。
 
+## 筛选器 · 条件行 = plot 的顶层 and 项(`screen_dsl.decompose`,2026-09-15)· 五条
+
+用户粘了标准 ThinkScript(猎杀 FOMO),时间序列引擎能跑了,但**条件区乱七八糟**:「同时满足 6 个条件」下面第一、二行是
+`isBull`(收盘价 > 开盘价)和 `isBear`(收盘价 < 开盘价),两条互斥;plot 里真正的 8 项(`bullStreak >= minBullDays` …)一条没列。
+根因:旧 decompose 把**所有布尔 def** 当条件行,plot 只要不是「纯名字 and 链」就判 custom、原样只读。
+标准 ThinkScript 几乎都是「def 一堆中间量,plot 里写比较式」,所以这不是一份脚本的问题。
+
+1. **条件行 = plot 按括号外 and / && 切出来的每一项。** 裸名字且指向 def → 那条 def(plot_refs,老行为);
+   其他表达式 → `kind='term'`、名字 `scan#k`(带 # 不可能是标识符,不会和 def 撞名,也不会被 `referenced()` 当成引用)、
+   `expr` 是 plot 里那一段**原文**。按词法切的段数必须与语法树 `_and_terms` 一致,不一致(顶层 if 里的 and)才退回 custom。
+   `plot_order` 给出 plot 里的先后,前端 `condRows()` 按它排,回写 plot 顺序不变。
+2. **被别的语句(或 plot 的非裸名字项)引用、自己又不是 plot 裸名字项的布尔 def = 中间定义,`is_bool=False`。**
+   前端就把它当变量:不进条件区、没人引用时被 pruneVars 清掉。没进 plot 也没人引用的布尔 def 仍是「停用的条件」(老的开关往返靠它)。
+3. **term 的停用存不下来**:它没有 def 可留,`buildScript(false)` 里就没了。所以 `rebuild()` 改走 `buildScript(true)` 再按
+   名字(def)/ 原文(term)把开关关回去;保存弹窗对停用的 term 明说「不会存进去」。`x or y` 项回写要补括号(后端给 `paren`,
+   前端 `wrapTerm` 再兜手改过的),**已整段带括号的不补**,否则每往返一次叠一层。
+4. **时间序列脚本里引用显示名字**(`bullStreak 大于等于 minBullDays(3)`,input 带当前值),不内联展开 ——
+   内联标签会去掉括号,`Highest(ret, lookback)` 摊成「Highest收盘价÷收盘价[1]−1,5」。横截面脚本照旧内联中文。
+   K 线偏移 `[1]` 是一个 op token,**不是可编辑数字框**(截图里 `成交量 [1] 且 成交量 [1] 大于 成交量 [2]` 三个框像要填参数)。
+   参数(input)与中间定义在条件区下面单列(`vDefs`:参数一行可改值,中间定义折叠),只对时间序列脚本显示。
+5. plot 里有 term 时 **AI 识别不学进对照表**(plot_refs 只含名字项,学进去是「整句 → 部分条件」,下次静默少条件)。
+
+用例:`test_screen_series.py` E 组 +25 条(含两条改口径的旧断言,注释写了为什么);`render_check.js`「条件行=plot项」13 条。
+
 ## 部署坑:`apps/web/public/**` **新增**文件要 `restart web`,改动文件不用
 
 `docker-compose.yml` 里 web 有 `- ./apps/web/public:/app/public:ro`,所以

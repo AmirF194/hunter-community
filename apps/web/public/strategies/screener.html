@@ -137,6 +137,13 @@
     .tk.l{color:#2E86DE;font-weight:700}
     .tk.p{color:var(--soft,#B9AFA2)}
     .tk.r{color:#7B3FA8;font-weight:600}
+    .cd-params{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;padding:10px 4px 4px;
+      border-top:1px dashed var(--line,#E8E1D6);margin-top:6px}
+    .cd-sub{font-size:12px;color:var(--soft,#9A8F80)}
+    .cd-param{white-space:nowrap}
+    .cd-defs{margin-top:8px}
+    .cd-def{display:flex;gap:10px;align-items:baseline;padding:4px 2px;flex-wrap:wrap}
+    .cd-def .nm{min-width:90px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--soft,#9A8F80)}
     .tk.k{color:var(--muted)}
     .sc-num{background:#1E2740;color:#fff;border:0;border-radius:5px;padding:3px 7px;
       font-family:ui-monospace,Menlo,monospace;font-size:12.5px;text-align:center;
@@ -318,6 +325,7 @@ const S = {
   conditions: [],            // 已生效的条件行(后端 /parse 产出)
   combine: 'all',            // all | custom
   plotName: 'scan', plotExpr: '',
+  plotOrder: [],             // 条件行在 plot 里的先后(/parse 的 plot_order):名字项是 def 名,表达式项是 scan#1 …
   notes: [], parseWarnings: [],
   editing: null,             // 正在编辑原文的条件名
   pending: '',               // 正在生成的那段原文(S.input 会被清空,按钮文案要靠它)
@@ -358,16 +366,24 @@ function saveDraft() {
 
 // ─── 条件 → 脚本(与后端 build_script 同规则) ──────────────────────
 // 停用的条件**保留 def**、只是不进 plot —— 重新启用时原文一字不差地回来。
+//
+// kind='term' 是 plot 里直接写的一项(`bullStreak >= minBullDays`,2026-09-15):它不是 def,
+// 只进 plot;停用 = plot 里去掉这一项。**停用的 term 在 buildScript(false) 里就没了**(没有 def 可以留),
+// 所以 rebuild 走 buildScript(true) 再把开关恢复回来,保存弹窗里明说停用的 term 不会存。
 function buildScript(allEnabled) {
   const lines = []
   const on = []
   S.conditions.forEach(function (c) {
-    if (!c.expr) return
+    if (!c.expr || c.kind === 'term') return
     const kw = c.kind === 'input' ? 'input' : (c.kind === 'rec' ? 'rec' : 'def')
     lines.push(kw + ' ' + c.name + ' = ' + c.expr + ';')
-    if (c.is_bool && (allEnabled || c.enabled)) on.push(c.name)
   })
-  if (!lines.length) return ''
+  condRows().forEach(function (x) {
+    const c = x.c
+    if (!c.expr || !(allEnabled || c.enabled)) return
+    on.push(c.kind === 'term' ? wrapTerm(c) : c.name)
+  })
+  if (!lines.length && !on.length) return ''
   if (S.combine === 'custom' && S.plotExpr) {
     lines.push('plot ' + S.plotName + ' = ' + S.plotExpr + ';')
   } else if (on.length) {
@@ -376,6 +392,40 @@ function buildScript(allEnabled) {
     lines.push('plot ' + S.plotName + ' = false;')
   }
   return lines.join('\n')
+}
+
+// 条件行(能开关的那些)按 plot 里的先后排 → [{c, i}],i 是在 S.conditions 里的下标(按钮 data-i 用)。
+// 不在 plot_order 里的(停用的 def、刚追加的)排在后面,彼此保持原顺序
+function condRows() {
+  const pos = {}
+  ;(S.plotOrder || []).forEach(function (n, k) { pos[n] = k })
+  return S.conditions
+    .map(function (c, i) { return { c: c, i: i } })
+    .filter(function (x) { return x.c.is_bool })
+    .sort(function (a, b) {
+      const pa = pos[a.c.name] != null ? pos[a.c.name] : 1e9 + a.i
+      const pb = pos[b.c.name] != null ? pos[b.c.name] : 1e9 + b.i
+      return pa - pb
+    })
+}
+
+// term 回写进 `a and b`:`x or y` 要补括号,不补就改了含义。后端给 paren;
+// 用户手改过的 term 后端还没见过,这里再按原文兜一次。已经整段带括号的不补(往返会一层层叠)
+function wrapTerm(c) {
+  const e = String(c.expr).trim()
+  if (isWrapped(e)) return e
+  const needs = c.paren || /(^|[^A-Za-z0-9_.])(or)([^A-Za-z0-9_.]|$)|\|\|/i.test(e)
+  return needs ? '(' + e + ')' : e
+}
+function isWrapped(e) {
+  if (e.charAt(0) !== '(' || e.charAt(e.length - 1) !== ')') return false
+  let d = 0
+  for (let i = 0; i < e.length; i++) {
+    if (e.charAt(i) === '(') d++
+    else if (e.charAt(i) === ')') d--
+    if (d === 0 && i < e.length - 1) return false
+  }
+  return true
 }
 
 // 用户是在写脚本还是在说大白话 —— 与后端 screen_nl.looks_like_script 同一判据。
@@ -416,7 +466,26 @@ function pruneVars() {
 }
 
 // 结构变了 → 清孤儿 → 回写脚本 → 重新解析(拿到最新 tokens)
-function rebuild() { pruneVars(); return reparse(buildScript()) }
+//
+// 停用状态:按 buildScript(true) 回写(停用的 term 才不会丢),解析回来再按 名字(def)/ 原文(term)关回去
+async function rebuild() {
+  pruneVars()
+  const offDef = {}, offTerm = {}
+  S.conditions.forEach(function (c) {
+    if (!c.is_bool || c.enabled) return
+    if (c.kind === 'term') offTerm[String(c.expr).trim()] = 1
+    else offDef[c.name] = 1
+  })
+  await reparse(buildScript(true))
+  let changed = false
+  S.conditions.forEach(function (c) {
+    if (!c.is_bool) return
+    if ((c.kind === 'term' && offTerm[String(c.expr).trim()]) || (c.kind !== 'term' && offDef[c.name])) {
+      c.enabled = false; changed = true
+    }
+  })
+  if (changed) { saveDraft(); render() }
+}
 
 // ═══ 魔法筛选(生成区) ═══════════════════════════════════════════
 // ─── 系统示例:对自己隐藏 ─────────────────────────────────────────
@@ -554,12 +623,16 @@ function vCond(c, i) {
   const probeTxt = probe === undefined ? '' :
     (probe === null ? '<span class="sc-na" style="font-size:11px">单独测试失败</span>'
       : '<span style="font-size:11px;color:var(--brand-dark)">单独命中 ' + probe + '</span>')
+  const isTerm = c.kind === 'term'
   return '<div class="cd' + (off ? ' off' : '') + '">' +
-    '<span class="nm">' + esc(c.name) + '</span>' +
+    // plot 里直接写的一项没有名字,标题用它引用的第一个定义名(bullStreak >= … 就叫 bullStreak)
+    '<span class="nm"' + (isTerm ? ' title="plot 里的一项"' : '') + '>' +
+      esc(isTerm ? (c.title || 'plot') : c.name) + '</span>' +
     '<span class="body">' + body + ' ' + probeTxt + '</span>' +
     '<span class="acts">' +
       '<button data-act="edit" data-i="' + i + '" title="编辑原文">✎</button>' +
-      '<button data-act="dup" data-i="' + i + '" title="复制一条">⧉</button>' +
+      // 复制一条 = 再来一句同样的 def;term 不是 def,复制出来是 plot 里两句一模一样的 and,没意义
+      (isTerm ? '' : '<button data-act="dup" data-i="' + i + '" title="复制一条">⧉</button>') +
       '<button data-act="copy" data-i="' + i + '" title="复制脚本文本">⎘</button>' +
       '<button data-act="probe" data-i="' + i + '" title="只用这一条扫一次">🐞</button>' +
       sw +
@@ -585,8 +658,9 @@ function vConditions() {
     return '<div class="sc-note" style="padding:22px 4px">' +
       '还没有条件。把筛选脚本粘进上面的框里点「生成」,或者直接点一个示例。</div>'
   }
-  const onCount = S.conditions.filter(function (c) { return c.is_bool && c.enabled }).length
-  const mk = (S.meta && (S.meta.markets || []).filter(function (m) { return m.key === S.market })[0]) || null
+  const rows = condRows()
+  const onCount = rows.filter(function (x) { return x.c.enabled }).length
+  const mk =(S.meta && (S.meta.markets || []).filter(function (m) { return m.key === S.market })[0]) || null
   // 复制脚本 / 清空已经挪到生成按钮正下方(vMagic),这里只留标题
   return '<div class="cd-hd">股票需<b>同时满足</b>以下<b>' + onCount + '</b> 个条件' +
       (mk ? '<span class="mk">' + esc(mk.label) + '</span>' : '') +
@@ -601,9 +675,47 @@ function vConditions() {
         '<code>plot scan = 条件A and 条件B;</code> 的形式。</div>'
       : '') +
     '<div class="cd-list" id="cd-list">' +
-      S.conditions.map(vCond).join('') +
+      rows.map(function (x) { return vCond(x.c, x.i) }).join('') +
+      vDefs() +
     '</div>' +
     vNotes()
+}
+
+// 脚本里的参数(input)和中间定义(isBull / ret / volMA20 …)。
+// 它们**不是条件**,不进上面的「同时满足」,但时间序列脚本里条件行显示的是它们的名字(bullStreak >= minBullDays(3)),
+// 不摆出来用户看不到 bullStreak 是怎么算的。参数值和窗口长度可以直接改(数字框走同一个 onNumChange)。
+// 横截面脚本的中间变量照旧不显示(条件行已经把它们内联成中文了,见 vCond 开头的注释)
+function vDefs() {
+  // 时间序列脚本的标志:有 input / rec,或者 token 里有函数名(fn)/ K 线偏移([n])—— 横截面脚本两样都没有
+  const series = S.conditions.some(function (c) {
+    return c.kind === 'input' || c.kind === 'rec' || (c.tokens || []).some(function (t) {
+      return t.k === 'fn' || (t.k === 'op' && String(t.t).charAt(0) === '[')
+    })
+  })
+  if (!series) return ''
+  const inputs = [], defs = []
+  S.conditions.forEach(function (c, i) {
+    if (c.is_bool) return
+    ;(c.kind === 'input' ? inputs : defs).push({ c: c, i: i })
+  })
+  if (!inputs.length && !defs.length) return ''
+  const tok = function (x) {
+    return (x.c.tokens || []).map(function (t, ti) { return vTok(t, x.i, ti) }).join(' ')
+  }
+  return (inputs.length
+      ? '<div class="cd-params"><span class="cd-sub">参数</span>' +
+          inputs.map(function (x) {
+            return '<span class="cd-param"><span class="tk r">' + esc(x.c.name) + '</span> ' + tok(x) + '</span>'
+          }).join('') + '</div>'
+      : '') +
+    (defs.length
+      ? '<details class="sc-fold cd-defs"><summary>脚本里的中间定义 ' + defs.length +
+          ' 个(不是条件,是上面条件用到的计算)· 点开看</summary>' +
+          defs.map(function (x) {
+            return '<div class="cd-def"><span class="nm">' + esc(x.c.name) + '</span>' +
+              '<span class="body">' + tok(x) + '</span></div>'
+          }).join('') + '</details>'
+      : '')
 }
 
 // ─── 页面上不出现上游数据源的名字(2026-09-10 产品要求) ──────────
@@ -782,6 +894,8 @@ function openSaveDialog() {
   if (!S.conditions.length) return
   const bools = S.conditions.filter(function (c) { return c.is_bool })
   const on = bools.filter(function (c) { return c.enabled }).length
+  // plot 里直接写的项(term)没有 def 可以留,停用的存不进去 —— 明说,别让用户加载回来才发现少了
+  const offTerms = bools.filter(function (c) { return c.kind === 'term' && !c.enabled }).length
   const m = openModal(
     '<div class="modal-hd"><span class="hi hi-save" style="color:var(--brand)"></span> 保存扫描策略' +
       '<span class="close" data-close>×</span></div>' +
@@ -790,7 +904,11 @@ function openSaveDialog() {
         '<input id="sv-name" maxlength="30" autocomplete="off" ' +
         'placeholder="比如:美股放量突破 · 市值大于 100 亿" value="' + esc(S.loadedName) + '"></div>' +
       '<div class="sc-note" style="line-height:1.8">会保存 <b>' + bools.length + '</b> 个条件' +
-        (bools.length !== on ? '(其中 <b>' + on + '</b> 个启用,停用的也一起存,加载回来开关不变)' : '') +
+        (bools.length !== on
+          ? (offTerms
+            ? '(其中 <b>' + on + '</b> 个启用;停用的 <b>' + offTerms + '</b> 条是 plot 里直接写的比较式,<b>不会存进去</b>)'
+            : '(其中 <b>' + on + '</b> 个启用,停用的也一起存,加载回来开关不变)')
+          : '') +
         ' · 市场 <b>' + esc(MKT_LABEL[S.market] || S.market) + '</b>' +
         ' · 排序 <b>' + esc(S.sortBy || '—') + '</b> ' + (S.desc ? '↓' : '↑') + '<br>' +
         '同名会覆盖原来那个。保存后会出现在示例按钮那一排,点一下就能加载回来。</div>' +
@@ -1206,7 +1324,7 @@ function bind() {
     const n = S.conditions.filter(function (c) { return c.is_bool }).length
     if (!confirm('清空全部 ' + n + ' 个条件和当前扫描结果?草稿也会一起清掉。')) return
     S.conditions = []; S.result = null; S.probe = {}; S.notes = []; S.parseWarnings = []
-    S.combine = 'all'; S.plotExpr = ''; S.loadedName = ''; S.officialPreset = null; saveDraft(); render()
+    S.combine = 'all'; S.plotExpr = ''; S.plotOrder = []; S.loadedName = ''; S.officialPreset = null; saveDraft(); render()
   })
 
   const run = document.getElementById('sc-run')
@@ -1308,11 +1426,14 @@ function onCondAction(e) {
   }
   if (act === 'edit') { S.editing = (S.editing === c.name ? null : c.name); S.editText = null; render(); return }
   if (act === 'dup') {
+    if (c.kind === 'term') return
     const copy = { name: uniqName(c.name), expr: c.expr, is_bool: c.is_bool, enabled: c.enabled }
     S.conditions.splice(i + 1, 0, copy)
     rebuild(); return
   }
-  if (act === 'copy') { copyText('def ' + c.name + ' = ' + c.expr + ';', '这一条'); return }
+  if (act === 'copy') {
+    copyText(c.kind === 'term' ? c.expr : 'def ' + c.name + ' = ' + c.expr + ';', '这一条'); return
+  }
   if (act === 'probe') { probeOne(c); return }
 }
 
@@ -1506,6 +1627,7 @@ function applyParsed(d) {
   S.combine = d.combine || 'all'
   S.plotName = d.plot_name || 'scan'
   S.plotExpr = d.combine === 'custom' ? (d.plot_expr || '') : ''
+  S.plotOrder = d.plot_order || []
   S.notes = d.notes || []
   S.parseWarnings = d.warnings || []
   // 后端判的「这套条件是不是原样的官方示例」(2026-09-14 · 原样运行不扣扫描次数)。只用于界面提示和按钮,
@@ -1618,6 +1740,7 @@ async function generate(allowAi) {
     S.combine = d.combine || 'all'
     S.plotName = d.plot_name || 'scan'
     S.plotExpr = d.combine === 'custom' ? (d.plot_expr || '') : ''
+    S.plotOrder = d.plot_order || []
   } else {
     mergeAppend(fresh)
   }
@@ -1643,7 +1766,9 @@ function condsOf(d) {
       // 没有就是 def。丢了它 `input lookback = 5;` 会变成 `def lookback = 5;` —— 引擎能算,但用户
       // 复制回 thinkorswim 时参数面板就没了
       kind: c.kind || 'def',
-      enabled: !c.is_bool ? true : (d.combine === 'custom' ? true : !!refs[c.name]),
+      // kind='term':plot 里直接写的一项(没有 def),解析回来一定在 plot 里 → 启用
+      title: c.title || '', paren: !!c.paren,
+      enabled: !c.is_bool ? true : (d.combine === 'custom' || c.kind === 'term' ? true : !!refs[c.name]),
     }
   })
 }
@@ -1779,9 +1904,10 @@ async function hitDaysOf(code) {
 async function probeOne(c) {
   const lines = []
   S.conditions.forEach(function (o) {
-    if (o.expr) lines.push('def ' + o.name + ' = ' + o.expr + ';')
+    if (!o.expr || o.kind === 'term') return        // term 不是 def,只测它自己那一项
+    lines.push((o.kind === 'input' ? 'input ' : (o.kind === 'rec' ? 'rec ' : 'def ')) + o.name + ' = ' + o.expr + ';')
   })
-  lines.push('plot ' + S.plotName + ' = ' + c.name + ';')
+  lines.push('plot ' + S.plotName + ' = ' + (c.kind === 'term' ? c.expr : c.name) + ';')
   // probe:true —— 单条测试不扣扫描次数,后端只回命中数(见 screen_quota 文件头)
   const r = await post(RUN_API, { script: lines.join('\n'), market: S.market, limit: 1, as_of: S.asOf || null, probe: true })
   if (gateOf(r)) return

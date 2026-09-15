@@ -548,11 +548,22 @@ kinds = {x["name"]: x["kind"] for x in dd["conditions"]}
 check("E decompose · input 行 kind=input", kinds["lookback"] == "input" and kinds["minRet"] == "input")
 check("E decompose · def 行 kind=def", kinds["isBull"] == "def" and kinds["bullStreak"] == "def")
 bools = {x["name"]: x["is_bool"] for x in dd["conditions"]}
-check("E decompose · 布尔条件识别", bools["isBull"] and bools["accel"] and bools["volSpike"] and bools["volUp3"])
+check("E decompose · 布尔条件识别", bools["accel"] and bools["volSpike"] and bools["volUp3"])
 check("E decompose · 数值 / input / 递归 不是布尔", not bools["cumRet"] and not bools["lookback"] and not bools["bullStreak"] and not bools["last2Ratio"])
-# 用户脚本的 plot 是 `bullStreak >= minBullDays and … and accel and …` —— 里面有比较式,不是纯名字链,
-# 按既有规则走 custom(界面上 plot 原样只读、条件全部启用)。纯名字链的脚本仍是 all(下一条)
-check("E decompose · plot 含比较式 → combine=custom 且 plot 原文保留", dd["combine"] == "custom" and "bullStreak >= minBullDays" in dd["plot_expr"], dd["plot_expr"][:60])
+# ⭐ 2026-09-15 改口径:原来这两条断言是「isBull 是条件」「plot 含比较式 → custom」—— 那正是用户截图里的 bug:
+# 界面「同时满足」下面列着 isBull(收盘价>开盘价)和 isBear(收盘价<开盘价)两条互斥条件,真正 plot 里的
+# bullStreak >= minBullDays 等 8 项一条没列。现在:被别的 def 引用的布尔 def 是中间定义;plot 按顶层 and 拆成条件行
+check("E decompose ⭐ 中间布尔定义(isBull / isBear / isMaxRet)不是条件", not bools["isBull"] and not bools["isBear"] and not bools["isMaxRet"])
+check("E decompose ⭐ plot 含比较式 → combine=all 且 plot 原文保留", dd["combine"] == "all" and "bullStreak >= minBullDays" in dd["plot_expr"], dd["combine"])
+_rows = [x for x in dd["conditions"] if x["is_bool"]]
+_row_names = {x["name"] for x in _rows}
+check("E decompose ⭐ 条件行正好是 plot 的 8 项", len(_rows) == 8 and len(dd["plot_order"]) == 8 and set(dd["plot_order"]) == _row_names, dd["plot_order"])
+_terms = [x for x in dd["conditions"] if x["kind"] == "term"]
+check("E decompose ⭐ 表达式项原文逐字", [x["expr"] for x in _terms] == ["bullStreak >= minBullDays", "bearCount <= maxBearInWindow", "cumRet >= minRet", "last2Ratio >= last2RatioMin", "amount >= minAmount"], [x["expr"] for x in _terms])
+check("E decompose · 裸名字项进 plot_refs 且按 plot 顺序", dd["plot_refs"] == ["accel", "volUp3", "volSpike"] and dd["plot_order"][3] == "accel", dd["plot_order"])
+check("E decompose · 表达式项名字带 #(不会与 def 撞名)", all("#" in x["name"] for x in _terms) and _terms[0]["title"] == "bullStreak")
+_ttoks = {x["expr"]: "".join(t["t"] for t in x["tokens"]) for x in _terms}
+check("E decompose · 参数引用带当前值", "minBullDays(3)" in _ttoks["bullStreak >= minBullDays"] and "minRet(0.80)" in _ttoks["cumRet >= minRet"], _ttoks)
 _dd2 = sd.decompose("def a = close > open[1];\ndef b = volume > 0;\nplot scan = a and b;",
                     compile("def a = close > open[1];\ndef b = volume > 0;\nplot scan = a and b;"), has, SMA, EMA, RSI)
 check("E decompose · 纯名字 and 链 → combine=all", _dd2["combine"] == "all" and _dd2["plot_refs"] == ["a", "b"], _dd2["plot_refs"])
@@ -564,7 +575,50 @@ check("E decompose · 序列中文名", "收盘价" in toks["isBull"] and "开�
 check("E decompose · 数字 token 带位置(可内联编辑)", any(t["k"] == "num" and "s" in t for t in next(x for x in dd["conditions"] if x["name"] == "volMA20")["tokens"]))
 check("E decompose · rec 行 kind=rec", {x["name"]: x["kind"] for x in sd.decompose("rec s = if close > open then s[1] + 1 else 0;\nplot scan = s > 2;", compile("rec s = if close > open then s[1] + 1 else 0;\nplot scan = s > 2;"), has, SMA, EMA, RSI)["conditions"]}["s"] == "rec")
 check("E decompose · 横截面脚本 kind=def 且行为不变", all(x["kind"] == "def" for x in sd.decompose("def a = close > 20;\nplot scan = a;", compile("def a = close > 20;\nplot scan = a;"), has, SMA, EMA, RSI)["conditions"]))
-check("E 跳过的语句进 notes", any("AddLabel" in n for n in compile("def a = close > open;\nAddLabel(yes, \"x\");\nplot scan = a;").notes))
+check("E decompose ⭐ 引用显示名字,不内联成没括号的一串", toks["isMaxRet"] == "ret大于等于maxRet" and "Highest收盘价" not in toks["accel"], (toks["isMaxRet"], toks["accel"]))
+_vol = next(x for x in dd["conditions"] if x["name"] == "volUp3")
+check("E decompose ⭐ K 线偏移不是可编辑数字", not any(t["k"] == "num" for t in _vol["tokens"]) and "[1]" in toks["volUp3"], _vol["tokens"])
+check("E decompose · 窗口长度仍可内联编辑", any(t["k"] == "num" and t["t"] == "20" for t in next(x for x in dd["conditions"] if x["name"] == "volMA20")["tokens"]))
+
+
+def _dec(s):
+    return sd.decompose(s, compile(s), has, SMA, EMA, RSI)
+
+
+# 按写法类别:plot 的各种形状
+_d = _dec("def a = close > close[1];\nplot scan = a or volume > volume[1];")
+_t = [x for x in _d["conditions"] if x["kind"] == "term"]
+check("E plot 形状 · 单个 or 表达式 → 一条 term,回写要补括号", _d["combine"] == "all" and len(_t) == 1 and _t[0]["paren"] and not next(x for x in _d["conditions"] if x["name"] == "a")["is_bool"])
+_d = _dec("def a = close > close[1];\nplot scan = (a or volume > volume[1]) and close > 5;")
+_t = [x for x in _d["conditions"] if x["kind"] == "term"]
+check("E plot 形状 · 已带括号的 or 项不再补括号(往返不叠括号)", len(_t) == 2 and _t[0]["expr"] == "(a or volume > volume[1])" and not _t[0]["paren"], [(x["expr"], x["paren"]) for x in _t])
+_d = _dec("def a = close > close[1];\nplot scan = a within 3 bars;")
+check("E plot 形状 · within 单项可拆", _d["combine"] == "all" and len([x for x in _d["conditions"] if x["kind"] == "term"]) == 1)
+_d = _dec("plot scan = if close > open and volume > 0 then close > close[1] else no;")
+check("E plot 形状 · 顶层 if(里面有 and)拆不开 → custom", _d["combine"] == "custom" and not any(x["kind"] == "term" for x in _d["conditions"]), _d["combine"])
+_d = _dec("def a = close > open;\ndef b = Sum(a, 5) >= 3;\ndef c = volume > volume[1];\nplot scan = b;")
+_b = {x["name"]: x["is_bool"] for x in _d["conditions"]}
+check("E plot 形状 · 没进 plot 也没人引用的布尔 def 仍是(停用的)条件", _b == {"a": False, "b": True, "c": True} and _d["plot_refs"] == ["b"], _b)
+_d = _dec("def a = close > close[1];\nplot scan = a and a[1];")
+check("E plot 形状 · 同一 def 既是裸名字项又被别的项引用 → 仍是条件", next(x for x in _d["conditions"] if x["name"] == "a")["is_bool"] and _d["plot_refs"] == ["a"])
+_d = _dec("def a = close > 20;\ndef b = volume > 1000;\nplot scan = a and b;")
+check("E plot 形状 · 横截面纯名字链:和以前完全一样(没有 term)", _d["combine"] == "all" and _d["plot_refs"] == ["a", "b"] and not any(x["kind"] == "term" for x in _d["conditions"]))
+_d = _dec("def a = close > 20;\nplot scan = a and volume > 1000;")
+check("E plot 形状 · 横截面混写:名字项 + 表达式项", _d["plot_order"] == ["a", "scan#1"] and next(x for x in _d["conditions"] if x["kind"] == "term")["expr"] == "volume > 1000", _d["plot_order"])
+_d = _dec("def a = close > close[1];\nplot scan = a # 注释\n  and volume > volume[1];")
+check("E plot 形状 · plot 跨行带注释,原文不含注释", [x["expr"] for x in _d["conditions"] if x["kind"] == "term"] == ["volume > volume[1]"])
+_d = _dec("def a = close > close[1];\nplot scan = a && Highest(volume[1], 3) > 0;")
+check("E plot 形状 · && 也拆,函数括号里的逗号不影响", [x["expr"] for x in _d["conditions"] if x["kind"] == "term"] == ["Highest(volume[1], 3) > 0"])
+_t = next(x for x in _d["conditions"] if x["kind"] == "term")
+check("E plot 形状 · term 里的数字位置相对 term 原文", all(_t["expr"][t["s"]:t["e"]] == t["t"] for t in _t["tokens"] if t["k"] == "num"))
+
+# 往返:build_script(条件行) 再编译,结果与原脚本逐只一致;停用一项 = plot 里去掉那一项
+_rt = sd.build_script(dd["conditions"], dd["plot_name"])
+check("E 往返 · build_script 含 input 关键字与全部 term", "input lookback = 5;" in _rt and "bullStreak >= minBullDays and bearCount <= maxBearInWindow" in _rt, _rt[-300:])
+check("E 往返 · 回写脚本再拆条件行不变", [x["name"] for x in _dec(_rt)["conditions"] if x["is_bool"]] == [x["name"] for x in dd["conditions"] if x["is_bool"]])
+_or = _dec("def a = close > close[1];\nplot scan = a or volume > volume[1];")
+check("E 往返 · or 项回写补括号后仍能编译", "(a or volume > volume[1])" in sd.build_script(_or["conditions"] + [{"name": "z", "expr": "close > 1", "is_bool": True}], "scan") and compile(sd.build_script(_or["conditions"] + [{"name": "z", "expr": "close > 1", "is_bool": True}], "scan")) is not None)
+check("E 跳过的语句进 notes",any("AddLabel" in n for n in compile("def a = close > open;\nAddLabel(yes, \"x\");\nplot scan = a;").notes))
 check("E 多个 plot 进 notes", any("plot" in n for n in compile("plot a = close > open;\nplot scan = close > close[1];").notes))
 
 # bars_matrix:模拟 screen_asof 的缓存结构
