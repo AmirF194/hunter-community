@@ -207,17 +207,33 @@ S+A 对 C+D 中位差 +2.7、先跌 5% 比例差 -12 个百分点(原口径中�
 - 引擎加 **P-22**:按**前一天收盘**核对同一条件(与 P-02 ~ P-05 同一口径,突破当天那根放量不算进去),算不出不买;
   开关 `acc_filter`(关掉 = 回到 v12 买卖);
 - 用户保存的「即将突破」(user_screen_preset)同步加这条。
+
+## v14(2026-09-15 用户:「财报日前 5 个交易日内不得买入或加仓;已经买入的,财报前 2 天浮盈不大于 10% 清仓,
+## 大于 10% 卖出一半,后续仓位沿用之前的止损止盈规则」)—— 改变买卖
+
+财报日来自 Nasdaq 官方日历(`earnings_dates.py`,口径与「知道 / 不知道」的区分写在那边)。
+- **P-23 财报前不买**:下一次财报日离今天 ≤ 5 个交易日(含财报当天)不开新仓,也不加仓(P-08)。
+  「还有 n 个交易日」= 今天之后到财报日(含)的交易日数,财报当天 = 0。含当天是因为盘前 / 盘后分不出(过去日期都没给)。
+  **日历缺(往后 10 天里有没拉到的日子)也不买、不加仓** —— 不知道就当有风险,不当成「没有财报」。
+- **P-24 财报前减仓**:离财报 ≤ 2 个交易日(正常就是财报前第 2 个交易日收盘)、这次财报还没处理过:
+  浮盈 ≤ 10% 清仓;> 10% 卖出一半,余仓照原来的止损止盈走(每次财报只做一次,`extra.earn_done` 记财报日)。
+  排在完全出场(止损 / 趋势 / 大盘转弱)之后:同一天止损也成立时记止损。减半当天不再做别的减仓。
+- 替用户定的两处(改之前先问):**浮盈按首笔进场价算**(和 P-12 / P-13 / P-14 的「浮盈」同一锚点,决定 1),
+  说明里同时写出按持仓均价算的数;余仓只剩 1 股时「卖一半」取整为 0,整股清掉。
+- 开关 `earn_filter`(关掉 = 回到 v13 买卖)。持仓离财报时日历缺,P-24 做不了,不猜。
 """
 from __future__ import annotations
 
 import math
 
 from app.services.quant import accum
+from app.services.quant import earnings_dates as ed
 from app.services.quant import agent_vcp as av
 from app.services.quant import agent_vcp3 as c3
 
 MARKET_KEY = "__market__"
 SECTORS_KEY = "__sectors__"          # agent_run.ensure_cache 按有 MARKET_KEY 的引擎一起写;本引擎不用板块
+EARNINGS_KEY = "__earnings__"        # v14:按日的财报日视图(earnings_dates.EarningsView),agent_run.ensure_cache 写
 MIN_BARS = 60                        # 持仓管理(EMA21 / 50 日线 / 21 日低点)要的最少根数
 SCREEN_BARS = 252                    # 筛选要近 252 日最高价
 
@@ -237,6 +253,8 @@ PARAMS = {
     "corr_min": 1.0, "sup_look": 63, "rej_close_pos": 0.6, "key_vol": 2.0,             # v9:空间受限 2R → 1R;支撑结构口径
     "chase_block": 4.0, "block_d": False,                                              # v9:追高 > 4% 不买;D 级不再拦人
     "acc_filter": True,                                                                # v13:P-22 前一天收盘要有资金逆势买入
+    "earn_filter": True, "earn_block_days": 5, "earn_exit_days": 2,                    # v14:P-23 财报前 5 个交易日不买不加仓
+    "earn_keep_profit": 10.0, "earn_keep_frac": 0.5,                                   # v14:P-24 财报前 2 天,浮盈 > 10% 卖一半,否则清仓
     "partial_profit": 8.0, "partial_frac": 0.20,
     "exit_ema21_profit": 10.0, "exit_sma50_profit": 20.0,
     "unit_pct": 0.20, "initial_frac": 0.50, "add1_frac": 0.30, "add2_frac": 0.20, "max_holdings": 5,
@@ -300,10 +318,13 @@ RULES = [
     {"id": "P-22", "kind": "buy", "condition": "资金逆势买入(前一天收盘):近 42 天标普下跌日里,个股上涨、扣 beta 后多涨 > 1%、成交量 > 50 日均量 × 1.2 至少 1 天,且这些下跌日扣 beta 平均超额 ≥ 0;算不出不买"},
     {"id": "P-20", "kind": "risk", "condition": "入场评分(满分 500,每项 S100/A80/B60/C40/D0):止损上方支撑 · 量价配合(近 21 天放量上涨 − 放量下跌 ≥4 S · 3 A · 2 B · 1 C · ≤0 D,3 个月过热降一档) · 抗跌 = 资金逆势买入(近 42 天标普下跌日,个股上涨、扣 beta 后多涨 >1%、放量 1.2 倍,有 ≥1 天且下跌日平均超额 ≥0 记 B,否则 D;均线领先大盘只记录) · 追高幅度(高出枢轴 ≤1% S · ≤2% A · ≤3% B · ≤4% C) · 日 / 周 MACD 金叉;≥350 S · ≥300 A · ≥250 B · ≥200 C · 其余 D;档位只记录,不定仓、不拦人;唯一硬条件:收盘高出枢轴超过 4% 不买"},
     {"id": "P-21", "kind": "risk", "condition": "空间受限:走廊(上方 252 日强阻力 − 收盘)÷ R 不足 1R,达到买点也不进"},
+    {"id": "P-23", "kind": "risk", "condition": "财报前不买:下一次财报日离今天 5 个交易日以内(含财报当天)不开新仓、不加仓;财报日历没拉到(不知道)也不买、不加仓"},
+    {"id": "P-24", "kind": "sell", "condition": "财报前减仓:离财报 2 个交易日时,浮盈(相对首笔进场价)不超过 10% 清仓;超过 10% 卖出一半,余仓照原来的止损止盈走(每次财报只做一次)"},
 ]
 RULE_NAME = {"P-06": "枢轴突破买入", "P-08": "加仓", "P-09": "跌破 Base 低点", "P-10": "固定 6% 止损",
              "P-11": "ATR 止损 / 保本", "P-12": "部分止盈", "P-13": "跌破 EMA21", "P-14": "跌破 50 日线",
-             "P-15": "市场转弱", "P-17": "+20% 减半", "P-18": "跌破 EMA10 减半", "P-19": "跌破 EMA20 清仓"}
+             "P-15": "市场转弱", "P-17": "+20% 减半", "P-18": "跌破 EMA10 减半", "P-19": "跌破 EMA20 清仓",
+             "P-23": "财报前不买", "P-24": "财报前减仓"}
 RULE_PARAM_KEY: dict = {}            # 规则固定,不进优化器
 
 
@@ -318,7 +339,8 @@ def summary(p: dict = PARAMS) -> str:
             "涨 2% / 5% 且放量站上 EMA8 / EMA21 各加 30% / 20%;"
             "跌破 Base 低点 2%、亏 6%、或跌破 1 倍 ATR 初始止损(最多 8%)出场,最高到过 +5% 后止损上移到均价保本;"
             "浮盈 8% 后遇暂停卖 20%,+20% 减半,之后跌破 EMA10 再减半、跌破 EMA20 清仓;"
-            "浮盈 10% 跌破 EMA21、浮盈 20% 跌破 50 日线、或大盘转弱时清仓。")
+            "浮盈 10% 跌破 EMA21、浮盈 20% 跌破 50 日线、或大盘转弱时清仓;"
+            "财报前 5 个交易日内不买不加仓(财报日历没拉到也不买),离财报 2 个交易日时浮盈不超过 10% 清仓、超过 10% 卖一半。")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -867,8 +889,35 @@ def manage_position(pos: av.Position, ind: dict, state: dict, p: dict = PARAMS, 
         pos.highest = max(pos.highest, px)
         state["closed"].append(pos)
         return fills
+    # v14 P-24 财报前减仓:排在完全出场之后、其他减仓 / 加仓之前;每次财报只做一次(extra.earn_done = 财报日)
+    earn_on = p.get("earn_filter", True)
+    ei = ed.info(pos.code, state.get("earn")) if earn_on else None
+    earn_sold = False
+    e_iso = str(ei["date"]) if ei and ei["date"] else None
+    if (ei and ei["known"] and ei["tdays"] is not None and ei["tdays"] <= p["earn_exit_days"]
+            and ex.get("earn_done") != e_iso):
+        keep = p["earn_keep_profit"]
+        half = int(pos.size * p["earn_keep_frac"])
+        head = (f"{ei['text']};浮盈 {profit:+.1f}%(相对首笔进场价 ${ep:.2f};"
+                f"按持仓均价 ${pos.avg_cost:.2f} 算 {(px / pos.avg_cost - 1) * 100:+.1f}%)")
+        if profit > keep + 1e-9 and half >= 1:
+            _sell(pos, half, px, "P-24", f"{head} > {keep:.0f}% —— 财报前卖出一半({half} 股),余仓照原来的止损止盈走。",
+                  state, fills, n, want_text, base)
+            ex["earn_done"] = e_iso
+            earn_sold = True
+        else:
+            why = (f"{head} > {keep:.0f}%,但只剩 {pos.size} 股、卖一半取整为 0 —— 整股清掉。" if profit > keep + 1e-9
+                   else f"{head} 不大于 {keep:.0f}% —— 财报前清仓。")
+            _sell(pos, pos.size, px, "P-24", why, state, fills, n, want_text, base)
+            pos.highest = max(pos.highest, px)
+            state["closed"].append(pos)
+            return fills
+    # P-23:财报窗口内(或日历缺、不知道)不加仓
+    add_ok = (not earn_on) or (ei["known"] and (ei["tdays"] is None or ei["tdays"] > p["earn_block_days"]))
+    if earn_sold:
+        pass                                   # 财报前减半当天,不再做别的减仓 / 加仓
     # v5 减仓:+20% 减半(一次)→ 之后跌破 EMA10 再减半(一次)。清仓那条 P-19 在 exit_rule 里
-    if (ex.get("half20_done") and not ex.get("ema10_done") and ind.get("ema10") is not None
+    elif (ex.get("half20_done") and not ex.get("ema10_done") and ind.get("ema10") is not None
             and px < ind["ema10"] and pos.size >= 2):
         _sell(pos, pos.size // 2, px, "P-18", f"+20% 减半之后收盘跌破 EMA10 ${ind['ema10']:.2f} —— 卖出余仓一半。",
               state, fills, n, want_text, base)
@@ -885,7 +934,7 @@ def manage_position(pos: av.Position, ind: dict, state: dict, p: dict = PARAMS, 
                                      f"量低于 10 日均量 —— 上涨出现暂停,卖出约 {p['partial_frac'] * 100:.0f}%({qty} 股)。",
               state, fills, n, want_text, base)
         ex["partial_done"] = True
-    elif market and market.get("ok") and pos.level < 3 and ind["av20"]:
+    elif add_ok and market and market.get("ok") and pos.level < 3 and ind["av20"]:
         # 加仓:按顺序,一天最多一次;股数按进场时定下的完整仓位
         unit = int(ex.get("unit") or pos.initial_size)
         add, why = 0, ""
@@ -920,6 +969,12 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
         return None, None
     if not checks[0]["ok"]:
         return None, f"突破成立,但市场环境不满足:{checks[0]['text']}(P-01)"
+    ei = ed.info(code, state.get("earn"))
+    if p.get("earn_filter", True):
+        if not ei["known"]:
+            return None, f"突破成立,但{ei['text']} —— 不知道就不买(P-23)"
+        if ei["tdays"] is not None and ei["tdays"] <= p["earn_block_days"]:
+            return None, f"突破成立,但{ei['text']},财报前 {int(p['earn_block_days'])} 个交易日内不买(P-23)"
     if state.get("halt_reason"):
         return None, f"突破成立,但护栏挡下:{state['halt_reason']}(P-16)"
     if len(state["positions"]) >= p["max_holdings"]:
@@ -971,6 +1026,7 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
         return _fill("buy", pos, size, px, ENTRY_RULE, "", **extra), None
     rationale = ("".join(f"{c['rule']} {c['text']};" for c in checks)
                  + f"P-21 {corr_txt}(≥ {p['corr_min']:.0f}R)。"
+                 + (f"P-23 {ei['text']}(财报前 {int(p['earn_block_days'])} 个交易日内不买)。" if p.get("earn_filter", True) else "")
                  + f"P-20 评分 {gr['text']}。"
                  + size_txt
                  + (f",现金只够 {size} 股" if cash_cut else f",买入 {size} 股")
@@ -982,15 +1038,17 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
 
 def run_day(date_iso: str, positions, cash: float, bars_of, watch, prev_equity, consec_losses: int,
             p: dict = PARAMS, g: dict = av.GUARDS, ind_of=None, want_text: bool = True) -> dict:
-    """接口与其他引擎相同。市场环境从 ind_of(MARKET_KEY) 取。"""
+    """接口与其他引擎相同。市场环境从 ind_of(MARKET_KEY) 取,财报日视图从 ind_of(EARNINGS_KEY) 取(v14)。"""
     state = {"date": date_iso, "cash": cash, "positions": list(positions), "closed": [], "closed_pnl": [],
-             "equity": None, "halt_reason": None, "market": None}
+             "equity": None, "halt_reason": None, "market": None, "earn": None}
     if ind_of is None:
         def ind_of(code):
-            if code in (MARKET_KEY, SECTORS_KEY):
+            if code in (MARKET_KEY, SECTORS_KEY, EARNINGS_KEY):
                 return None
             return indicators(bars_of(code) or [], p)
     state["market"] = ind_of(MARKET_KEY)
+    ev = ind_of(EARNINGS_KEY)
+    state["earn"] = ev if isinstance(ev, ed.EarningsView) else None     # 不是视图 = 没接上,按「日历缺」处理
     ind_cache = {pos.code: ind_of(pos.code) for pos in state["positions"]}
     mv = sum(pos.size * (ind_cache[pos.code]["close"] if ind_cache[pos.code] else pos.avg_cost) for pos in state["positions"])
     equity = cash + mv

@@ -41,7 +41,9 @@ def mk(closes, rng=0.01, vol=1_000_000.0, start=date(2025, 1, 6)):
 
 
 G = av.GUARDS
-P = ab.PARAMS
+# v14 之前的用例都不带财报日历:关掉 P-23 / P-24 专测别的规则(带日历的用例在文件末尾,用 PE = 线上参数)
+P = dict(ab.PARAMS, earn_filter=False)
+PE = ab.PARAMS
 UP = {"ok": True, "above": True, "text": "标普上升趋势"}
 DOWN = {"ok": False, "above": False, "text": "标普不在上升趋势"}
 NA = {"ok": False, "above": None, "text": "基准日线不足"}
@@ -471,6 +473,106 @@ check("P-08 · 现金不够不加仓", not [f for f in r["fills"] if f["side"] =
 check("接口 · 规则固定,不进优化器", ab.RULE_PARAM_KEY == {})
 check("接口 · 规则编号 P- 开头,与其他线不冲突", all(x["id"].startswith("P-") for x in ab.RULES))
 check("接口 · 阳线条件没做要写在规则里", "开盘价" in ab.RULES[5]["condition"])
+
+# ── v14 财报风控:P-23 财报前 5 个交易日不买不加仓 · P-24 财报前 2 天清仓 / 减半 ─────────────
+ed = ab.ed
+D0 = date(2026, 3, 2)                                          # 周一
+TD = [d for d in ed.weekdays(D0 - timedelta(days=30), date(2026, 3, 13))]      # 交易日历只到 03-13
+ALL = set(ed.weekdays(D0 - timedelta(days=30), date(2026, 4, 30)))
+
+
+def view(cal, d=D0, fetched=ALL):
+    return ed.EarningsView(d, {k: sorted(v) for k, v in cal.items()}, set(fetched), TD)
+
+
+v0 = view({"AAA": [date(2026, 1, 20), date(2026, 3, 9)], "BBB": [date(2026, 3, 4)], "CCC": [D0]})
+check("财报视图 · 过去的财报不算,下一次 03-09 = 5 个交易日后", v0.next_of("AAA") == (date(2026, 3, 9), 5), str(v0.next_of("AAA")))
+check("财报视图 · 03-04 = 2 个交易日后;当天 = 0", v0.next_of("BBB") == (date(2026, 3, 4), 2) and v0.next_of("CCC") == (D0, 0))
+check("财报视图 · 库里没有 → None", v0.next_of("ZZZ") is None)
+check("财报视图 · 超出交易日历按工作日数(03-13 之后的 03-17 = 11)", v0.tdays(date(2026, 3, 17)) == 11, str(v0.tdays(date(2026, 3, 17))))
+check("财报视图 · 周末 / 休市日的财报算到之前最后一个交易日", v0.tdays(date(2026, 3, 7)) == 4)
+vg = view({"BBB": [date(2026, 3, 4)], "DDD": [date(2026, 3, 11)]}, fetched=ALL - {date(2026, 3, 6)})
+check("财报视图 · 往后 10 天有没拉到的日子 → gaps", vg.gaps == [date(2026, 3, 6)], str(vg.gaps))
+check("info · 缺口之前查得到财报 → 知道", ed.info("BBB", vg)["known"] and ed.info("BBB", vg)["tdays"] == 2)
+check("info · 查不到、又有缺口 → 不知道(不是「没有财报」)", not ed.info("ZZZ", vg)["known"] and "没拉到" in ed.info("ZZZ", vg)["text"])
+check("info · 查到的财报在缺口之后 → 也不知道(缺口那天可能更早)", not ed.info("DDD", vg)["known"])
+check("info · 没有缺口、查不到 → 知道近期没有财报", ed.info("ZZZ", v0)["known"] and ed.info("ZZZ", v0)["date"] is None)
+check("info · 没有视图 → 不知道", not ed.info("AAA", None)["known"])
+
+
+def eentry(ev, **kw):
+    return ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, PE, G,
+                      ind_of=lambda c: UP if c == ab.MARKET_KEY else ev if c == ab.EARNINGS_KEY else good(**kw))
+
+
+r = eentry(view({"AAA": [date(2026, 3, 9)]}))
+check("P-23 · 5 个交易日后发财报 → 不买并写明日期", not r["fills"] and "P-23" in (r["watch_items"][0].get("blocked_reason") or "")
+      and "2026-03-09" in r["watch_items"][0]["blocked_reason"], str(r["watch_items"][0]))
+r = eentry(view({"AAA": [date(2026, 3, 10)]}))
+b = [f for f in r["fills"] if f["side"] == "buy"]
+check("P-23 · 6 个交易日后发财报 → 照买,买入理由写财报日", b and "P-23" in b[0]["rationale"] and "2026-03-10" in b[0]["rationale"], str(r["fills"]))
+r = eentry(view({"AAA": [D0]}))
+check("P-23 · 财报当天 → 不买", not r["fills"])
+r = eentry(view({}))
+check("P-23 · 近期没有财报 → 照买", any(f["side"] == "buy" for f in r["fills"]))
+r = eentry(view({}, fetched=ALL - {date(2026, 3, 5)}))
+check("P-23 · 日历缺 → 不买并写明(不当成没有财报)", not r["fills"] and "没拉到" in (r["watch_items"][0].get("blocked_reason") or ""),
+      str(r["watch_items"][0]))
+r = ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, PE, G,
+               ind_of=lambda c: UP if c == ab.MARKET_KEY else good())
+check("P-23 · 没接上财报日历(拿到的不是视图)→ 不买", not r["fills"] and "没有财报日历" in (r["watch_items"][0].get("blocked_reason") or ""))
+r2 =ab.run_day("2026-03-02", [], 100_000.0, lambda c: [], [("AAA", "AAA", 90)], None, 0, dict(PE, earn_filter=False), G,
+                ind_of=lambda c: UP if c == ab.MARKET_KEY else view({"AAA": [date(2026, 3, 9)]}) if c == ab.EARNINGS_KEY else good())
+check("P-23 · 开关 earn_filter 关掉 → 回到 v13 照买", any(f["side"] == "buy" for f in r2["fills"]))
+
+
+def eday(p_, ind_, ev, params=PE):
+    return ab.run_day("2026-03-02", [p_], 100_000.0, lambda c: [], [], None, 0, params, G,
+                      ind_of=lambda c: UP if c == ab.MARKET_KEY else ev if c == ab.EARNINGS_KEY else ind_)
+
+
+E2 = view({"AAA": [date(2026, 3, 4)]})                         # 离财报 2 个交易日
+r = eday(pos(), hold(105.0), E2)
+s = sold(r)
+check("P-24 · 浮盈 5% ≤ 10%,离财报 2 天 → 清仓", s and s[0]["rule_id"] == "P-24" and s[0]["shares"] == 100 and not r["positions"], str(r["fills"]))
+check("P-24 · 清仓理由写财报日与浮盈", s and "2026-03-04" in s[0]["rationale"] and "10%" in s[0]["rationale"], s[0]["rationale"] if s else "")
+r = eday(pos(), hold(110.0), E2)
+check("P-24 · 浮盈正好 10%(不大于 10%)→ 清仓", sold(r) and sold(r)[0]["shares"] == 100 and not r["positions"], str(r["fills"]))
+r = eday(pos(), hold(115.0), E2)
+s = sold(r)
+check("P-24 · 浮盈 15% > 10% → 卖一半,余 50 股", s and len(s) == 1 and s[0]["rule_id"] == "P-24" and s[0]["shares"] == 50
+      and r["positions"] and r["positions"][0].size == 50, str(r["fills"]))
+check("P-24 · 记下这次财报已处理", r["positions"] and r["positions"][0].extra.get("earn_done") == "2026-03-04")
+kept = r["positions"][0]
+r = eday(kept, hold(116.0, volume=1_500_000.0), view({"AAA": [date(2026, 3, 4)]}, d=date(2026, 3, 3)))
+check("P-24 · 同一次财报第二天不再卖;P-23 窗口内也不加仓", not r["fills"] and r["positions"][0].size == 50, str(r["fills"]))
+r = eday(pos(), hold(116.0, volume=1_500_000.0), view({}))
+check("P-23 对照 · 没有财报时同样的持仓会加仓(P-08)", any(f["rule_id"] == "P-08" for f in r["fills"]), str(r["fills"]))
+r = eday(pos(), hold(116.0, volume=1_500_000.0), view({"AAA": [date(2026, 3, 9)]}))
+check("P-23 · 离财报 5 个交易日 → 不加仓、也还不减仓", not r["fills"], str(r["fills"]))
+r = eday(pos(), hold(105.0), view({"AAA": [date(2026, 3, 5)]}))
+check("P-24 · 离财报 3 个交易日 → 还不动", not sold(r), str(r["fills"]))
+r = eday(pos(), hold(105.0), view({"AAA": [date(2026, 3, 3)]}))
+check("P-24 · 前一天没处理上(比如那天缺数据),离财报 1 天照样处理", sold(r) and sold(r)[0]["rule_id"] == "P-24")
+p11 = pos()
+p11.stop = 97.0
+r = eday(p11, hold(96.5, low=96.0), E2)
+check("P-24 · 同一天止损也成立 → 记止损(完全出场优先)", sold(r) and sold(r)[0]["rule_id"] == "P-11", str(r["fills"]))
+r = eday(pos(size=1), hold(115.0), E2)
+check("P-24 · 只剩 1 股、浮盈 > 10% → 卖一半取整为 0,整股清掉", sold(r) and sold(r)[0]["shares"] == 1 and not r["positions"], str(r["fills"]))
+pav = pos(extra={"earn_done": "2025-12-01"})
+pav.avg_cost = 104.0
+r = eday(pav, hold(112.0), E2)
+s = sold(r)
+check("P-24 · 浮盈按首笔进场价(+12%)→ 卖一半;说明里同时写出按均价算的数", s and s[0]["shares"] == 50 and "均价" in s[0]["rationale"],
+      str(r["fills"]))
+r = eday(pos(), hold(105.0), view({}, fetched=ALL - {date(2026, 3, 4)}))
+check("P-24 · 持仓离财报时日历缺 → 不猜、不卖", not sold(r), str(r["fills"]))
+r = eday(pos(), hold(105.0), E2, params=dict(PE, earn_filter=False))
+check("P-24 · 开关关掉 → 不减仓", not sold(r))
+check("接口 · 规则表里有 P-23 / P-24", {"P-23", "P-24"} <= {x["id"] for x in ab.RULES})
+check("接口 · 规则名有「财报前减仓」", ab.RULE_NAME.get("P-24") == "财报前减仓")
+check("接口 · 策略说明写了财报风控", "财报" in ab.summary())
 
 print(f"{passed} passed, {len(fails)} failed")
 for x in fails:

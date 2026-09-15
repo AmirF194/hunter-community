@@ -266,6 +266,18 @@ class Ctx:
         self.cache: dict = {k: {} for k in ao.ENGINES}      # 引擎 → {(code, date): 指标}
         self.cache_dates: dict = {}        # 引擎 → 已算过的日期
         self.seen: dict = {}               # 引擎 → 已整段算过的代码
+        self.earn = None                   # (代码 → 财报日列表, 拉取成功的日子);第一次用到时读库(突破买入 v14)
+
+    def earnings_view(self, d: date, trade_days: list[date]):
+        from app.services.quant import earnings_dates as ed
+        if self.earn is None:
+            try:
+                self.earn = ed.load()
+            except Exception:                                 # noqa: BLE001
+                # 读不到就当一天都没拉到:引擎按「日历缺」不买并写明原因,不当成「没有财报」
+                log.exception("[agent] 财报日历读库失败")
+                self.earn = ({}, set())
+        return ed.EarningsView(d, self.earn[0], self.earn[1], trade_days)
 
     def bars_of(self, code, upto: date | None = None):
         from app.services.quant import screen_asof
@@ -313,6 +325,12 @@ class Ctx:
                     k = bisect_right(bdates, d)
                     cache[(mk, d)] = eng.market_regime(bb[:k])
                     cache[(eng.SECTORS_KEY, d)] = self.sectors
+            # 突破买入 v14:按日的财报日视图(P-23 / P-24),同样放进指标缓存
+            ek = getattr(eng, "EARNINGS_KEY", None)
+            if ek:
+                for d in new_dates:
+                    if (ek, d) not in cache:
+                        cache[(ek, d)] = self.earnings_view(d, bdates)
             done.update(dates)
 
 
@@ -833,7 +851,9 @@ _V1 = {
              "用户 2026-09-13 按 Minervini SEPA 五根柱子拆解方向 C 后给的 v4 草案;没有基本面 / 行业数据源,那两块没做"),
     "donchian": ("唐奇安通道突破 —— 收盘第一次突破 55 日最高进,跌破 20 日最低或 2 ATR 止损出,单笔风险 1% 定仓",
                  "研究台方案(2026-09-13 用户批准)的第一条新研究线;和 VCP 差得最远,规则固定,满 30 笔前不优化"),
-    "breakout": ("突破买入 v9 —— 入场筛选同 v4 + 五项评分只记录(追高超过 4% 不买,走廊 < 1R 不买)+ 统一仓位 + 两次加仓;"
+    "breakout": ("突破买入 v14 —— v13(前一天收盘要有资金逆势买入)+ 财报风控:财报前 5 个交易日内不买不加仓,"
+                 "离财报 2 个交易日时浮盈不超过 10% 清仓、超过 10% 卖一半;以下为 v9 起的主体:"
+                 "入场筛选同 v4 + 五项评分只记录(追高超过 4% 不买,走廊 < 1R 不买)+ 统一仓位 + 两次加仓;"
                  "出场同 v5:1 ATR 初始止损(≤ 8%)+ 固定 6% + Base 低点 2% + 5% 保本 + 20% 减半 + 破 EMA10 再减半 / 破 EMA20 清仓",
                  "用户 2026-09-13 给的 Patrick Walker 风格完整脚本逐条移植;v2 枢轴改密集成交区、RS 降到 70(一年 +0.63%、48 笔);"
                  "v3(2026-09-14)缩量门槛 0.9 → 1.0。v1 枢轴 = 前 21 日最高、RS ≥ 80:一年 -4.72%、21 笔;没有开盘价,阳线条件没做"),
@@ -1194,7 +1214,10 @@ def run_latest() -> dict:
     ctx = Ctx()
     if not ctx.store["last"]:
         return {"ran": False, "reason": "还没有日线"}
+    earn = _ensure_earnings(ctx.store["last"] - timedelta(days=14), ctx.store["last"])
     out = run_date(ctx.store["last"], ctx)
+    if earn is not None:
+        out["earnings"] = earn
     out["research"] = research_evaluate()
     return out
 
@@ -1241,8 +1264,23 @@ def research_archive(key: str, archived: bool, uid) -> dict:
     return _with_cur(lambda cur: research.set_archived(cur, key, archived, uid), commit=True)
 
 
+def _ensure_earnings(start: date, last: date, only: list[str] | None = None) -> dict | None:
+    """突破买入 v14:跑之前把财报日历补到 max(最新交易日, 今天) + FUTURE_DAYS;未来的日子重拉(日期会改)。
+    没有方向用财报日 → None。拉取失败只记日志:没拉到的日子引擎按「日历缺」不买,不在这里挡住整轮。"""
+    from app.services.quant import earnings_dates as ed
+    if not any(getattr(ao.engine_of(b), "EARNINGS_KEY", None) for b in (only or BRANCHES)):
+        return None
+    today = date.today()
+    try:
+        return ed.ensure(start, max(last, today) + timedelta(days=ed.FUTURE_DAYS), refresh_from=min(last, today))
+    except Exception as e:                                    # noqa: BLE001
+        log.exception("[agent] 财报日历补拉失败")
+        return {"error": str(e)}
+
+
 def backfill(start: date, end: date | None = None, only: list[str] | None = None) -> dict:
     ctx = Ctx()
+    _ensure_earnings(start, ctx.store["last"], only)
     days = sorted(d for d in ctx.store["bench"] if d >= start and (end is None or d <= end))
     out = {"days": 0, "fills": 0}
     for d in days:
@@ -1336,7 +1374,7 @@ def reset() -> None:
 def _main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     p = argparse.ArgumentParser(prog="agent_run")
-    p.add_argument("cmd", choices=["daily", "backfill", "reset", "dashboard", "research-backfill", "research", "watch-fails"])
+    p.add_argument("cmd", choices=["daily", "backfill", "reset", "dashboard", "research-backfill", "research", "watch-fails", "earnings"])
     p.add_argument("--line", default=None)
     p.add_argument("--branch", default=None)
     p.add_argument("--from", dest="start", default=None)
@@ -1360,6 +1398,14 @@ def _main(argv=None) -> int:
         start = date.fromisoformat(a.start) if a.start else date.fromisoformat(_with_cur(lambda c: _meta_get(c, "started")))
         print(backfill(start, date.fromisoformat(a.end) if a.end else None, only=lines[a.line]["branches"]))
         print(research_evaluate())
+    elif a.cmd == "earnings":
+        # 突破买入 v14:单独补拉财报日历(回填会自动补;这里给先拉好再回填、或排查某几天用)
+        from app.services.quant import earnings_dates as ed
+        if not a.start:
+            print("要 --from YYYY-MM-DD(--to 默认今天 + 21 天)")
+            return 2
+        end = date.fromisoformat(a.end) if a.end else date.today() + timedelta(days=ed.FUTURE_DAYS)
+        print(json.dumps(ed.ensure(date.fromisoformat(a.start), end, refresh_from=date.today()), ensure_ascii=False))
     elif a.cmd == "watch-fails":
         # 悬停日K「形态就绪」那层要的 fails,给 2026-09-15 之前落库的观察列表补上(只补成交过的票)
         if not a.branch:
