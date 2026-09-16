@@ -548,6 +548,16 @@ Check [GitHub Issues](https://github.com/agentpit-io/hunter-community/issues?q=i
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
+### 🙏 Contributors
+
+Thanks to everyone who contributes code, SKILLs and docs to HunterCode:
+
+<table>
+<tr>
+<td align="center" width="140"><a href="https://github.com/forever-ivy"><img src="https://github.com/forever-ivy.png?size=100" width="72" height="72" alt="forever-ivy" /><br /><b>forever-ivy</b></a><br /><sub>Streaming first-frame fix<br />(<a href="https://github.com/agentpit-io/hunter-community/pull/1">#1</a>)</sub></td>
+</tr>
+</table>
+
 **When editing README.md, please sync README_EN.md too** (or vice versa) — the two files should stay 1:1 aligned.
 
 ---

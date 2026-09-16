@@ -3,6 +3,18 @@
 All notable changes to Hunter Community Edition follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### 🐛 修复 · Fixed
+- **流式回复首帧被扣住**:模型中转服务(llm-shim)转发 SSE 时用 `read(4096)`,要等凑满 4 KB 或上游结束才转发,
+  导致回复开头几个字迟迟不出、最后一次性吐出。改用 `read1(4096)`,有数据就立即转发;
+  think 标签过滤、跨块拼行、`[DONE]` 最后发送的逻辑不变。新增标准库回归测试并接入 CI。
+  Streamed replies were held back until a 4 KB buffer filled; the shim now forwards data as soon as it arrives.
+  ([#1](https://github.com/agentpit-io/hunter-community/pull/1))
+
+### 🙏 贡献者 · Contributors
+- [@forever-ivy](https://github.com/forever-ivy) — 流式回复首帧修复 · streaming first-frame fix ([#1](https://github.com/agentpit-io/hunter-community/pull/1))
+
 ## [1.0.0] - 2026-09-13
 
 首个正式版。汇总 1.0.0-rc1 之后到 2026-09-13 的改动(约 220 个提交)。

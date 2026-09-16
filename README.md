@@ -568,6 +568,16 @@ user-skills/kline_breakout/SKILL.md
 
 见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
+### 🙏 贡献者
+
+感谢每一位为 HunterCode 贡献代码、SKILL 与文档的朋友:
+
+<table>
+<tr>
+<td align="center" width="140"><a href="https://github.com/forever-ivy"><img src="https://github.com/forever-ivy.png?size=100" width="72" height="72" alt="forever-ivy" /><br /><b>forever-ivy</b></a><br /><sub>流式回复首帧修复<br />(<a href="https://github.com/agentpit-io/hunter-community/pull/1">#1</a>)</sub></td>
+</tr>
+</table>
+
 ---
 
 ## 💬 社区与支持
