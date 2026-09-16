@@ -1761,11 +1761,16 @@ try {
   `, ctx, { filename: 'assert-asof-1' })
   // runScan 是 async,跑完再看
   const done = vm.runInContext(`runScan().then(function () { return probeOne(S.conditions[0]) })`, ctx, { filename: 'assert-asof-2' })
-  const KC_ROWS = vm.runInContext(`
+  // 2026-09-16 用户改了口径:回溯时 K 线**画到最新收盘**(「右侧范围也应该是到今天的前一天收盘」),
+  // 回溯日改画一条竖线。原来那条「只保留回溯日及之前」的断言跟着改,截断的写法不许回来。
+  const KC_ASOF = vm.runInContext(`
     (function () {
-      // 悬停日 K:回溯时只画到那天。直接调 kcRender 依赖 DOM 太多,这里验证同一条过滤逻辑
       const rows = [{ ts: '2026-08-14' }, { ts: '2026-08-15' }, { ts: '2026-08-18' }]
-      return rows.filter(function (r) { return String(r.ts || r.date || '').slice(0, 10) <= S.asOf }).length
+      const ss = kcMarkSeries(rows, { asOfDay: S.asOf })
+      const ml = ss.filter(function (x) { return x.markLine && x.markLine.lineStyle.type === 'dashed' })
+      return { idx: ml.length ? ml[0].markLine.data[0].xAxis : -1,
+               color: ml.length ? ml[0].markLine.lineStyle.color : '',
+               label: ml.length ? ml[0].markLine.label.formatter : '' }
     })()
   `, ctx, { filename: 'assert-asof-3' })
   Promise.resolve(done).then(() => {
@@ -1781,7 +1786,9 @@ try {
         vm.runInContext(`S.result = { as_of: '2026-08-15', universe_total: 4000, scanned: 4000, matched: 1, skipped_incomplete: 0, picks: [], columns: [], notes: [], warnings: [] }; var RES2 = vResult()`, ctx)
         return /回溯扫描结果/.test(ctx.RES2) && /截至 2026-08-15 收盘/.test(ctx.RES2) && /日线池/.test(ctx.RES2) && /panel asof/.test(ctx.RES2)
       })()],
-      ['悬停日 K 只保留回溯日及之前', KC_ROWS === 2],
+      ['⭐悬停日 K 回溯时画到最新收盘,不再截断(2026-09-16 用户要求)', !appJs.includes('rows.filter(function (r) { return String(r.ts || r.date ||') && appJs.includes('if (KC.asOf) mark = Object.assign(')],
+      ['回溯日画竖线,落在回溯日那根上', KC_ASOF.idx === 1 && KC_ASOF.label === '回溯日'],
+      ['竖线颜色与命中三层的蓝色分开', KC_ASOF.color === vm.runInContext('KC_ASOF_LINE', ctx)],
       ['回到今天后按钮恢复、请求不带 as_of', (() => {
         vm.runInContext(`setAsOf(null); var BAR_BACK = vRunBar()`, ctx)
         return /时间回溯<\/button>/.test(ctx.BAR_BACK) && vm.runInContext('S.asOf', ctx) === null

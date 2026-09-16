@@ -913,7 +913,7 @@ const KC = { el: null, chart: null, cache: new Map(),
              dragging: false,      // 左键正按着拖图:这期间不关弹层、不换票
              touch: false,         // 这个弹层是手指点开的(手机 / 平板):不靠「移开」收起,靠 ✕ / 点空白处
              lastTouch: 0,         // 最近一次触摸的时刻 —— 触摸之后浏览器会补发假的 mouseover / mouseout,要认出来忽略
-             asOf: null,           // asOf: 回溯时只画到这天(screener 用)
+             asOf: null,           // asOf: 回溯日(screener 用);图照样画到最新收盘,只在那天画一条竖线
              limit: null,          // 日线根数:看板设 KC_LIMIT_3Y(三年),不设就是 KC_LIMIT(一年)
              markOf: null }        // 页面可选:async (code, td) → 标记 | null(screener 用来标历史命中日)
 const KC_LIMIT = 250          // 一年大约 250 个交易日
@@ -929,6 +929,7 @@ const KC_UP = '#a4332b', KC_DN = '#3f6b40'
 const KC_BUY = '#1f9254', KC_SELL = '#c0392b'
 const KC_SCAN = 'rgba(46,134,222,.16)'    // 扫描命中:半透明蓝(色带,一根 K 线宽)
 const KC_SCAN_LINE = 'rgba(46,134,222,.55)' // 扫描命中:固定 2px 竖线(250 根挤在一起时色带看不见,靠它)
+const KC_ASOF_LINE = '#b56b2d'            // 回溯日竖线:与十字星同色系,和蓝色的命中三层分开
 const KC_HINT = '左键拖动平移 · 滚轮缩放 · 十字星读数'
 // 小鹿看板的三层(2026-09-15 用户要求):进候选池(淡,只是进了池子)/ 形态就绪(中)/ 买入条件全满足(深)
 const KC_POOL_LINE = 'rgba(46,134,222,.30)'
@@ -1075,6 +1076,24 @@ function kcIndexOf(rows, want) {
 function kcMarkSeries(rows, mark) {
   const out = []
   if (!mark) return out
+  // 回溯日:琥珀色虚线,与十字星同色系(蓝色系已被命中三层占满)。右侧是扫描当时看不到的走势
+  if (mark.asOfDay) {
+    let ai = -1
+    for (let i = 0; i < rows.length; i++) {
+      if (String(rows[i].ts || rows[i].date || '').slice(0, 10) <= mark.asOfDay) ai = i
+    }
+    if (ai >= 0) {
+      out.push({
+        type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: [], silent: true, z: 2,
+        markLine: {
+          silent: true, symbol: 'none',
+          lineStyle: { color: KC_ASOF_LINE, width: 1.5, type: 'dashed' },
+          label: { show: true, position: 'insideEndTop', formatter: '回溯日', color: KC_ASOF_LINE, fontSize: 10 },
+          data: [{ xAxis: ai }],
+        },
+      })
+    }
+  }
   const scan = kcIndexOf(rows, mark.scan)
   const buy = kcIndexOf(rows, mark.buy)
   const sell = kcIndexOf(rows, mark.sell)
@@ -1227,6 +1246,9 @@ function kcLegend(rows, mark) {
     parts.push('<i style="background:' + KC_SCAN + '"></i>' + kcEsc(mark.scanLabel || '扫描命中') + ' ' + n(mark.scan) + ' 天' +
       (mark.scanWindow ? '(近 ' + mark.scanWindow + ' 个交易日)' : ''))
   }
+  if (mark.asOfDay) {
+    parts.push('<i style="background:' + KC_ASOF_LINE + '"></i>回溯日 ' + kcEsc(mark.asOfDay) + '(竖线右侧是扫描当时看不到的走势)')
+  }
   if (mark.unknown) {
     parts.push('<span title="' + kcEsc(mark.note || '') + '" style="border-bottom:1px dotted currentColor;cursor:help">' +
       mark.unknown + ' 天算不出</span>')
@@ -1290,11 +1312,11 @@ function kcRender(code, name, payload, mark) {
   if (sy) sy.textContent = code
   if (nm) nm.textContent = name || ''
 
-  let rows = (payload && payload.rows) || []
-  if (KC.asOf) {
-    // 回溯时只画到那天:图上露出之后的走势,等于把答案写在题目旁边
-    rows = rows.filter(function (r) { return String(r.ts || r.date || '').slice(0, 10) <= KC.asOf })
-  }
+  const rows = (payload && payload.rows) || []
+  // 回溯时**画到最新收盘**,回溯日画一条竖线(2026-09-16 用户:「K 线图的右侧范围也应该是到今天的前一天收盘,
+  // 明天再扫就是到 9-16」)。原来是截断到回溯日,理由是「露出之后的走势等于把答案写在题目旁边」——
+  // 用户要看回溯之后走成什么样,竖线保留「扫描站在哪一天」这个信息,两边都不丢。
+  if (KC.asOf) mark = Object.assign({}, mark || {}, { asOfDay: KC.asOf })
   if (!rows.length) {
     // 拿不到就明说,不要一直转圈 —— 与 routers/kline.py 那条注释同一个道理:
     // 用户分不清「这只票没数据」和「还在加载」,只会一直等下去。
