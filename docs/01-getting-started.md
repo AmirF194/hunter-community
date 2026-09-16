@@ -5,7 +5,7 @@
 ## Prerequisites
 
 - Docker Engine 25+ · Docker Compose v2 (or Docker Desktop on Windows / macOS)
-- 2 CPU · 4 GB RAM · 20 GB disk (the opencode chat-engine image is ~7.5 GB)
+- 2 CPU · 4 GB RAM · 10 GB disk (since v1.0.1 the opencode chat-engine image is **618 MB**, down from 7.5 GB; most of the remaining budget is build cache for the locally-built `api` / `web`)
 - Network access to `ghcr.io` (the chat engine image is pulled from there)
 - An LLM API key (any OpenAI-compatible gateway; DeepSeek is the tested default)
 
@@ -48,7 +48,9 @@ docker compose up -d
 ```
 
 The first run builds `api` and `web` locally and pulls the opencode image
-(~10–15 minutes depending on your network; ~5 minutes once images are cached).
+(8–15 minutes; ~5 minutes once images are cached). Since v1.0.1 **the local build is
+the slow part** — the chat-engine image is a 153 MB download (measured 6 s from
+US-Central and 9 s from Singapore; mainland China not measured), down from 1.70 GB / 123 s.
 Six services should end up running:
 
 ```bash
@@ -141,6 +143,8 @@ docker compose up -d --build
 | 13 | 聊一阵后提示「已达日 token 上限 500000 · 明日再试」 | 旧版 compose / 镜像的预算插件没有关闭。自部署用的是你自己的大模型额度，不该被限 | `git pull` 拿最新 `docker-compose.yml`（默认 `HUNTER_BUDGET_ENABLED=false`），再 `docker compose pull opencode && docker compose up -d` |
 | 14 | `opencode` 重启循环，日志 `EACCES: permission denied, mkdir '/home/hunter/.local/state'` | 自己改过挂载，只挂了 `.local/share/opencode`；docker 以 root 补建父目录，容器用户 1001 写不进去 | 恢复仓库里的挂载写法（整个 `/home/hunter/.local` 挂具名卷），再 `docker compose up -d opencode` |
 | 15 | 走 aihubmix 网关时连通性不稳、TLS 握手失败 | aihubmix 会拦截容器（Alpine）的 TLS 指纹 | 在宿主机起一个转发代理，让容器走 `http://host.docker.internal:<端口>/v1`，做法见 `docs/model-testing/results/2026-08-16_aihubmix_六家对比.md` |
+| 16 | 升级到 v1.0.1 之后打开页面「暂无对话」，但数据卷还在 | 对话引擎换成单文件二进制时，会话库的文件名会跟着 opencode 的 channel 变（源码版叫 `opencode-local.db`，编译版默认叫 `opencode.db`）。**卷、权限、路径全是对的，只是打开了一个空库** | 我们已在镜像里钉死 `OPENCODE_DB=opencode-local.db`，正常升级不会遇到。真遇到了**先别删卷**：`docker exec <opencode 容器> ls -la /home/hunter/.local/share/opencode/`，如果看到新建的空 `opencode.db` 而 `opencode-local.db` 还在，说明是这个问题；确认 `.env` 里没有覆盖 `OPENCODE_DB`，然后 `docker compose up -d opencode` |
+| 17 | `docker compose pull opencode` 报 `error from registry: denied` | 镜像是**公开**的，报 denied 通常不是没权限，而是机器上留着一份**过期的 GHCR 登录**——docker 会优先带上它，被拒之后**不会退回匿名** | `docker logout ghcr.io`，再 `docker compose pull opencode` |
 
 > ⚠️ **不要随手 `docker compose down -v`**：`-v` 会删掉所有具名卷，包括数据库和 opencode 的对话正文，删了无法恢复。
 

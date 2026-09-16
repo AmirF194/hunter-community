@@ -47,14 +47,15 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 ## 🚀 5 分钟跑起来
 
-**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 20 GB(对话引擎镜像约 7.5 GB)· 内存 4 GB · 能访问 `ghcr.io`
+**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 10 GB(v1.0.1 起对话引擎镜像 **618 MB**,此前是 7.5 GB;余量主要给本地构建 api / web 的缓存)· 内存 4 GB · 能访问 `ghcr.io`
 
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
 > 1. **大模型 key(必需)**:驱动对话本身。推荐 [DeepSeek](https://platform.deepseek.com/api_keys),也支持任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)。
 > 2. **数据从哪来(三选一,可以先不管)**:① 免费开源源,开箱即用;② 接你自己的 MCP / 数据源;③ 平台数据管道,[免费申请 key](https://hunter.agentpit.io/dev/api-keys)。详见 [数据供给三选一](#-数据供给三选一)。
 
-**耗时**:镜像已拉取约 5 分钟;首次拉取镜像约 10–15 分钟,取决于网络。
+**耗时**:镜像已拉取约 5 分钟;首次约 8–15 分钟,**大头是本地构建 `api` 与 `web`**。
+对话引擎镜像自 v1.0.1 起只要下 153 MB(实测:美国节点 6 秒、新加坡节点 9 秒;国内未测),已经不再是瓶颈 —— 此前它是 1.70 GB、同一台机器实测 123 秒。
 
 ```bash
 # 1. 拉代码

@@ -5,12 +5,75 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-17
+
+对话引擎镜像从 **7.56 GB 瘦到 618 MB**(压缩后 1.70 GB → 153 MB),部署门槛从「20 GB 磁盘 + 十几分钟首拉」降到「10 GB + 一两分钟」。
+The chat-engine image went from **7.56 GB to 618 MB** (1.70 GB → 153 MB compressed).
+
+### ✨ 新增 · Added
+- **对话引擎镜像改为单文件二进制**。旧镜像是「整个 opencode monorepo `bun install` 之后原样拷进运行层,再 `bun run` 源码」,
+  2.5 GB node_modules + 130 MB 源码,末尾一句 `chown -R` 又把这 2.78 GB 复制成第二层。
+  现在编译阶段 `bun --compile` 出单文件,运行层只有二进制 + 6 个插件 + 5 个 MCP 脚本 + 配置。
+  没有换成 opencode 官方预编译二进制 —— `POST /skill/refresh` 是我们 fork 自己加的路由,
+  官方版没有,换过去会让「UI 里存了 SKILL、对话里却没有这个能力」且不报任何错。
+- **对话引擎镜像支持 arm64**(Apple Silicon / AWS Graviton 自部署)。
+  `linux/amd64` 与 `linux/arm64` 同一标签下发布。api / web 镜像仍只有 amd64。
+- **每日部署冒烟工作流** `.github/workflows/e2e-compose.yml`:干净环境起全栈 → 等 6 个服务健康 →
+  查 `/api/health` 与 MCP 连接状态 → 配了仓库密钥 `SMOKE_LLM_API_KEY` 时再真发一条消息。
+  定时 + PR + 手动都能触发。以前 CI 只做「import 能过 / 前端能 build」,
+  而这个项目最常见的坏法是**服务起不来**,单仓语法检查一个都看不出来。
+- **`OPENCODE_REGISTRY`**:换镜像源(自建 registry / 私有镜像站)不用改 `docker-compose.yml`。
+  Docker Hub / 阿里云 ACR 的官方分发仍在规划中。
+- **`HUNTER_MCP_TIMEOUT_MS` / `UZI_HTTP_TIMEOUT`**:MCP 工具超时可调。
+  换了更慢的后端时工具会被掐断,而症状是模型回「服务不可用」、日志里看不到任何超时字样。
+
+### 🔧 变更 · Changed
+- **`OPENCODE_TAG` 默认值从 `latest` 变成具体版本 `1.18.12-slim.1`**。
+  浮动标签意味着某天 `docker compose pull` 会无声换掉运行方式,出问题连「什么时候变的」都查不出来。
+  升级须知见下。
+- **api 镜像改多阶段** · 1.32 GB → 909 MB(−31%)。编译工具链(build-essential / libpq-dev)
+  只留在 builder 阶段,运行层保留 tesseract 中英文 OCR 与 curl。新增 `apps/api/.dockerignore`。
+- **opencode 容器入口脚本从 40 多行有效命令降到 7 行**。原来启动时要现补装 `mcp<2`、
+  用两处 `sed` 改超时 —— 三件事都在镜像源头修好了。那三段 sed 依赖「文件可写」且「字符串恰好匹配」,
+  任何一边变了就静默失效,而失效的症状是「深度分析说服务不可用」,根本指不到入口脚本。
+- **入口脚本同时兼容新旧镜像**:检测到 `opencode` 二进制就用它,否则回落旧的源码启动方式。
+  反过来,新镜像里放了一个 `bun` 垫片,让老用户没更新的旧脚本也能把容器拉起来。
+  两种组合都在演示站实测过。
+- 镜像内 4 个 MCP 的 `timeout` 统一 30000 → 180000 ms(深度分析 60–300s、组合建议 45s+ 本来就会被 30s 掐断)。
+
 ### 🐛 修复 · Fixed
+- **升级后「暂无对话」**(本次瘦身过程中发现并修掉,未流出到任何发布版本)。
+  opencode 的会话库文件名跟 `InstallationChannel` 走:跑源码时叫 `opencode-local.db`,
+  编译版会默认去开 `opencode.db`。卷、权限、路径全对,但打开的是一个空库。
+  镜像里钉死 `OPENCODE_DB=opencode-local.db`,新旧镜像读同一个库,升级和回滚都不丢会话。
 - **流式回复首帧被扣住**:模型中转服务(llm-shim)转发 SSE 时用 `read(4096)`,要等凑满 4 KB 或上游结束才转发,
   导致回复开头几个字迟迟不出、最后一次性吐出。改用 `read1(4096)`,有数据就立即转发;
   think 标签过滤、跨块拼行、`[DONE]` 最后发送的逻辑不变。新增标准库回归测试并接入 CI。
   Streamed replies were held back until a 4 KB buffer filled; the shim now forwards data as soon as it arrives.
   ([#1](https://github.com/agentpit-io/hunter-community/pull/1))
+
+### ⬆️ 升级须知 · Upgrading
+
+```bash
+git pull
+docker compose pull opencode
+docker compose up -d opencode api
+```
+
+- `.env` 里没写 `OPENCODE_TAG` 的,`git pull` 之后自动拿到 `1.18.12-slim.1`,不用动。
+- **`.env` 里写着 `OPENCODE_TAG=latest` 或 `dev` 的照样能跑**(新镜像带 `bun` 兼容垫片),
+  但建议改成 `OPENCODE_TAG=1.18.12-slim.1`,免得以后被浮动标签换掉运行方式。
+- 会话数据不受影响。升级前后 `docker exec <api 容器> curl -s http://opencode:3901/session` 的条数应当一致;
+  对不上**先别删卷**,`/home/hunter/.local/share/opencode/` 下看看是不是多了一个空的 `opencode.db`。
+- 旧镜像先别删,确认新版本正常之后再 `docker image rm ghcr.io/agentpit-io/hunter-opencode:dev`。
+
+### 📖 文档 · Docs
+- 新增 `docs/image-slim/`:基线测量、决策记录、演示站端到端测试报告、两地拉取耗时。
+- README / README_EN / `docs/01-getting-started.md` 的磁盘要求与首拉耗时改成实测值
+  (153 MB · 美国节点 6 秒 / 新加坡节点 9 秒;国内没有测试机,未测)。
+- 排错表新增两条:升级后「暂无对话」怎么自查;`docker compose pull` 报 `denied` 时
+  先 `docker logout ghcr.io` —— 镜像是公开的,报 denied 恰恰是因为多带了一份过期凭据,
+  而 docker 被拒之后不会退回匿名。
 
 ### 🙏 贡献者 · Contributors
 - [@forever-ivy](https://github.com/forever-ivy) — 流式回复首帧修复 · streaming first-frame fix ([#1](https://github.com/agentpit-io/hunter-community/pull/1))

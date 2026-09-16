@@ -214,9 +214,13 @@ services:
       start_period: 5s
 
   opencode:
-    # Built by huntercode private repo via
-    # .github/workflows/hunter-community-publish.yml
-    image: ghcr.io/agentpit-io/hunter-opencode:${OPENCODE_TAG:-latest}
+    # 由私仓 huntercode 的 .github/workflows/hunter-community-publish.yml 构建推送。
+    #
+    # 默认锁**具体版本**而不是 latest:1.18.12-slim.1 起镜像从「bun + 整个源码树」
+    # 改成了单文件二进制(7.56 GB → 618 MB),入口也换了。浮动标签意味着某天
+    # docker compose pull 会无声换掉运行方式,出了问题连「换了什么」都查不到。
+    # 换源(自建 registry / 国内镜像)改 OPENCODE_REGISTRY,见 .env.example。
+    image: ${OPENCODE_REGISTRY:-ghcr.io/agentpit-io}/hunter-opencode:${OPENCODE_TAG:-1.18.12-slim.1}
     <<: *restart
     depends_on:
       api:
@@ -241,28 +245,33 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}
-      # 自部署用户付的是自己的 LLM 账单,不该被我们限额。
-      # 新镜像认 HUNTER_BUDGET_ENABLED=false;旧镜像不认这个开关(插件里根本没读过),
-      # 所以再用它认得的 HUNTER_BUDGET_DAILY 兜一层 —— 否则聊一阵就会撞
-      # "已达日 token 上限 500000 · 明日再试",而开关明明是关的,极难排查。
       # 审计日志默认写 /opt/opencode-audit/,但容器以非 root 跑,在 /opt 下建不了目录。
-      # 旧镜像会因此每写一条就抛 ENOENT 刷一屏堆栈,把真正的报错淹掉。
       # **指到卷内,不要指 /tmp**:/tmp 是容器可写层,一次 recreate 就没
       # (2026-09-07 会话全丢那次,审计日志跟着一起没了 —— 而审计日志的全部意义
       #  就是留痕,放在会被清掉的地方等于没有审计,且事后复盘正好需要它)。
       # `.local` 是具名卷且属主是 hunter(1001),插件 mkdir 建得起来;
       # 万一路径写错,plugins/hunter-audit.ts 会自己退回 tmpdir,不会崩。
       HUNTER_AUDIT_PATH: ${HUNTER_AUDIT_PATH:-/home/hunter/.local/share/hunter-audit/AUDIT.jsonl}
+      # 自部署用户付的是自己的 LLM 账单,不该被我们限额。
+      # 下面两个上限只在 HUNTER_BUDGET_ENABLED=true 时才有意义;仍然透传,是因为
+      # 把 OPENCODE_TAG 钉在 1.18.12-slim.1 之前的老镜像只认这两个、不认开关。
       HUNTER_BUDGET_ENABLED: ${HUNTER_BUDGET_ENABLED:-false}
       HUNTER_BUDGET_DAILY: ${HUNTER_BUDGET_DAILY:-999999999}
       HUNTER_BUDGET_PER_REQUEST: ${HUNTER_BUDGET_PER_REQUEST:-999999999}
       # auto = 模型名含 gemini 时才经 shim(见 scripts/opencode/gen-config.py)
       LLM_SCHEMA_SANITIZE: ${LLM_SCHEMA_SANITIZE:-auto}
       LLM_SHIM_URL: http://llm-shim:3999/v1
-    # 镜像里插件(plugins/)和 MCP(mcp/)都齐了,唯独没有把它们串起来的 opencode.json,
+      # 工具超时 · 留空走各自默认(gen-config.py 里 hunter_cap 180000 / screener 60000,
+      # 镜像自带那 4 个 180000;uzi 的 httpx 读超时 170s)。两者要一起调:
+      # UZI_HTTP_TIMEOUT 必须小于 HUNTER_MCP_TIMEOUT_MS/1000,否则 opencode 先掐断,
+      # 模型只会拿到 "(pending / no output)",日志里看不到任何超时字样。
+      HUNTER_MCP_TIMEOUT_MS: ${HUNTER_MCP_TIMEOUT_MS:-}
+      UZI_HTTP_TIMEOUT: ${UZI_HTTP_TIMEOUT:-}
+    # 镜像里插件(plugins/)和 MCP(mcp/)都齐了,唯独没有把它们串起来的 provider 配置,
     # 而 opencode 只认配置文件里的 provider、不认 LLM_* 环境变量 —— 不生成这个文件
     # 它会回落到内置的 OpenCode Zen,根本不去调你配的网关。
     # 所以包一层入口:启动前按 .env 现生成配置。改完 .env 重新 up 即可生效。
+    # 入口脚本兼容新旧镜像(有 opencode 二进制就用它,没有就回落 bun 跑源码)。
     volumes:
       - ./scripts/opencode:/opt/hunter-boot:ro
       # 覆盖镜像自带的 watchlist_mcp.py · 加了 watchlist_add tool 让 chat NL

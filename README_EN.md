@@ -47,14 +47,15 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 
 ## 🚀 Deploy in 5 minutes
 
-**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 20 GB disk (the chat-engine image is ~7.5 GB) · 4 GB RAM · access to `ghcr.io`
+**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 10 GB disk (since v1.0.1 the chat-engine image is **618 MB**, down from 7.5 GB; the rest is build cache for the locally-built api / web) · 4 GB RAM · access to `ghcr.io`
 
 > [!IMPORTANT]
 > **Only two things to understand before you start**
 > 1. **An LLM key (required)**: powers the chat itself. We recommend [DeepSeek](https://platform.deepseek.com/api_keys); any OpenAI-compatible gateway works (Qwen, Claude, GPT, OpenRouter, OneAPI, AIHubMix, ...).
 > 2. **Where data comes from (pick one, can wait)**: ① free open-source sources, work out of the box; ② your own MCP / data sources; ③ the platform data pipeline, [free key](https://hunter.agentpit.io/dev/api-keys). See [Data supply: pick one of three](#-data-supply-pick-one-of-three).
 
-**Time**: ~5 minutes with images already pulled; ~10–15 minutes on first pull, depending on your network.
+**Time**: ~5 minutes with images already pulled; 8–15 minutes on a first run, **dominated by building `api` and `web` locally**.
+Since v1.0.1 the chat-engine image is a 153 MB download (measured: 6 s from US-Central, 9 s from Singapore; mainland China not measured) — it used to be 1.70 GB and took 123 s on the same machine.
 
 ```bash
 # 1. Get the code

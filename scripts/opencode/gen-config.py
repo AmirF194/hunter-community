@@ -14,10 +14,13 @@ provider 就够了。
 现象是"能聊天但答得驴唇不对马嘴"。
 
 Reads:  LLM_BASE_URL · LLM_API_KEY · LLM_DEFAULT_MODEL · LLM_SCHEMA_SANITIZE
+        HUNTER_EXTRA_MCP_DIR · HUNTER_MCP_TIMEOUT_MS(可选 · 覆盖额外 MCP 的超时)
 Writes: $OPENCODE_CONFIG_DIR/opencode.json (默认 /opt/opencode-workspace)
 """
 import json
 import os
+import shutil
+import subprocess
 import sys
 
 WORKSPACE = os.environ.get("OPENCODE_CONFIG_DIR", "/opt/opencode-workspace")
@@ -35,6 +38,41 @@ PROVIDER_ID = "hunter-llm"
 # 洗掉会削弱它。所以默认 auto:只有模型名含 gemini 才绕这一层。
 SANITIZE = (os.environ.get("LLM_SCHEMA_SANITIZE", "auto") or "auto").strip().lower()
 SHIM_URL = os.environ.get("LLM_SHIM_URL", "http://llm-shim:3999/v1").rstrip("/")
+
+
+# 下面 _EXTRA_MCP 里那两个 timeout 是按「这个工具最慢能有多慢」定的。换了更慢的
+# 后端(比如自己跑 Kronos 推理、或者上游网关排队)就得整体抬高 —— 做成环境变量,
+# 免得为了改一个数字去 fork 这个文件。给非数字 / 非正数时按原值走,不让一个笔误
+# 把超时改没。
+_TIMEOUT_OVERRIDE_RAW = (os.environ.get("HUNTER_MCP_TIMEOUT_MS") or "").strip()
+
+
+def _timeout_ms(default_ms: int) -> int:
+    if not _TIMEOUT_OVERRIDE_RAW:
+        return default_ms
+    try:
+        val = int(_TIMEOUT_OVERRIDE_RAW)
+    except ValueError:
+        print(f"[gen-config] HUNTER_MCP_TIMEOUT_MS={_TIMEOUT_OVERRIDE_RAW!r} 不是整数,"
+              f"按默认 {default_ms}ms 走", file=sys.stderr)
+        return default_ms
+    if val <= 0:
+        print(f"[gen-config] HUNTER_MCP_TIMEOUT_MS={_TIMEOUT_OVERRIDE_RAW!r} 非正数,"
+              f"按默认 {default_ms}ms 走", file=sys.stderr)
+        return default_ms
+    return val
+
+
+def _opencode_version() -> str:
+    """给启动日志用。新镜像是单文件二进制;旧镜像没有 opencode 命令,只能标注不详。"""
+    exe = shutil.which("opencode")
+    if not exe:
+        return "未知(旧镜像 · 源码启动)"
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"未知({type(exc).__name__})"
+    return (out.stdout or out.stderr).strip().splitlines()[0] if (out.stdout or out.stderr) else "未知"
 
 
 def _use_shim(model: str) -> bool:
@@ -134,7 +172,7 @@ def main() -> int:
                 "type": "local",
                 "command": ["python3", path],
                 "enabled": True,
-                "timeout": timeout_ms,
+                "timeout": _timeout_ms(timeout_ms),
             }
     if mcp_cfg:
         cfg["mcp"] = mcp_cfg
@@ -142,6 +180,13 @@ def main() -> int:
     out = os.path.join(WORKSPACE, "opencode.json")
     with open(out, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    # 一行把「跑的是哪个 opencode / MCP 超时多少 / 走哪个 provider」讲清楚。
+    # 这三样出问题的症状都是「对话没反应」,而日志里以前一个都看不到。
+    print(f"[boot] opencode {_opencode_version()}"
+          f" · mcp timeout {_timeout_ms(180000)}ms"
+          f"({'HUNTER_MCP_TIMEOUT_MS' if _TIMEOUT_OVERRIDE_RAW else '默认'})"
+          f" · provider {PROVIDER_ID} → {upstream}", file=sys.stderr, flush=True)
 
     print(f"[gen-config] 已写 {out}", file=sys.stderr)
     print(f"[gen-config]   provider {PROVIDER_ID} → {upstream}"
