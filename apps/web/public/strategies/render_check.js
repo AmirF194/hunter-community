@@ -1791,6 +1791,28 @@ try {
         vm.runInContext(`S.result = { as_of: '2026-09-15', as_of_requested: null, universe_total: 7424, scanned: 4058, matched: 0, skipped_incomplete: 2, picks: [], columns: [], notes: [], warnings: [] }; var RES3 = vResult()`, ctx)
         return !/回溯/.test(ctx.RES3) && !/panel asof/.test(ctx.RES3) && /扫描结果/.test(ctx.RES3) && /截至 2026-09-15 收盘/.test(ctx.RES3)
       })()],
+      ['⭐官方示例普通扫描 0 命中:提示最近命中日 + 时间回溯按钮带日期(2026-09-16 用户要求)', (() => {
+        vm.runInContext(`S.result = { official_preset: { key: 'fomo_short', name: '猎杀FOMO做空', market: 'us' }, as_of: '2026-09-15', as_of_requested: null, last_hit: { status: 'ready', date: '2026-08-20', matched: 3 }, universe_total: 7424, scanned: 4058, matched: 0, skipped_incomplete: 0, picks: [], columns: [], notes: [], warnings: [] }; var LH1 = vResult()`, ctx)
+        return /最近一次扫描命中的日子为 <b>2026-08-20<\/b>/.test(ctx.LH1) && /id="sc-lasthit-go" data-date="2026-08-20"/.test(ctx.LH1) && /当天命中 3 只/.test(ctx.LH1)
+      })()],
+      ['最近命中日提示:回溯结果 / 非官方示例 / 有命中 / 查找失败都不显示', (() => {
+        const base = "universe_total: 1, scanned: 1, skipped_incomplete: 0, picks: [], columns: [], notes: [], warnings: []"
+        const off = "official_preset: { key: 'fomo_short', name: 'x', market: 'us' }"
+        const ready = "last_hit: { status: 'ready', date: '2026-08-20', matched: 3 }"
+        vm.runInContext(`var LH2 = [
+          vLastHit({ ${off}, ${ready}, as_of_requested: '2026-09-01', matched: 0, ${base} }),
+          vLastHit({ ${ready}, as_of_requested: null, matched: 0, ${base} }),
+          vLastHit({ ${off}, ${ready}, as_of_requested: null, matched: 2, ${base} }),
+          vLastHit({ ${off}, last_hit: { status: 'error' }, as_of_requested: null, matched: 0, ${base} }),
+          vLastHit({ ${off}, last_hit: null, as_of_requested: null, matched: 0, ${base} })]`, ctx)
+        return ctx.LH2.every(function (x) { return x === '' })
+      })()],
+      ['最近命中日提示:查找中 / 查完没有 各有说明', (() => {
+        const base = "official_preset: { key: 'fomo_short', name: 'x', market: 'us' }, as_of_requested: null, matched: 0"
+        vm.runInContext(`var LH3 = vLastHit({ ${base}, last_hit: { status: 'pending' } }); var LH4 = vLastHit({ ${base}, last_hit: { status: 'none', searched_days: 120, oldest: '2026-03-20' } })`, ctx)
+        return /正在往前查找/.test(ctx.LH3) && /往前查了 120 个交易日\(到 2026-03-20\)/.test(ctx.LH4) && !/sc-lasthit-go/.test(ctx.LH4)
+      })()],
+      ['时间回溯弹窗支持预填日期(按钮当 click 回调时事件对象不当日期)', /typeof prefill === 'string'/.test(sc) && /value="' \+ esc\(initial\)/.test(sc)],
       ['⭐悬停日 K 回溯时画到最新收盘,不再截断(2026-09-16 用户要求)', !appJs.includes('rows.filter(function (r) { return String(r.ts || r.date ||') && appJs.includes('if (KC.asOf) mark = Object.assign(')],
       ['回溯日画竖线,落在回溯日那根上', KC_ASOF.idx === 1 && KC_ASOF.label === '回溯日'],
       ['竖线颜色与命中三层的蓝色分开', KC_ASOF.color === vm.runInContext('KC_ASOF_LINE', ctx)],

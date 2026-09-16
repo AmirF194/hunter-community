@@ -180,6 +180,9 @@
     .sc-warn{background:#FDF3E7;border:1px solid #F0DCC0;color:#8A5A1B;border-radius:8px;
       padding:9px 12px;font-size:12px;line-height:1.7;margin-top:10px}
     .sc-warn ul{margin:0;padding-left:17px}
+    .sc-lasthit{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;background:#EEF4FB;border:1px solid #D3E2F2;
+      color:#27496D;border-radius:8px;padding:10px 14px;margin-top:10px;font-size:13px;line-height:1.7}
+    .sc-lasthit.dim{background:transparent;border-style:dashed;color:#6B7785}
     .sc-warn li+li{margin-top:4px}
     .sc-note{color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:8px}
 
@@ -1095,14 +1098,16 @@ async function loadAsOfRange(market) {
   } catch (e) { return null }
 }
 
-async function openAsOfDialog() {
+// prefill:从「最近一次命中」提示点进来时预先填好那天(按钮直接绑成 click 回调时第一个参数是事件,不当日期用)
+async function openAsOfDialog(prefill) {
   const today = todayStr()
+  const initial = (typeof prefill === 'string' && prefill) ? prefill : (S.asOf || today)
   const m = openModal(
     '<div class="modal-hd"><span class="hi hi-clock" style="color:var(--brand)"></span> 时间回溯' +
       '<span class="close" data-close>×</span></div>' +
     '<div class="modal-body">' +
       '<div class="field"><div class="lbl">跳到哪一天(按那天收盘)</div>' +
-        '<input id="ao-date" type="date" value="' + esc(S.asOf || today) + '" max="' + today + '"></div>' +
+        '<input id="ao-date" type="date" value="' + esc(initial) + '" max="' + today + '"></div>' +
       '<div class="sc-note" id="ao-range" style="line-height:1.8">正在查能回溯的范围…</div>' +
       '<div class="sc-note" style="line-height:1.8;margin-top:8px">' +
         '回溯用的是每晚落库的全市场日线(约 320 个交易日),只有<b>价格 / 成交量类</b>字段能重算:' +
@@ -1206,11 +1211,58 @@ function vResult() {
     (r.as_of ? ' · 截至 ' + esc(r.as_of) + ' 收盘' : '') +
     (r.returned != null ? ' · 显示前 ' + r.returned + ' 只' : '') + '</span></div>' +
     '<div class="sc-stat">' + stats + '</div>' +
-    vWarn(r) + vTable(r) +
+    vWarn(r) + vLastHit(r) + vTable(r) +
     '<div class="sc-runbar">' +
       '<button class="btn small" id="sc-copy">复制命中代码</button>' +
       '<span class="sc-na" style="font-size:11.5px;margin-left:auto">' + esc(timing) + '</span>' +
     '</div></div>'
+}
+
+// ─── 官方示例 0 命中:最近一次命中的日子(2026-09-16 用户要求)────────────────
+// 后端 screen_last_hit 在后台逐日跑真正的时间回溯往前找,没算好时是 pending,这里轮询。
+// 只在「官方示例 · 普通扫描(没点时间回溯)· 0 命中」时出现;日期 / 只数全部来自后端,算不出就不显示
+const LAST_HIT_API = '/api/quant/screener/last-hit'
+function vLastHit(r) {
+  const lh = r.last_hit
+  if (!r.official_preset || r.matched !== 0 || r.as_of_requested != null || !lh) return ''
+  if (lh.status === 'ready' && lh.date) {
+    return '<div class="sc-lasthit"><span>距离今日最近一次扫描命中的日子为 <b>' + esc(lh.date) + '</b>' +
+      (Number.isFinite(lh.matched) ? '(当天命中 ' + lh.matched + ' 只)' : '') + ',可以通过时间回溯查看详情。</span>' +
+      '<button class="btn small" id="sc-lasthit-go" data-date="' + esc(lh.date) + '">' +
+      '<span class="hi hi-clock"></span> 时间回溯</button></div>'
+  }
+  if (lh.status === 'pending') return '<div class="sc-lasthit dim">正在往前查找最近一次命中的日子…</div>'
+  if (lh.status === 'none' && Number.isFinite(lh.searched_days) && lh.searched_days > 0) {
+    return '<div class="sc-lasthit dim">往前查了 ' + lh.searched_days + ' 个交易日' +
+      (lh.oldest ? '(到 ' + esc(lh.oldest) + ')' : '') + ',都没有命中。</div>'
+  }
+  return ''
+}
+
+let lastHitTimer = null
+function watchLastHit() {
+  clearTimeout(lastHitTimer)
+  const r = S.result
+  if (!r || !r.official_preset || !r.last_hit || r.last_hit.status !== 'pending') return
+  const started = Date.now()
+  const tick = async function () {
+    if (S.result !== r) return                 // 结果换了(重跑 / 换回溯日),这次的轮询作废
+    if (Date.now() - started > 16 * 60 * 1000) { r.last_hit = null; render(); return }
+    let d = null
+    try {
+      const res = await fetch(LAST_HIT_API + '?market=' + encodeURIComponent(r.official_preset.market) +
+        '&preset=' + encodeURIComponent(r.official_preset.key), { headers: apiHeaders(), cache: 'no-store' })
+      d = res.ok ? await res.json() : null
+    } catch (e) { d = null }
+    if (S.result !== r) return
+    if (d && d.status && d.status !== 'pending') {
+      // idle = 服务重启过、后台任务没了;error = 查找失败 —— 都不显示,不猜
+      r.last_hit = (d.status === 'ready' || d.status === 'none') ? d : null
+      render(); return
+    }
+    lastHitTimer = setTimeout(tick, 3000)
+  }
+  lastHitTimer = setTimeout(tick, 3000)
 }
 
 function vWarn(r) {
@@ -1385,6 +1437,8 @@ function bind() {
   if (ao) ao.addEventListener('click', openAsOfDialog)
   const aoff = document.getElementById('sc-asof-off')
   if (aoff) aoff.addEventListener('click', function () { setAsOf(null) })
+  const lhGo = document.getElementById('sc-lasthit-go')
+  if (lhGo) lhGo.addEventListener('click', function () { openAsOfDialog(lhGo.getAttribute('data-date') || '') })
   const copy = document.getElementById('sc-copy')
   if (copy) copy.addEventListener('click', function () {
     const codes = ((S.result && S.result.picks) || []).map(function (p) { return p.code }).join('\n')
@@ -2008,6 +2062,7 @@ async function runScan() {
   // 不是条件区此刻的样子(用户跑完可能又改了条件还没重跑)
   S.resultScan = { script: script, market: market, asOf: asOf }
   render()
+  watchLastHit()
 }
 
 // ─── 列头排序:不重新扫描、不扣次数(2026-09-14 用户要求)─────────────────

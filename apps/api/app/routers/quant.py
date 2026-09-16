@@ -1265,6 +1265,14 @@ async def screener_hit_days(body: HitDaysIn, request: Request):
         raise HTTPException(400, str(e))
 
 
+@router.get("/screener/last-hit")
+async def screener_last_hit(request: Request, market: str = "us", preset: str = ""):
+    """官方示例最近一次命中的日子(扫描 0 命中时前端轮询)。只查缓存、不起新任务 —— 任务由 /screener/run 起。"""
+    _member(request)
+    from app.services.quant import screen_last_hit
+    return await asyncio.to_thread(screen_last_hit.lookup, market, preset, False)
+
+
 @router.get("/screener/history-range")
 async def screener_history_range(market: str = "us"):
     """时间回溯能选的日期范围 —— 来自自家日线(rs_daily),前端据此限制日期框。"""
@@ -1362,6 +1370,16 @@ async def screener_parse(body: ScreenParseIn, request: Request):
         raise
     if reserved:
         d["quota"] = reserved[-1]
+    off = d.get("official_preset")
+    if off:
+        # 时间序列类官方示例逐日回溯约 1 秒一天,点「生成」时就先在后台找最近命中日,
+        # 等用户点运行扫描、万一 0 命中,提示多半已经算好了。横截面类一天十几秒,只在真 0 命中时才找
+        from app.services.quant import screen_last_hit
+        try:
+            if await asyncio.to_thread(screen_last_hit.is_series, off["market"], off["key"]):
+                await asyncio.to_thread(screen_last_hit.lookup, off["market"], off["key"])
+        except Exception:                               # noqa: BLE001
+            pass                                        # 预热失败不影响生成
     return d
 
 
@@ -1450,6 +1468,11 @@ async def screener_run(body: ScreenIn, request: Request):
     if official:
         # 不回 quota:前端拿到 quota 会提示「本次扫描计 1 次」,而这次没有计
         out["official_preset"] = official
+        if as_of is None and out.get("matched") == 0:
+            # 0 命中 → 告诉用户最近一次命中是哪天,可以时间回溯过去看(2026-09-16 用户要求,只做官方示例)。
+            # 不阻塞:没算好就回 pending,前端轮询 /screener/last-hit
+            from app.services.quant import screen_last_hit
+            out["last_hit"] = await asyncio.to_thread(screen_last_hit.lookup, body.market, official["key"])
         return out
     out["quota"] = q
     return out
