@@ -178,6 +178,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("[klines.etl] loop 挂载失败(非致命): {}", e)
 
+    # 魔法筛选器:官方示例「最近一次命中的日子」定时预热(2026-09-16 用户要求)。只读自家日线,
+    # 没下载过日线的实例直接跳过;放在 MINIMAL_BOOT 之前,生产开着那个开关
+    try:
+        from app.services.quant import screen_last_hit as _slh
+        _last_hit_task = asyncio.create_task(_slh.prewarm_loop())
+        logger.info("[last-hit] 官方示例最近命中日预热已挂载(启动 1 分钟后,每 30 分钟检查一次)")
+    except Exception as e:
+        logger.warning("[last-hit] 预热挂载失败(非致命): {}", e)
+
     if HUNTER_MINIMAL_BOOT:
         logger.warning("[hunter-community] HUNTER_MINIMAL_BOOT=1 · skipping background schedulers only (tables OK)")
         yield

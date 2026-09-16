@@ -16,6 +16,13 @@
 前端 pending 时轮询 `GET /screener/last-hit`。结果按(市场, 示例, 日线最新一天)缓存在进程内 ——
 API 是单 worker(Dockerfile 里的 uvicorn 没开 --workers),重启丢了就再算一次。
 
+## 预热(2026-09-16 用户:「其他几个官方筛选器也提前预热,不要等 0 命中才找」)
+
+`prewarm_loop` 在 API 启动 1 分钟后、之后每 30 分钟把**全部官方示例**过一遍:缓存里没有「日线最新一天」这份结果的就排队。
+每晚日线更新后下一轮自动重算,用户点运行扫描时通常已经算好。挂在 main.py 的 MINIMAL_BOOT 开关**之前**(生产开着那个开关)。
+任务**串行**跑(一个后台线程排队),横截面类一天十几秒,几个一起并行会和用户的扫描抢 CPU。
+没有日线的市场(开源用户没下载过)`_latest` 为空,直接跳过,不占资源。
+
 ## 从哪天开始找
 
 - 时间序列类:普通扫描本身就是按日线最新一天算的,从**前一个交易日**开始;
@@ -35,9 +42,13 @@ log = logging.getLogger(__name__)
 MAX_DAYS = 120
 BUDGET_S = 15 * 60
 
+PREWARM_EVERY_S = 30 * 60
+
 _lock = threading.Lock()
 _cache: dict = {}        # (市场, key, 日线最新一天) → 结果
-_running: set = set()
+_running: set = set()    # 排队中 + 正在算
+_queue: list = []        # 待算任务(先进先出)
+_worker_on = False
 
 
 def _latest(market: str) -> date | None:
@@ -71,6 +82,18 @@ def _search(market: str, key: str, latest: date) -> dict:
                     "searched_days": searched}
         d = actual - timedelta(days=1)
     return {"status": "none", "searched_days": searched, "oldest": str(oldest) if oldest else None}
+
+
+def _drain():
+    """唯一的后台线程:按顺序把队列里的任务算完就退出,下次有任务再起。"""
+    global _worker_on
+    while True:
+        with _lock:
+            if not _queue:
+                _worker_on = False
+                return
+            job = _queue.pop(0)
+        _worker(*job)
 
 
 def _worker(market: str, key: str, latest: date):
@@ -115,9 +138,42 @@ def lookup(market: str, key: str, start: bool = True) -> dict:
         if not start:
             return {"status": "idle"}
         _running.add(k)
-    threading.Thread(target=_worker, args=(market, key, latest), daemon=True,
-                     name=f"last-hit-{market}-{key}").start()
+        _queue.append((market, key, latest))
+        global _worker_on
+        spawn = not _worker_on
+        _worker_on = True
+    if spawn:
+        threading.Thread(target=_drain, daemon=True, name="last-hit-worker").start()
     return {"status": "pending"}
+
+
+def prewarm_all() -> int:
+    """全部官方示例排队(已缓存 / 已在排队的跳过)。时间序列类先排 —— 一天 1 秒,先出结果。→ 新排进去几个。"""
+    from app.services.quant import screen_source
+    keys = [(p["market"], p["key"]) for p in screen_source.PRESETS if p.get("market")]
+    def _fast(mk):
+        try:
+            return 0 if is_series(*mk) else 1
+        except Exception:                            # noqa: BLE001
+            return 1
+    n = 0
+    for market, key in sorted(keys, key=_fast):
+        if lookup(market, key).get("status") == "pending":
+            n += 1
+    return n
+
+
+async def prewarm_loop():
+    import asyncio
+    await asyncio.sleep(60)                          # 等启动时的其他初始化先走完
+    while True:
+        try:
+            n = await asyncio.to_thread(prewarm_all)
+            if n:
+                log.info(f"[last-hit] 预热:{n} 个官方示例在排队找最近命中日")
+        except Exception as e:                       # noqa: BLE001
+            log.warning(f"[last-hit] 预热失败(非致命):{e}")
+        await asyncio.sleep(PREWARM_EVERY_S)
 
 
 def _series(market: str, script: str) -> bool:

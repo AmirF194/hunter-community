@@ -1372,12 +1372,11 @@ async def screener_parse(body: ScreenParseIn, request: Request):
         d["quota"] = reserved[-1]
     off = d.get("official_preset")
     if off:
-        # 时间序列类官方示例逐日回溯约 1 秒一天,点「生成」时就先在后台找最近命中日,
-        # 等用户点运行扫描、万一 0 命中,提示多半已经算好了。横截面类一天十几秒,只在真 0 命中时才找
+        # 点「生成」时确认一下这个官方示例的最近命中日在算(平时由 main.py 的 prewarm_loop 定时预热,
+        # 这里兜底服务刚重启、预热还没轮到的情况;已缓存 / 已排队的直接跳过)
         from app.services.quant import screen_last_hit
         try:
-            if await asyncio.to_thread(screen_last_hit.is_series, off["market"], off["key"]):
-                await asyncio.to_thread(screen_last_hit.lookup, off["market"], off["key"])
+            await asyncio.to_thread(screen_last_hit.lookup, off["market"], off["key"])
         except Exception:                               # noqa: BLE001
             pass                                        # 预热失败不影响生成
     return d
