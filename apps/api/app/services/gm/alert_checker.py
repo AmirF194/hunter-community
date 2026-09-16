@@ -100,7 +100,10 @@ def _sign_recap_jwt(uid: str, email: str) -> str:
     2026-08-29 事故: 只发相对路径 /gm/recap 时用户历史 token 若失效会永远 401 看不到详情。"""
     import os, time
     import jwt
-    secret = os.getenv("JWT_SECRET", "hermes-jwt-secret-2026")
+    # 不给默认值:写死的密钥在公开仓库里等于人人可伪造令牌 · 未配置就报错(调用处按用户逐个 catch)
+    secret = os.environ.get("JWT_SECRET") or ""
+    if not secret:
+        raise RuntimeError("JWT_SECRET is not configured · cannot sign recap link")
     return jwt.encode(
         {"sub": uid, "email": email or "", "role": "USER",
          "iat": int(time.time()), "exp": int(time.time()) + 365 * 24 * 3600},

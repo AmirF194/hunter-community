@@ -1,6 +1,6 @@
 """港股发现页数据(gm端): 南向资金汇总 + AH溢价榜。
 
-南向: akshare stock_hsgt_fund_flow_summary_em(经232代理, 已在白名单)
+南向: akshare stock_hsgt_fund_flow_summary_em(先直连 · 用户配了 AK_PROXY_URL 才走代理)
 AH溢价: 静态AH对照表(24对主流) + A股价(finance-data中台) + H股价(Yahoo延迟)
         + HKDCNY汇率(Yahoo) → 溢价% = A价/(H价*汇率) - 1
 Redis缓存: 南向10分钟 / AH榜10分钟
@@ -14,8 +14,9 @@ from app.services.finance_data_client import get_quote as fd_quote
 
 log = logging.getLogger(__name__)
 
-_AK_BASE = os.getenv("AK_PROXY_URL", "http://139.199.221.232:8765")
-_AK_TOKEN = os.getenv("AK_API_TOKEN", "ak-proxy-2026")
+# AK 代理不给默认值(与 quant/index_kline.py、quant/universe.py 一致):没配 AK_PROXY_URL 就不走这条路
+_AK_BASE = os.getenv("AK_PROXY_URL", "").rstrip("/")
+_AK_TOKEN = os.getenv("AK_API_TOKEN", "")
 
 # (A股代码, H股代码, 名称) 主流AH对照 —— 成分极少变动, 静态维护
 AH_PAIRS = [
@@ -34,36 +35,78 @@ AH_PAIRS = [
 ]
 
 
-def southbound_summary() -> dict | None:
-    """南向(港股通)资金今日汇总, 单位亿元"""
-    key = "gm:southbound:summary"
-    cached = _cache_get(key)
-    if cached is not None:
-        return cached
+def _southbound_rows_direct() -> list[dict] | None:
+    """直连 AKShare(东方财富源)· 带硬超时:akshare 底层 requests 不设超时,卡住就是永久卡住。"""
+    import concurrent.futures as cf
+    import warnings
+    try:
+        warnings.filterwarnings("ignore")
+        import akshare as ak
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("[southbound] akshare 不可用: %s", e)
+        return None
+    ex = cf.ThreadPoolExecutor(max_workers=1)
+    try:
+        df = ex.submit(ak.stock_hsgt_fund_flow_summary_em).result(timeout=30)
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("[southbound] 直连失败: %s", type(e).__name__)
+        return None
+    finally:
+        ex.shutdown(wait=False)
+    try:
+        return df.to_dict("records")
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
+def _southbound_rows_proxy() -> list[dict] | None:
+    """AK 代理 —— 只有用户自己配了 AK_PROXY_URL 才走。"""
+    if not _AK_BASE:
+        return None
     try:
         r = requests.post(f"{_AK_BASE}/call",
                           json={"func": "stock_hsgt_fund_flow_summary_em", "kwargs": {}},
-                          headers={"Authorization": f"Bearer {_AK_TOKEN}"}, timeout=30)
+                          headers={"Authorization": f"Bearer {_AK_TOKEN}"} if _AK_TOKEN else {},
+                          timeout=30)
         r.raise_for_status()
         body = r.json()
         if not body.get("ok"):
             return None
-        rows = body.get("data") or []
-        # 行含 交易状况/资金方向/板块 等列: 取 南向 的 沪股通+深股通 净流入合计
-        south_net, date = 0.0, ""
-        for row in rows:
-            if str(row.get("资金方向", "")) == "南向":
-                try:
-                    south_net += float(row.get("成交净买额", 0) or 0)
-                except (TypeError, ValueError):
-                    pass
-                date = str(row.get("交易日", ""))[:10] or date
-        out = {"net_buy_yi": round(south_net, 2), "date": date}
-        _cache_set(key, out, 600)
-        return out
-    except Exception as e:
-        log.warning("southbound summary failed: %s", e)
+        return body.get("data") or None
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("[southbound] 代理失败: %s", e)
         return None
+
+
+def southbound_summary() -> dict | None:
+    """南向(港股通)资金今日汇总, 单位亿元 · 先直连 AKShare, 拿不到再走用户配置的代理。
+    一条有效的南向数据都没有就返回 None(前端显示「暂无数据」),不拿 0 冒充「净买入 0 亿」。"""
+    key = "gm:southbound:summary"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    rows = _southbound_rows_direct() or _southbound_rows_proxy()
+    if not rows:
+        return None
+    # 行含 交易日/资金方向/板块 等列: 取 南向 的 港股通(沪)+港股通(深) 成交净买额合计
+    south_net, date, got = 0.0, "", 0
+    for row in rows:
+        if str(row.get("资金方向", "")) != "南向":
+            continue
+        try:
+            v = float(row.get("成交净买额"))
+        except (TypeError, ValueError):
+            continue
+        if v != v:                                            # NaN
+            continue
+        south_net += v
+        got += 1
+        date = str(row.get("交易日", ""))[:10] or date
+    if not got:
+        return None
+    out = {"net_buy_yi": round(south_net, 2), "date": date}
+    _cache_set(key, out, 600)
+    return out
 
 
 def _hkdcny() -> float | None:
