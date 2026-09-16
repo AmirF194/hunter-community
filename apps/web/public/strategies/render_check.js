@@ -1784,8 +1784,12 @@ try {
       ['⭐运行扫描的请求带 as_of', sent.length >= 1 && sent[0].as_of === '2026-08-15'],
       ['单条测试的请求也带 as_of', sent.length >= 2 && sent[1].as_of === '2026-08-15'],
       ['结果区标明回溯到哪一天', (() => {
-        vm.runInContext(`S.result = { as_of: '2026-08-15', universe_total: 4000, scanned: 4000, matched: 1, skipped_incomplete: 0, picks: [], columns: [], notes: [], warnings: [] }; var RES2 = vResult()`, ctx)
+        vm.runInContext(`S.result = { as_of: '2026-08-15', as_of_requested: '2026-08-15', universe_total: 4000, scanned: 4000, matched: 1, skipped_incomplete: 0, picks: [], columns: [], notes: [], warnings: [] }; var RES2 = vResult()`, ctx)
         return /回溯扫描结果/.test(ctx.RES2) && /截至 2026-08-15 收盘/.test(ctx.RES2) && /日线池/.test(ctx.RES2) && /panel asof/.test(ctx.RES2)
+      })()],
+      ['⭐没点时间回溯的正常扫描不标「回溯」(时间序列模式也带 as_of · 2026-09-16 用户指出)', (() => {
+        vm.runInContext(`S.result = { as_of: '2026-09-15', as_of_requested: null, universe_total: 7424, scanned: 4058, matched: 0, skipped_incomplete: 2, picks: [], columns: [], notes: [], warnings: [] }; var RES3 = vResult()`, ctx)
+        return !/回溯/.test(ctx.RES3) && !/panel asof/.test(ctx.RES3) && /扫描结果/.test(ctx.RES3) && /截至 2026-09-15 收盘/.test(ctx.RES3)
       })()],
       ['⭐悬停日 K 回溯时画到最新收盘,不再截断(2026-09-16 用户要求)', !appJs.includes('rows.filter(function (r) { return String(r.ts || r.date ||') && appJs.includes('if (KC.asOf) mark = Object.assign(')],
       ['回溯日画竖线,落在回溯日那根上', KC_ASOF.idx === 1 && KC_ASOF.label === '回溯日'],

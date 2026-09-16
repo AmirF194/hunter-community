@@ -1197,8 +1197,11 @@ function vResult() {
   const t = r.timing_ms || {}
   const timing = (Number.isFinite(t.fetch) ? '取数 ' + t.fetch + 'ms' : '') +
     (Number.isFinite(t.evaluate) ? ' · 求值 ' + t.evaluate + 'ms' : '')
-  return '<div class="panel' + (r.as_of ? ' asof' : '') + '" style="margin-top:14px"><div class="p-hd">' +
-    (r.as_of ? '回溯扫描结果' : '扫描结果') +
+  // 「回溯」只在用户点了时间回溯时才标(as_of_requested 非空)。时间序列模式正常扫描也会带 as_of(=日线最新一天),
+  // 拿 as_of 判断会把普通「运行扫描」也标成回溯(2026-09-16 用户指出)
+  const retro = r.as_of_requested != null
+  return '<div class="panel' + (retro ? ' asof' : '') + '" style="margin-top:14px"><div class="p-hd">' +
+    (retro ? '回溯扫描结果' : '扫描结果') +
     '<span class="cnt">' + esc(r.market_label || '') +
     (r.as_of ? ' · 截至 ' + esc(r.as_of) + ' 收盘' : '') +
     (r.returned != null ? ' · 显示前 ' + r.returned + ' 只' : '') + '</span></div>' +
