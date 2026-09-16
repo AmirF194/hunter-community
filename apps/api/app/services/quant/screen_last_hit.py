@@ -35,9 +35,7 @@ import threading
 import time
 from datetime import date, timedelta
 
-import logging
-
-log = logging.getLogger(__name__)
+from loguru import logger as log     # 标准 logging 的 INFO 在容器日志里看不到,预热进度要能查
 
 MAX_DAYS = 120
 BUDGET_S = 15 * 60
