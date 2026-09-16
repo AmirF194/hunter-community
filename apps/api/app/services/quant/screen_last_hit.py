@@ -59,7 +59,14 @@ def _search(market: str, key: str, latest: date) -> dict:
     from app.services.quant import screen_source
     p = screen_source.preset(key)
     script = p["script"]
-    series = _series(market, script)
+    c = _compiled(market, script)
+    series = c.series is not None
+    # 用到没有历史值的字段(市值 / PE / 股息率等)的示例,回溯时这些条件每天都「算不出」,
+    # 往回找 120 天也不可能命中 —— A 股「低估值超卖」实测白跑 346 秒。直接跳过,前端不显示提示
+    from app.services.quant import screen_asof
+    unavailable = sorted({f for f in c.fields if not screen_asof.reconstructable(f)})
+    if unavailable:
+        return {"status": "unsupported", "fields": unavailable}
     d = latest - timedelta(days=1) if series else latest
     t0 = time.time()
     searched = 0
@@ -113,7 +120,7 @@ def _worker(market: str, key: str, latest: date):
 
 
 def lookup(market: str, key: str, start: bool = True) -> dict:
-    """→ {status: ready|pending|none|error|idle, date?, matched?, searched_days?, oldest?}。不阻塞。
+    """→ {status: ready|pending|none|unsupported|error|idle, date?, matched?, searched_days?, oldest?}。不阻塞。
 
     start=False 只查缓存、不起后台任务(轮询接口用,避免有人拿轮询去反复触发)。
     """
@@ -174,12 +181,16 @@ async def prewarm_loop():
         await asyncio.sleep(PREWARM_EVERY_S)
 
 
-def _series(market: str, script: str) -> bool:
-    """这份脚本走不走时间序列引擎(和 parse_script / run_script 同一个编译器)。"""
+def _compiled(market: str, script: str):
+    """和 parse_script / run_script 同一个编译器。"""
     from app.services.quant import screen_dsl, screen_source
     meta = screen_source.get_meta(market)
-    c = screen_dsl.compile_script(script, lambda n: n in meta.names, meta.sma, meta.ema, meta.rsi)
-    return c.series is not None
+    return screen_dsl.compile_script(script, lambda n: n in meta.names, meta.sma, meta.ema, meta.rsi)
+
+
+def _series(market: str, script: str) -> bool:
+    """这份脚本走不走时间序列引擎。"""
+    return _compiled(market, script).series is not None
 
 
 def is_series(market: str, key: str) -> bool:
