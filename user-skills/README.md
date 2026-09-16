@@ -1,6 +1,8 @@
 # 你自己的 SKILL 放这里
 
-这个目录里的 SKILL 会和我们内置的 29 个一起加载,**同名时你的覆盖我们的**。
+这个目录里的 SKILL 会和 `skills/` 下内置的一起加载,**同名时你的覆盖内置的**。
+
+> 这个目录是**本机自用**的,子目录已被 `.gitignore` 忽略。想把 SKILL 贡献给大家,请放到 `skills/<name>/` 提 PR,见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ## 加一个 SKILL
 

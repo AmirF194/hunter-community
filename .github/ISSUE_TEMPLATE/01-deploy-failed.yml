@@ -1,0 +1,81 @@
+name: 🚨 部署失败 / Deploy failed
+description: docker compose 起不来、服务反复重启、页面打不开 · Services won't start, keep restarting, or the page won't load
+title: "[部署] "
+labels: ["type: bug", "area: deploy", "status: needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先看 [常见问题](https://github.com/agentpit-io/hunter-community#-常见问题) 和 [常见报错速查表](https://github.com/agentpit-io/hunter-community/blob/main/docs/01-getting-started.md)。
+        **贴日志和配置前,请把所有 key 换成 `sk-***`。**
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统 / OS
+      options:
+        - Windows 10/11
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Ubuntu / Debian
+        - 其他 Linux / Other Linux
+        - 其他 / Other
+    validations:
+      required: true
+  - type: input
+    id: docker
+    attributes:
+      label: Docker 版本 / Docker version
+      description: "`docker --version && docker compose version` 的输出"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: HunterCode 版本或提交 / Version or commit
+      description: "`git log --oneline -1` 的输出"
+    validations:
+      required: true
+  - type: dropdown
+    id: llm
+    attributes:
+      label: 大模型 / LLM
+      options:
+        - DeepSeek 直连 / direct
+        - 通义千问 Qwen
+        - AIHubMix 网关 / gateway
+        - OneAPI / New API
+        - Claude
+        - OpenAI
+        - 其他 / Other
+  - type: textarea
+    id: ps
+    attributes:
+      label: docker compose ps 输出 / output
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错日志 / Logs
+      description: "`docker compose logs opencode api llm-shim --tail 50`"
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: .env 关键项(已脱敏)/ Key .env settings (redacted)
+      description: LLM_BASE_URL、LLM_DEFAULT_MODEL、LLM_SCHEMA_SANITIZE、是否填了 LLM_API_KEY / HUNTER_API_KEY、是否改过端口
+      render: shell
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: 我已经 / I have
+      options:
+        - label: 看过 README 常见问题和常见报错速查表 / read the FAQ and error table
+          required: true
+        - label: 确认 LLM_BASE_URL / LLM_DEFAULT_MODEL / LLM_API_KEY 三项都填了 / filled in all three LLM settings
+        - label: 改完 .env 后用的是 docker compose up -d 而不是 restart / used `up -d` (not restart) after editing .env
+        - label: 已把日志和配置里的 key 全部脱敏 / redacted all keys
+          required: true

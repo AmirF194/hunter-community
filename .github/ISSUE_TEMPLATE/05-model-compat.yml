@@ -1,0 +1,58 @@
+name: 🤖 大模型兼容问题 / Model compatibility
+description: 某个模型或网关下对话异常、工具调用失败、回复为空 · Chat errors, failed tool calls or empty replies with a specific model or gateway
+title: "[模型] "
+labels: ["type: model-compat", "area: opencode"]
+body:
+  - type: markdown
+    attributes:
+      value: 已实测的模型与已知问题见 [模型适配矩阵](https://github.com/agentpit-io/hunter-community/blob/main/docs/model-testing/model-compat-matrix.md)。
+  - type: input
+    id: model
+    attributes:
+      label: 模型名 / Model
+      placeholder: qwen3.8-max
+    validations:
+      required: true
+  - type: input
+    id: gateway
+    attributes:
+      label: 网关与地址 / Gateway and base URL
+      placeholder: AIHubMix · https://aihubmix.com/v1
+    validations:
+      required: true
+  - type: dropdown
+    id: sanitize
+    attributes:
+      label: LLM_SCHEMA_SANITIZE
+      options:
+        - auto(默认 / default)
+        - "1"
+        - "0"
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: 现象 / Symptom
+      options:
+        - 回复为空,只显示「深度思考完成」/ empty reply
+        - 报 400 / 401 / 404 / HTTP error
+        - 不调用工具或调错工具 / no tool call or wrong tool
+        - 回复里出现思考过程(<think>)/ thinking leaks into reply
+        - 超时 / timeout
+        - 其他 / other
+    validations:
+      required: true
+  - type: textarea
+    id: prompt
+    attributes:
+      label: 复现用的问题 / Prompt to reproduce
+      description: 如果对应模型适配矩阵里的标准用例(A1–C1),请写编号
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错日志 / Logs
+      description: "`docker compose logs opencode llm-shim --tail 50`(请脱敏)"
+      render: shell

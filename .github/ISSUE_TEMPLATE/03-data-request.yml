@@ -1,0 +1,43 @@
+name: 📊 数据源 / 字段需求 / Data request
+description: 想接入新的数据源,或现有数据缺字段、不准 · Request a new data source or report missing / wrong fields
+title: "[数据] "
+labels: ["type: data-source"]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: 数据源或字段 / Data source or field
+      placeholder: 例如:可转债每日溢价率
+    validations:
+      required: true
+  - type: dropdown
+    id: market
+    attributes:
+      label: 市场 / Market
+      multiple: true
+      options:
+        - A 股 / A-shares
+        - 港股 / Hong Kong
+        - 美股 / US
+        - 期货 / 期权 · Futures / options
+        - 宏观 / Macro
+        - 其他 / Other
+    validations:
+      required: true
+  - type: textarea
+    id: usage
+    attributes:
+      label: 用来做什么 / What for
+      description: 哪个分析场景、哪个 SKILL 会用到
+    validations:
+      required: true
+  - type: input
+    id: frequency
+    attributes:
+      label: 需要的更新频率 / Update frequency
+      placeholder: 实时 / 每日收盘后 / 每周
+  - type: textarea
+    id: api
+    attributes:
+      label: 是否有公开接口 / Public API?
+      description: 已知的开源库、公开 API 或 MCP 地址,以及许可或授权情况。**我们只接入有明确授权的数据源。**

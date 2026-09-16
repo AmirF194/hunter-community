@@ -1,0 +1,31 @@
+name: 💡 功能建议 / Feature request
+description: 新功能或改进 · A new feature or an improvement
+title: "[建议] "
+labels: ["type: feature"]
+body:
+  - type: markdown
+    attributes:
+      value: 还在想法阶段、想先听听大家意见?可以先发到 [讨论区想法分区](https://github.com/agentpit-io/hunter-community/discussions/categories/ideas)。
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景 / Scenario
+      description: 你想完成什么事,遇到了什么不方便
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 现在怎么绕过 / Current workaround
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的效果 / What you'd like
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: 参与 / Contribution
+      options:
+        - label: 我愿意自己提 PR 实现 / I'd like to submit a PR

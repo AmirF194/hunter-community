@@ -1,0 +1,49 @@
+name: 🧩 SKILL 效果不对 / SKILL issue
+description: SKILL 没被调用、调错工具、输出不合理 · A SKILL isn't triggered, calls the wrong tool, or gives poor output
+title: "[SKILL] "
+labels: ["type: skill", "area: skills"]
+body:
+  - type: input
+    id: skill
+    attributes:
+      label: SKILL 名称 / SKILL name
+      placeholder: deep_analysis
+    validations:
+      required: true
+  - type: dropdown
+    id: origin
+    attributes:
+      label: 来源 / Source
+      options:
+        - 内置(skills/)/ built-in
+        - 从 GitHub 安装 / installed from GitHub
+        - 自己写的(user-skills/)/ my own
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: 大模型 / LLM
+      placeholder: deepseek-v4-pro
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: 输入 / What you asked
+      description: 你的原话,包括股票代码
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望输出 / Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际输出 / Actual
+      description: 可以贴截图;如果对话里显示了工具调用卡片,请一并截图
+    validations:
+      required: true

@@ -1,6 +1,6 @@
 # Provider layer
 
-Hunter Community abstracts three integration points behind small
+HunterCode (Community Edition) abstracts three integration points behind small
 interfaces (`apps/api/app/providers/`):
 
 - **Data source** · quote · kline · news

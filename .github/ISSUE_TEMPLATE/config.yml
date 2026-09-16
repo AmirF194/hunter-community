@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 使用问题 / Questions
+    url: https://github.com/agentpit-io/hunter-community/discussions/categories/q-a
+    about: 怎么用、怎么配、效果怎么样,请到讨论区提问 · Ask usage questions in Discussions
+  - name: 🔒 安全漏洞 / Security vulnerability
+    url: https://github.com/agentpit-io/hunter-community/security/advisories/new
+    about: 请勿公开 issue,使用私密报告 · Please report privately, not in a public issue
+  - name: 📖 入门文档 / Getting started
+    url: https://github.com/agentpit-io/hunter-community/blob/main/docs/01-getting-started.md
+    about: 安装、配置与常见报错速查 · Install, configure and common errors

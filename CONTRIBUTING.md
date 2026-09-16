@@ -1,43 +1,217 @@
-# Contributing to Hunter Community Edition
+# 参与贡献 · Contributing to HunterCode
 
-> Preview stage · Sprint 06 in progress · full contribution guide lands with v0.1.0.
+[中文](#中文) · [English](#english)
 
-## Current status
+---
 
-Hunter CE is in **P1 skeleton** phase. The bulk of the code has been migrated from
-the SaaS repo `hangeaiagent/hunter` but:
+## 中文
 
-- SaaS-specific routers (WeChat / Lark / booth) are still present and will be stripped in P2.
-- Auth still expects the private `agentpit` user DB; local auth ships in P3.
-- The pluggable provider layer (data source · LLM · forecast) ships in P4.
+感谢你愿意为 HunterCode · Community Edition 出力。**最简单的贡献是一个 SKILL** —— 懂一种分析方法、会写 Markdown 就够了,不需要读懂代码。
 
-If you want to contribute right now, please open a discussion first — the surface is
-changing fast and PRs against the current skeleton may need rework.
+### 三种贡献方式
 
-## Once we hit v0.1.0
+| 方式 | 需要什么 | 从哪开始 |
+|---|---|---|
+| **① 写 SKILL** | 会写 Markdown,懂一种分析方法 | 带 [`skill-wanted`](https://github.com/agentpit-io/hunter-community/issues?q=is%3Aissue+is%3Aopen+label%3Askill-wanted) 标签的 issue,或你自己的方法论 |
+| **② 文档 / 翻译 / 模板** | 会用 git | 带 [`good first issue`](https://github.com/agentpit-io/hunter-community/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 标签的 issue |
+| **③ 代码** | Python(FastAPI)或 TypeScript(Next.js) | 带 [`help wanted`](https://github.com/agentpit-io/hunter-community/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) 标签的 issue |
 
-- Fork → branch off `main`
-- Write your change · include a test if it touches API or provider layer
-- `docker compose up` should still boot healthy after your change
-- Open PR against `main` · one reviewer approval + green CI required
+想做的事情没有对应 issue?改动较大(新功能、改架构、改数据库)时,请先开 issue 或到 [讨论区](https://github.com/agentpit-io/hunter-community/discussions) 说一下思路,避免做完才发现方向不合适。修错别字、补文档、修明显的 bug 可以直接提 PR。
 
-## Code style
+### 本地开发
 
-- Python: black + ruff (config lands with P5)
-- TypeScript: prettier + eslint (already inherited from Next.js defaults)
-- Commit messages: [Conventional Commits](https://www.conventionalcommits.org/)
+```bash
+git clone https://github.com/<你的账号>/hunter-community
+cd hunter-community
+cp .env.example .env          # 至少填 JWT_SECRET 和大模型三项,见 README「5 分钟跑起来」
+docker compose up -d
+```
 
-## Documentation
+改完后怎么生效:
 
-**README is bilingual** — Chinese (`README.md`, default) and English (`README_EN.md`).
-When editing one, please sync the other in the same PR. Structure and section anchors
-should stay 1:1 aligned. If you only speak one language, note it in the PR so a
-maintainer can handle the translation before merge.
+| 改了什么 | 怎么生效 |
+|---|---|
+| `skills/` 或 `user-skills/` 下的 SKILL | `docker compose restart opencode api`(opencode 只在启动时扫描一次,约 50 秒),再跑 `python scripts/check_skill_sync.py` 确认加载数量一致 |
+| `scripts/opencode-mcp/` 下挂载进容器的 MCP / 插件 | `docker compose restart opencode` |
+| `scripts/llm-shim/shim.py` | `docker compose restart llm-shim` |
+| `.env` | `docker compose up -d`(`restart` 不会重读 `.env`) |
+| `apps/api/` 代码 | `docker compose build api && docker compose up -d api` |
+| `apps/web/` 代码 | `docker compose build web && docker compose up -d web` |
 
-`README_EN.md` 与 `README.md` 需保持 1:1 对齐 · 改一边请同步另一边。
+提 PR 前在本地跑和 CI 相同的检查:
 
-## Reporting issues
+```bash
+# 后端
+cd apps/api && pip install -r requirements.txt
+python -m compileall -q app main.py
+pytest                                                    # apps/api/tests
+cd ../..
+python -m unittest discover -s scripts/llm-shim -p 'test_*.py'
 
-- Bug: open GitHub Issue with reproducer + `docker compose logs` output
-- Security: see [SECURITY.md](./SECURITY.md) — do not open public issues for vulns
-- Feature request: start with a Discussion so we can align before you build
+# 前端
+cd apps/web && npm ci && npm run build
+
+# SKILL
+python scripts/check_skill_tools.py --offline             # SKILL 引用的工具是否真实存在
+```
+
+### SKILL 规范
+
+一个 SKILL 就是一个目录加一个 `SKILL.md`,采用 [Anthropic Agent Skills](https://github.com/anthropics/skills) 标准格式:
+
+```markdown
+---
+name: kline_breakout
+description: 判断个股是否出现有效的 K 线突破。用户问「突破了吗」「能不能追」时使用。
+hunter:
+  display_name: K 线突破判断
+  category: 事件与筛选
+  prompt_tpl: 帮我看看 {股票} 是不是有效突破
+  needs_tools:
+    - watchlist_stock_quickview
+---
+
+# 正文写方法论
+分几步、先看什么后看什么、什么情况下结论不成立。
+```
+
+- **`description` 最重要**:模型靠它决定什么时候调用这个 SKILL。写清「做什么」和「什么时候用」。
+- **`needs_tools`** 只能写真实存在的工具名,提交前跑 `python scripts/check_skill_tools.py --offline`。
+- **严禁编造数据**:方法论里要求模型调用工具取数,取不到就明确说取不到,不要让模型估算、填示例值。
+- **命名**:目录名与 `name` 一致,小写字母加下划线。
+- **放在哪**:提 PR 的 SKILL 放 `skills/<name>/`。`user-skills/` 是每个人本机自用的目录,已被 `.gitignore` 忽略,放进去的内容不会进入 PR。
+- **PR 里附一次真实运行截图**:用一个真实股票代码跑一次,贴对话截图。
+- 引用或改编了别人的方法论,在 frontmatter 写 `author` 与 `license`,并确认许可证允许。
+
+### 其他规范
+
+- **提交信息**:[Conventional Commits](https://www.conventionalcommits.org/),如 `feat(skill): add kline_breakout`、`fix(shim): ...`、`docs: ...`。
+- **中英文 README 同步**:`README.md` 与 `README_EN.md` 保持章节 1:1。只会一种语言也没关系,在 PR 里说明,维护者会补另一份。
+- **用户能看到的文案用中文**;代码注释写清「为什么」。
+- **不要提交任何密钥**:CI 会做密钥扫描;`.env` 已被忽略,示例值写 `sk-xxxxx`。
+- **一个 PR 做一件事**,便于 review 和回滚。
+
+### PR 流程
+
+1. Fork → 从 `main` 切分支 → 提交 → 向 `main` 发 PR,按模板填写
+2. CI 通过(密钥扫描、后端导入与测试、前端构建)
+3. 至少一位维护者 review 通过后合并
+
+### 响应时间
+
+| 类型 | 维护者首次回复 |
+|---|---|
+| 部署失败类 issue | 24 小时内 |
+| 其他 issue | 72 小时内 |
+| PR | 1 周内给出 review 意见 |
+
+超时没人理,可以在 issue / PR 里直接 @ 维护者提醒。
+
+### 署名
+
+合并后,你会出现在:README「贡献者」区、`CHANGELOG.md` 对应版本的「贡献者」小节、该版本的 Release Notes。SKILL 贡献会注明 SKILL 名称。
+
+### 报告问题
+
+- **Bug / 部署失败**:[新建 issue](https://github.com/agentpit-io/hunter-community/issues/new/choose),选对应模板
+- **使用问题**:[讨论区问答](https://github.com/agentpit-io/hunter-community/discussions/categories/q-a)
+- **安全漏洞**:不要公开 issue,见 [SECURITY.md](./SECURITY.md)
+
+---
+
+## English
+
+Thanks for helping out with HunterCode · Community Edition. **The easiest contribution is a SKILL** — if you know an analysis method and can write Markdown, that's enough; no need to understand the code.
+
+### Three ways to contribute
+
+| Path | What you need | Where to start |
+|---|---|---|
+| **① Write a SKILL** | Markdown and an analysis method | Issues labeled [`skill-wanted`](https://github.com/agentpit-io/hunter-community/issues?q=is%3Aissue+is%3Aopen+label%3Askill-wanted), or your own methodology |
+| **② Docs / translation / templates** | git | Issues labeled [`good first issue`](https://github.com/agentpit-io/hunter-community/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) |
+| **③ Code** | Python (FastAPI) or TypeScript (Next.js) | Issues labeled [`help wanted`](https://github.com/agentpit-io/hunter-community/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) |
+
+No issue for what you want to do? For larger changes (new features, architecture, database), open an issue or post in [Discussions](https://github.com/agentpit-io/hunter-community/discussions) first so we can align before you build. Typos, docs and obvious bug fixes can go straight to a PR.
+
+### Local development
+
+```bash
+git clone https://github.com/<you>/hunter-community
+cd hunter-community
+cp .env.example .env          # at least JWT_SECRET and the three LLM settings, see README "Deploy in 5 minutes"
+docker compose up -d
+```
+
+How changes take effect:
+
+| What you changed | How to apply |
+|---|---|
+| SKILLs under `skills/` or `user-skills/` | `docker compose restart opencode api` (opencode scans once at startup, ~50 s), then `python scripts/check_skill_sync.py` to confirm the loaded count matches |
+| MCPs / plugins mounted from `scripts/opencode-mcp/` | `docker compose restart opencode` |
+| `scripts/llm-shim/shim.py` | `docker compose restart llm-shim` |
+| `.env` | `docker compose up -d` (`restart` does not re-read `.env`) |
+| `apps/api/` code | `docker compose build api && docker compose up -d api` |
+| `apps/web/` code | `docker compose build web && docker compose up -d web` |
+
+Run the same checks as CI before opening a PR:
+
+```bash
+# Backend
+cd apps/api && pip install -r requirements.txt
+python -m compileall -q app main.py
+pytest                                                    # apps/api/tests
+cd ../..
+python -m unittest discover -s scripts/llm-shim -p 'test_*.py'
+
+# Frontend
+cd apps/web && npm ci && npm run build
+
+# SKILLs
+python scripts/check_skill_tools.py --offline             # do referenced tools actually exist
+```
+
+### SKILL guidelines
+
+A SKILL is a directory with a `SKILL.md` in the [Anthropic Agent Skills](https://github.com/anthropics/skills) standard format (see the Chinese section above for a full example).
+
+- **`description` matters most**: the model uses it to decide when to call the SKILL. Say what it does and when to use it.
+- **`needs_tools`** must list real tool names; run `python scripts/check_skill_tools.py --offline` before submitting.
+- **Never fabricate data**: the methodology should make the model fetch data via tools and say so plainly when data is unavailable — no estimates or placeholder values.
+- **Naming**: directory name equals `name`, lowercase with underscores.
+- **Where**: SKILLs submitted via PR go in `skills/<name>/`. `user-skills/` is for local personal use and is git-ignored, so anything there won't be part of a PR.
+- **Attach a real run screenshot** to the PR, using a real ticker.
+- If you adapt someone else's methodology, set `author` and `license` in the frontmatter and make sure the license allows it.
+
+### Other conventions
+
+- **Commit messages**: [Conventional Commits](https://www.conventionalcommits.org/), e.g. `feat(skill): add kline_breakout`, `fix(shim): ...`, `docs: ...`.
+- **Keep READMEs in sync**: `README.md` and `README_EN.md` stay section-for-section aligned. If you only write one language, say so in the PR and a maintainer will handle the other.
+- **User-facing text is in Chinese**; code comments should explain why.
+- **Never commit secrets**: CI runs a secret scan; `.env` is git-ignored; use `sk-xxxxx` in examples.
+- **One PR, one change**, so it's easy to review and revert.
+
+### PR process
+
+1. Fork → branch off `main` → commit → open a PR against `main` and fill in the template
+2. CI passes (secret scan, backend import and tests, frontend build)
+3. Merged after approval from at least one maintainer
+
+### Response times
+
+| Type | First maintainer response |
+|---|---|
+| Deployment-failure issues | within 24 hours |
+| Other issues | within 72 hours |
+| PRs | review within 1 week |
+
+If we miss that, feel free to @ a maintainer on the issue or PR.
+
+### Credit
+
+Once merged, you're listed in the README "Contributors" section, the "Contributors" subsection of the matching `CHANGELOG.md` version, and that version's Release Notes. SKILL contributions name the SKILL.
+
+### Reporting
+
+- **Bugs / deployment failures**: [new issue](https://github.com/agentpit-io/hunter-community/issues/new/choose), pick the matching template
+- **Usage questions**: [Discussions Q&A](https://github.com/agentpit-io/hunter-community/discussions/categories/q-a)
+- **Security vulnerabilities**: no public issues — see [SECURITY.md](./SECURITY.md)

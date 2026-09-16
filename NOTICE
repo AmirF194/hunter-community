@@ -1,4 +1,4 @@
-Hunter Community Edition
+HunterCode · Community Edition
 Copyright 2026 AgentPit Contributors
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,12 +12,36 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 ────────────────────────────────────────────────────────────────
+Trademarks · 商标
+────────────────────────────────────────────────────────────────
+
+HunterCode, Hunter, AgentPit and 猎鹿人 are trademarks of the AgentPit team.
+HunterCode、Hunter、AgentPit、猎鹿人 是 AgentPit 团队的商标。
+
+  * Personal forks, internal deployments, learning and modification:
+    no renaming required.
+    自用 fork、内部部署、学习修改:不需要改名。
+
+  * Public redistribution, hosted services, commercial releases:
+    please remove the names and logos above; you may state
+    "based on HunterCode Community Edition".
+    对外分发、提供托管服务、商业发布:请去掉上述名称与 Logo,
+    可注明「based on HunterCode Community Edition」。
+
+The code is licensed under Apache-2.0. These trademark terms do not limit
+any of your rights to the code.
+代码遵循 Apache-2.0,商标条款不影响你对代码的任何权利。
+
+Tencent and WorkBuddy are trademarks of Tencent. HunterCode is not
+affiliated with, partnered with, or endorsed by Tencent.
+
+────────────────────────────────────────────────────────────────
 This product includes software developed by third parties:
 ────────────────────────────────────────────────────────────────
 
   * opencode (Apache 2.0)
       Anomaly Innovations · https://github.com/sst/opencode
-      Consumed as a private fork; see ghcr.io/agentpit-io/hunter-opencode
+      Consumed as a customized fork; see ghcr.io/agentpit-io/hunter-opencode
 
   * Kronos (Apache 2.0)
       Tsinghua NLP Lab · https://github.com/shiyu-coder/Kronos
@@ -28,11 +52,15 @@ This product includes software developed by third parties:
   * UZI-Skill (MIT)
       Wang Bohong · https://github.com/wbh604/UZI-Skill
 
+  * IBD-RS-Rating (MIT)
+      Copyright (c) 2026 성진 · https://github.com/tjdwls101010/IBD-RS-Rating
+      RS rating algorithm ported in apps/api/app/services/quant/screen_rs.py
+
   * akshare (MIT)
       https://github.com/akfamily/akshare
 
   * yfinance (Apache 2.0)
       https://github.com/ranaroussi/yfinance
 
-Full attribution and version details will be maintained in
-docs/attribution.md once Sprint 06 lands.
+Version details for Python and Node dependencies are listed in
+apps/api/requirements.txt and apps/web/package-lock.json.
