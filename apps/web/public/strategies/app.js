@@ -1328,6 +1328,10 @@ function kcRender(code, name, payload, mark) {
   KC.chartCode = code
   KC.chart.setOption(kcOption(rows, mark, zoom))
   kcPlace(el._rect || { right: 0, left: 0, top: 0, height: 0 })
+  // 会话里第一次打开时弹层还没排好版,echarts 在 init 那一刻量到的宽度是 0 ——
+  // 2026-09-16 线上实测:第一只票整张图空白(canvas 宽 0、容器 535),第二只才正常。
+  // 排版之后再量一次,对不上就 resize;比在 init 前猜尺寸可靠。
+  if (KC.chart && box.clientWidth && KC.chart.getWidth() !== box.clientWidth) KC.chart.resize()
 }
 
 async function kcFetch(code) {
