@@ -826,16 +826,11 @@ def _run_series(c: Compiled, md: MarketDef, market_key: str, has_field, limit: i
         hits = has + [r for r in hits if r.get(sort_by) is None]
 
     # ── warnings:怎么算的、数据到哪天、池子是谁、缺什么 ──
-    warnings = [screen_series.describe(plan)]
+    # 「时间序列模式怎么算 / 求值截至哪天」不再放进提示(2026-09-16 用户:不用显示);回溯日被挪动这类要用户知道的照留
+    warnings = []
     pool = ("RS 排名池:交易所上市、不含 OTC、市值 ≥5000 万美元" if md.key == "us"
             else "RS 排名池:市值约 5000 万美元以上")
-    if as_of is None:
-        from app.services.quant import screen_quota as _sq
-        when = (f"今天({as_of_actual})收盘" if as_of_actual == _sq.today_sh()
-                else f"{as_of_actual} 收盘(日线最新一天,**不含今天盘中**;每晚更新)")
-        warnings.append(f"求值截至 {when};股票池是{pool}的 {len(codes)} 只(当天有收盘的)。"
-                        f"快照才有的字段(市值 / PE 等)按今天的值当常量参与计算。")
-    else:
+    if as_of is not None:
         warnings.append(
             f"时间回溯:按 {as_of_actual} 收盘的自家日线逐根求值。股票池是{pool}的 {len(codes)} 只(当天有收盘)。"
             + (f"你选的 {as_of} 不是交易日或还没有日线,取了它之前最近的一天。" if as_of != as_of_actual else ""))
@@ -1074,8 +1069,8 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
                 f"开盘价 2026-09-15 起入库,老行要等每晚整窗重拉之后才有"
                 f"(目前 {avail['last']} 这天 {avail['open_have']}/{avail['n']} 只有开盘价);届时同一份脚本不用改。"
                 f"现在想先跑,可以把 close > open 换成 close > close[1](收阳 → 收涨,口径不同,自己权衡)。")
-        warnings = [screen_series.describe(plan),
-                    f"求值截至 {avail['last']} 收盘(自家日线最新一天,不含今天盘中);股票池是 RS 排名池,不是快照的全部。"]
+        # 「时间序列模式怎么算 / 求值截至哪天」两条说明不再放进提示(2026-09-16 用户:不用显示),只留真正要用户处理的
+        warnings = []
         for n in plan.notes:
             warnings.append(n)
         d["series"] = {"needs": sorted(plan.needs), "depth": plan.depth, "window": plan.window,
