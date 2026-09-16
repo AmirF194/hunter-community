@@ -52,7 +52,7 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 > [!IMPORTANT]
 > **Only two things to understand before you start**
 > 1. **An LLM key (required)**: powers the chat itself. We recommend [DeepSeek](https://platform.deepseek.com/api_keys); any OpenAI-compatible gateway works (Qwen, Claude, GPT, OpenRouter, OneAPI, AIHubMix, ...).
-> 2. **Where data comes from (pick one, can wait)**: ① free open-source sources, work out of the box; ② your own MCP / data sources; ③ the platform data pipeline, [free key](https://hunter.agentpit.io/dev/api-keys). See [Data supply: pick one of three](#-data-supply-pick-one-of-three).
+> 2. **Where data comes from (pick one, can wait)**: ① free open-source sources (A-share quotes need `DATA_SOURCE_PROVIDER=akshare` in `.env`); ② your own MCP / data sources; ③ the platform data pipeline, [free key](https://hunter.agentpit.io/dev/api-keys). See [Data supply: pick one of three](#-data-supply-pick-one-of-three).
 
 **Time**: ~5 minutes with images already pulled; ~10–15 minutes on first pull, depending on your network.
 
@@ -72,6 +72,7 @@ echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
 # LLM_API_KEY=sk-xxxxx
 # LLM_SCHEMA_SANITIZE=1                 # required for DeepSeek
 # HUNTER_API_KEY=hunt_tools_xxxxx       # optional · platform data pipeline
+# DATA_SOURCE_PROVIDER=akshare          # optional · A-share quotes without a key (yfinance covers US / HK)
 
 # 4. Start and open the browser
 docker compose up -d
@@ -93,9 +94,11 @@ Apart from the LLM key, you decide where data comes from — **our platform key 
 
 | Option | Whose key | Data | Good for |
 |---|---|---|---|
-| **① Free open-source** | none | AKShare (A-shares) · yfinance (US / HK) | Trying it out; coverage gaps are clearly flagged |
+| **① Free open-source** | none | AKShare (A-shares) · yfinance (US / HK) | Trying it out; A-share quotes need `DATA_SOURCE_PROVIDER=akshare` in `.env` (see below the table) |
 | **② Your own tools / MCP** | yours | your broker, data vendor, self-built MCP, or any MCP from the Cline / Cursor ecosystem | You already pay for data; add via "Toolbox ＋" in the sidebar |
 | **③ Platform data pipeline** | a `hunt_tools_` key, [free](https://hunter.agentpit.io/dev/api-keys) | Aggregated quotes, financials and news, data for UZI deep analysis, Kronos forecasts | Free sources aren't enough and you want broader data |
+
+**Turning on free sources**: with `DATA_SOURCE_PROVIDER` left empty, the default is `hunter` (the platform pipeline). Without a key, an A-share quote request prompts you to apply for one rather than silently switching to a free source; to get A-share quotes without a key, set `DATA_SOURCE_PROVIDER=akshare` in `.env` and run `docker compose up -d`. HK / US quotes and daily bars already use the built-in free channels (Tencent / Sina) by default, so there is nothing to set for them.
 
 The platform key can go in `.env`, or be pasted under "解锁全部工具" (unlock all tools) at the bottom-left of the UI — it takes effect immediately. The platform only counts requests per key; it cannot see your chats or positions.
 
@@ -303,11 +306,11 @@ Browser  →   │  web (Next.js 15)   │ :3100
 
 | Layer | Env var | Values | When empty |
 |---|---|---|---|
-| Data | `DATA_SOURCE_PROVIDER` | `hunter` · `akshare` · `yfinance` · `saas` | `hunter` if a platform key is set, otherwise `akshare` |
+| Data | `DATA_SOURCE_PROVIDER` | `hunter` · `akshare` · `yfinance` · `saas` | `hunter` (even without a platform key) |
 | LLM | `LLM_PROVIDER` | `openai_compat` · `anthropic` · `saas_gemini` | `openai_compat` |
 | Forecast | `FORECAST_PROVIDER` | `kronos_saas` · `kronos_local` · `noop` | `kronos_saas` |
 
-AKShare can be unreliable from inside containers when reaching mainland data sources. Response shapes and details: [`docs/02-providers.md`](./docs/02-providers.md).
+`DATA_SOURCE_PROVIDER` only decides where live quotes come from when no platform key is configured: A-shares use it directly, while HK / US try the built-in free channel first and fall back to it only if that fails. With a key, it is ignored. AKShare can be unreliable from inside containers when reaching mainland data sources. Response shapes and details: [`docs/02-providers.md`](./docs/02-providers.md).
 </details>
 
 <details>

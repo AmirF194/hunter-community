@@ -52,7 +52,7 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
 > 1. **大模型 key(必需)**:驱动对话本身。推荐 [DeepSeek](https://platform.deepseek.com/api_keys),也支持任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)。
-> 2. **数据从哪来(三选一,可以先不管)**:① 免费开源源,开箱即用;② 接你自己的 MCP / 数据源;③ 平台数据管道,[免费申请 key](https://hunter.agentpit.io/dev/api-keys)。详见 [数据供给三选一](#-数据供给三选一)。
+> 2. **数据从哪来(三选一,可以先不管)**:① 免费开源源(A 股行情要在 `.env` 设 `DATA_SOURCE_PROVIDER=akshare`);② 接你自己的 MCP / 数据源;③ 平台数据管道,[免费申请 key](https://hunter.agentpit.io/dev/api-keys)。详见 [数据供给三选一](#-数据供给三选一)。
 
 **耗时**:镜像已拉取约 5 分钟;首次拉取镜像约 10–15 分钟,取决于网络。
 
@@ -72,6 +72,7 @@ echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
 # LLM_API_KEY=sk-xxxxx
 # LLM_SCHEMA_SANITIZE=1                 # DeepSeek 必开
 # HUNTER_API_KEY=hunt_tools_xxxxx       # 可选 · 平台数据管道
+# DATA_SOURCE_PROVIDER=akshare          # 可选 · 免 key 的 A 股行情(yfinance 对应美股 / 港股)
 
 # 4. 启动,打开浏览器
 docker compose up -d
@@ -93,9 +94,11 @@ open http://localhost:3100
 
 | 方式 | 需要谁的 key | 数据来源 | 适合谁 |
 |---|---|---|---|
-| **① 免费开源源** | 不需要 | AKShare(A 股)· yfinance(美股 / 港股) | 先跑通看效果;覆盖不全时会明确提示降级 |
+| **① 免费开源源** | 不需要 | AKShare(A 股)· yfinance(美股 / 港股) | 先跑通看效果;A 股行情要在 `.env` 设 `DATA_SOURCE_PROVIDER=akshare`,见表下说明 |
 | **② 自接工具 / MCP** | 你自己的 | 你的券商、数据商、自建 MCP,或 Cline / Cursor 生态里任意 MCP | 已有数据订阅,想接进来用;侧栏「工具箱 ＋」添加 |
 | **③ 平台数据管道** | `hunt_tools_` 开头的 key,[免费申请](https://hunter.agentpit.io/dev/api-keys) | 平台汇总的行情、财报、新闻数据,UZI 深度分析所需数据,Kronos 走势预测 | 免费源不够用,想要更全的数据 |
+
+**免费源怎么开**:`DATA_SOURCE_PROVIDER` 留空时默认是 `hunter`(平台数据管道),没 key 时 A 股行情会提示去申请 key,不会自动换成免费源;想免 key 看 A 股行情,在 `.env` 设 `DATA_SOURCE_PROVIDER=akshare`,再 `docker compose up -d`。港股 / 美股的行情和日线默认就走内置免费通道(腾讯 / 新浪),不用设。
 
 平台 key 可以写进 `.env`,也可以在界面左下角「解锁全部工具」里粘贴,立即生效。平台只按 key 记录请求次数,看不到你的对话和持仓。
 
@@ -302,11 +305,11 @@ SKILL 是一段讲清「这类问题该怎么分析」的 Markdown,采用 **Anth
 
 | 层 | 环境变量 | 可选值 | 留空时 |
 |---|---|---|---|
-| 数据源 | `DATA_SOURCE_PROVIDER` | `hunter` · `akshare` · `yfinance` · `saas` | 配了平台 key 走 `hunter`,否则 `akshare` |
+| 数据源 | `DATA_SOURCE_PROVIDER` | `hunter` · `akshare` · `yfinance` · `saas` | `hunter`(没配平台 key 也是它) |
 | 大模型 | `LLM_PROVIDER` | `openai_compat` · `anthropic` · `saas_gemini` | `openai_compat` |
 | 预测 | `FORECAST_PROVIDER` | `kronos_saas` · `kronos_local` · `noop` | `kronos_saas` |
 
-AKShare 在容器里访问境内数据源时可能不稳定。返回结构与细节见 [`docs/02-providers.md`](./docs/02-providers.md)。
+`DATA_SOURCE_PROVIDER` 只在没配平台 key 时决定实时行情从哪取:A 股直接用它,港股 / 美股先走内置免费通道、取不到才用它;配了 key 就不看它。AKShare 在容器里访问境内数据源时可能不稳定。返回结构与细节见 [`docs/02-providers.md`](./docs/02-providers.md)。
 </details>
 
 <details>
