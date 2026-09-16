@@ -111,12 +111,19 @@ jobs:
           curl -fsS $OC --max-time 120 http://127.0.0.1:3921/mcp | tee /tmp/mcp.json; echo
           python3 - <<'PY'
           import json
+          # /mcp 返回的是 {"watchlist": {"status": "connected"}, ...} —— 值是**对象**不是字符串。
+          # 别写成 `v != "connected"`:那样每个 MCP 都会被判成未连接,而打印出来的
+          # 明细里又全是 connected,自相矛盾得让人以为是服务的问题。
           mcp = json.load(open('/tmp/mcp.json'))
-          bad = {k: v for k, v in mcp.items() if v != 'connected'}
-          print('MCP:', mcp)
+          print('MCP:', json.dumps(mcp, ensure_ascii=False))
+          bad = {k: v for k, v in mcp.items() if (v or {}).get('status') != 'connected'}
           if bad:
               raise SystemExit(f'❌ 未连接的 MCP: {bad}')
-          print('✅ 全部 MCP connected')
+          expected = {'watchlist', 'portfolio', 'uzi', 'hunter_user', 'hunter_cap', 'screener'}
+          missing = expected - set(mcp)
+          if missing:
+              raise SystemExit(f'❌ 少了这些 MCP: {sorted(missing)}')
+          print(f'✅ {len(mcp)} 个 MCP 全部 connected')
           PY
 
       - name: 对话冒烟(需要仓库密钥 SMOKE_LLM_API_KEY)
