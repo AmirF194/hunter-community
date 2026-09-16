@@ -1329,7 +1329,7 @@ function vHistory(d) {
     }
     const kattr = r.symbol
       ? ' data-kchart="' + esc(r.symbol) + '" data-kname="' + esc(r.name || '') + '"' +
-        ' data-kmark="' + esc(JSON.stringify(mark)) + '" title="悬停看近一年日K(含候选池 / 形态就绪 / 买入条件全满足 / 买卖标记)"'
+        ' data-kmark="' + esc(JSON.stringify(mark)) + '" title="悬停看三年日K(默认对准这笔交易,滚轮缩小看全程;含候选池 / 形态就绪 / 买入条件全满足 / 买卖标记)"'
       : ''
     return legs.map(function (g, i) {
       const isIn = g.kind === 'entry'
@@ -1388,7 +1388,7 @@ function vHistory(d) {
     (h.scope_note ? '<br><b>注意口径:</b>' + esc(h.scope_note) +
       ' —— 引擎是按收盘价、不扣现金跑出来的,要让净值曲线也扣费得改引擎重跑全部历史' +
       '(现金变少会买不起同样股数,仓位变了整条曲线和每一笔成交都会变)。' : '') +
-    '<br><b>把鼠标放到代号上</b>看这只票近一年的日K:' +
+    '<br><b>把鼠标放到代号上</b>看这只票三年的日K(默认对准这笔交易,滚轮缩小看全程):' +
     '<span style="color:#2E86DE">淡蓝</span>是进了这条线候选池的日子(池子只做粗筛,天数多是正常的,不代表满足了买入条件)' +
     (layers.setup ? ',<b style="color:#2E86DE">中蓝</b>是' + esc(layers.setup) +
       (layers.setup_note ? '(' + esc(layers.setup_note) + ')' : '') + '的日子' : '') +
@@ -1705,6 +1705,8 @@ async function agCall(url, btn, what) {
 // boot(branch):branch 是方向 key(字符串)。刷新 / 重试按钮把它当 click 回调用,
 // 传进来的是 Event —— 非字符串一律按 hash 恢复,所以跑完一次 / 暂停后重拉也停在当前方向。
 async function boot(branch) {
+  // 悬停日K 给三年(2026-09-16 用户要求:看得到前两年的买入点)。筛选器仍是一年,原因见 app.js 的 KC_LIMIT_3Y
+  KC.limit = KC_LIMIT_3Y
   // 显式给了方向 key → 运行看板;传空串 / Event(刷新按钮)→ 按 hash 决定视图
   if (!(typeof branch === 'string' && branch) && hashView() === 'research') return bootResearch()
   if (typeof branch !== 'string' || !branch) branch = hashBranch()

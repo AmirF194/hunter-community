@@ -890,7 +890,7 @@ function shareCurrentUrl() {
 // 搬进 app.js 而不是新建文件 —— render_check 只跑内联 script 和 app.js,
 // 新文件它不加载,里面的语法错就永远抓不到。
 //
-// 数据走现成的 GET /api/kline/{code}?period=daily&limit=250。
+// 数据走现成的 GET /api/kline/{code}?period=daily&limit=<根数>(KC.limit,默认一年)。
 // 那个端点内部按代码形态分派(A 股走 finance-data,港美股走免费通道)。
 //
 // 四个体验点,少一个都不像样:
@@ -914,8 +914,14 @@ const KC = { el: null, chart: null, cache: new Map(),
              touch: false,         // 这个弹层是手指点开的(手机 / 平板):不靠「移开」收起,靠 ✕ / 点空白处
              lastTouch: 0,         // 最近一次触摸的时刻 —— 触摸之后浏览器会补发假的 mouseover / mouseout,要认出来忽略
              asOf: null,           // asOf: 回溯时只画到这天(screener 用)
+             limit: null,          // 日线根数:看板设 KC_LIMIT_3Y(三年),不设就是 KC_LIMIT(一年)
              markOf: null }        // 页面可选:async (code, td) → 标记 | null(screener 用来标历史命中日)
 const KC_LIMIT = 250          // 一年大约 250 个交易日
+// 三年(2026-09-16 用户:「既然已经有 3 年数据了,K 线图上也支持 3 年,不然看不到前两年的买入点」)。
+// 小鹿看板设成它;筛选器照旧一年 —— 那边的蓝线是「这次运行的脚本」回算 250 个交易日(screen_hits.DAYS),
+// 图上给三年、蓝线只有最后一年,反而像「前两年从没命中」。两边要一起改的话先改 DAYS。
+const KC_LIMIT_3Y = 750
+function kcLimit() { return KC.limit || KC_LIMIT }
 // 中式红涨绿跌,与站内其它页面一致(标的可能是美股,但全站配色统一)
 const KC_UP = '#a4332b', KC_DN = '#3f6b40'
 // 买卖标记反过来用国际习惯的绿买红卖 —— 它标的是「我的动作」不是「涨跌」,
@@ -1245,6 +1251,36 @@ function kcZoomOf(chart) {
   return null
 }
 
+// 三年日线默认对准这笔交易:买卖标记前后各留一段。750 根挤进约 470px 的画图区,一根不到 0.6px,
+// 全段铺开根本看不出买在什么位置;用户仍可滚轮缩小看全程(区间只是初始值,拖动 / 缩放照旧沿用)。
+// 一年以内的数据(筛选器)返回 null —— 那边照旧全段显示,render_check 有断言盯着。
+function kcFocus(rows, mark) {
+  if (!rows || rows.length <= KC_LIMIT || rows.length < 2) return null
+  const idx = {}
+  for (let i = 0; i < rows.length; i++) idx[String(rows[i].ts || rows[i].date || '').slice(0, 10)] = i
+  const hit = []
+  const keys = ['buy', 'sell', 'entry']
+  for (let k = 0; k < keys.length; k++) {
+    const ds = (mark && mark[keys[k]]) || []
+    for (let j = 0; j < ds.length; j++) {
+      const i = idx[String(ds[j]).slice(0, 10)]
+      if (Number.isFinite(i)) hit.push(i)
+    }
+  }
+  const n = rows.length
+  let lo, hi
+  if (hit.length) {
+    lo = Math.max(0, Math.min.apply(null, hit) - 45)
+    hi = Math.min(n - 1, Math.max.apply(null, hit) + 35)
+    if (hi - lo < 120) hi = Math.min(n - 1, lo + 120)      // 太窄看不出形态
+    if (hi - lo < 120) lo = Math.max(0, hi - 120)
+  } else {
+    lo = Math.max(0, n - KC_LIMIT)                          // 没有标记(比如观察列表)→ 最近一年
+    hi = n - 1
+  }
+  return { start: lo / (n - 1) * 100, end: hi / (n - 1) * 100 }
+}
+
 function kcRender(code, name, payload, mark) {
   const el = kcEl()
   const sy = document.getElementById('kc-sy')
@@ -1284,7 +1320,7 @@ function kcRender(code, name, payload, mark) {
   if (!box) return
   // 同一只票重画(命中日标记后到)时沿用用户已经拖动 / 缩放到的区间 ——
   // 否则刚把那段拖到中间放大,标记一到图就弹回全年视图
-  const zoom = (KC.chart && KC.chartCode === code) ? kcZoomOf(KC.chart) : null
+  const zoom = (KC.chart && KC.chartCode === code) ? kcZoomOf(KC.chart) : kcFocus(rows, mark)
   kcDropChart()            // 顺序不能反,原因见 kcDropChart 的注释
   box.innerHTML = ''
   if (!window.echarts) { kcMsg('图表库没加载出来'); return }
@@ -1295,11 +1331,12 @@ function kcRender(code, name, payload, mark) {
 }
 
 async function kcFetch(code) {
-  if (KC.cache.has(code)) return KC.cache.get(code)
+  const key = code + '@' + kcLimit()     // 根数不同就是两份数据(看板三年 / 筛选器一年),缓存别串
+  if (KC.cache.has(key)) return KC.cache.get(key)
   let out
   try {
     const r = await fetch('/api/kline/' + encodeURIComponent(code) +
-                          '?period=daily&limit=' + KC_LIMIT,
+                          '?period=daily&limit=' + kcLimit(),
                           { headers: apiHeaders(), cache: 'no-store' })
     const j = await r.json()
     out = Array.isArray(j)
@@ -1310,7 +1347,7 @@ async function kcFetch(code) {
   }
   // 失败也缓存 —— 否则鼠标每划过一次就重打一次必然失败的请求。
   // 代价是这次会话里不会自动重试,用户刷新页面即可。
-  KC.cache.set(code, out)
+  KC.cache.set(key, out)
   return out
 }
 

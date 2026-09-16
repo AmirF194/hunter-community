@@ -1508,7 +1508,7 @@ try {
     ['拖动中划过别的代码不换票', /if \(td && !KC\.dragging\) kcShow\(td\)/.test(appJs)],
     ['松手结束拖动', /document\.addEventListener\('mouseup', endDrag, true\)/.test(appJs)],
     ['窗口失焦也结束拖动', /window\.addEventListener\('blur', endDrag\)/.test(appJs)],
-    ['同一只票重画先取拖动 / 缩放区间,再丢旧图', /KC\.chartCode === code\) \? kcZoomOf\(KC\.chart\) : null\s*kcDropChart\(\)/.test(appJs)],
+    ['同一只票重画先取拖动 / 缩放区间,再丢旧图(2026-09-16:首次视图改由 kcFocus 给,顺序不变)', appJs.includes('kcZoomOf(KC.chart) : kcFocus(rows, mark)') && appJs.indexOf('kcZoomOf(KC.chart) : kcFocus') < appJs.indexOf('kcDropChart()            // 顺序不能反')],
     ['新图记下是哪只票并带上区间', /KC\.chartCode = code\s*KC\.chart\.setOption\(kcOption\(rows, mark, zoom\)\)/.test(appJs)],
     ['图例提示写着左键拖动', ctx.KC_HINT === undefined ? /const KC_HINT = '左键拖动平移/.test(appJs) : /左键拖动/.test(ctx.KC_HINT)],
     ['光标:划过十字、拖动抓手', /\.kc-box \*\{cursor:crosshair!important\}/.test(css) && /\.kc-pop\.drag \.kc-box \*\{cursor:grabbing!important\}/.test(css)],
@@ -1520,6 +1520,49 @@ try {
 } catch (e) {
   failed++
   console.log('FAIL 日K拖动断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
+// ─── 悬停日K:三年日线 + 默认对准这笔交易(2026-09-16 用户要求)──────────────
+// 用户:「既然已经有 3 年数据了,K 线图上也支持 3 年,不然看不到前两年的买入点」。
+// 三件事钉住:① 根数可配、看板设三年;② 缓存按根数分开(否则看板和筛选器串成一份);
+// ③ 750 根不能全段铺开(一根不到 0.6px),默认对准买卖标记,筛选器(一年)照旧全段。
+try {
+  const ctx = vm.createContext(makeContext('agent.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  vm.runInContext(
+    "function KFROWS(n) { var a = []; for (var i = 0; i < n; i++) a.push({ ts: 'D' + String(i).padStart(9, '0'), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 }); return a; }" +
+    "var KF_R3 = KFROWS(700), KF_R1 = KFROWS(250);" +
+    "var KF_MARK = kcFocus(KF_R3, { buy: [KF_R3[100].ts], sell: [KF_R3[140].ts] });" +
+    "var KF_ONE = kcFocus(KF_R1, { buy: [KF_R1[10].ts] });" +
+    "var KF_NONE = kcFocus(KF_R3, null);" +
+    "var KF_NEAR = kcFocus(KF_R3, { buy: [KF_R3[698].ts] });" +
+    "var KF_LIM0 = kcLimit(); KC.limit = KC_LIMIT_3Y; var KF_LIM3 = kcLimit(); KC.limit = null;",
+    ctx, { filename: 'assert-kc-3y' })
+  const ag = fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8')
+  const scr = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  const m = ctx.KF_MARK, none = ctx.KF_NONE, near = ctx.KF_NEAR
+  const kf = [
+    ['三年常量是 750 根', appJs.includes('const KC_LIMIT_3Y = 750')],
+    ['根数可配:请求用 kcLimit()', appJs.includes("'?period=daily&limit=' + kcLimit()")],
+    ['默认一年、看板设三年', ctx.KF_LIM0 === 250 && ctx.KF_LIM3 === 750],
+    ['缓存按 代码@根数 分开', appJs.includes("const key = code + '@' + kcLimit()") && appJs.includes('KC.cache.set(key, out)')],
+    ['重画沿用区间,首次用 kcFocus', appJs.includes('kcZoomOf(KC.chart) : kcFocus(rows, mark)')],
+    ['一年以内不改默认视图(筛选器照旧全段)', ctx.KF_ONE === null],
+    ['三年 + 有买卖标记 → 只显示标记附近', !!m && m.start > 6 && m.start < 10 && m.end > 23 && m.end < 27],
+    ['窗口至少 120 根(太窄看不出形态)', !!near && (near.end - near.start) * 699 / 100 >= 119],
+    ['标记贴最后一根时窗口不越界', !!near && near.end <= 100 && near.start >= 0],
+    ['三年 + 没有标记 → 退回最近一年', !!none && none.start > 63 && none.start < 66 && none.end === 100],
+    ['看板 boot 里设了三年', ag.includes('KC.limit = KC_LIMIT_3Y')],
+    ['看板文案改成三年并说明默认对准这笔交易', ag.includes('三年的日K') && ag.includes('滚轮缩小看全程')],
+    ['筛选器不设 KC.limit(蓝线只回算 250 天,给三年会像前两年没命中)', !scr.includes('KC.limit')],
+  ]
+  for (const [name, ok] of kf) {
+    if (ok) console.log('PASS 三年日K ·', name)
+    else { failed++; console.log('FAIL 三年日K ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 三年日K断言 ·', e && e.stack ? e.stack.split(String.fromCharCode(10)).slice(0, 3).join(' | ') : e)
 }
 
 // ─── 悬停日K:小鹿看板三层蓝线(2026-09-15)──────────────────────────────
