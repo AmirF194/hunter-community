@@ -72,7 +72,7 @@ echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
 # LLM_API_KEY=sk-xxxxx
 # LLM_SCHEMA_SANITIZE=1                 # required for DeepSeek
 # HUNTER_API_KEY=hunt_tools_xxxxx       # optional · platform data pipeline
-# DATA_SOURCE_PROVIDER=akshare          # optional · A-share quotes without a key (yfinance covers US / HK)
+# DATA_SOURCE_PROVIDER=akshare          # optional · A-share quotes via AKShare when no platform key is set (HK / US already use free channels)
 
 # 4. Start and open the browser
 docker compose up -d

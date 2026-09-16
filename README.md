@@ -72,7 +72,7 @@ echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
 # LLM_API_KEY=sk-xxxxx
 # LLM_SCHEMA_SANITIZE=1                 # DeepSeek 必开
 # HUNTER_API_KEY=hunt_tools_xxxxx       # 可选 · 平台数据管道
-# DATA_SOURCE_PROVIDER=akshare          # 可选 · 免 key 的 A 股行情(yfinance 对应美股 / 港股)
+# DATA_SOURCE_PROVIDER=akshare          # 可选 · 没配平台 key 时 A 股行情走 AKShare(港美股默认已走免费通道)
 
 # 4. 启动,打开浏览器
 docker compose up -d
