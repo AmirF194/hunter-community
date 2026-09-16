@@ -7,8 +7,11 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.1] - 2026-09-17
 
-对话引擎镜像从 **7.56 GB 瘦到 618 MB**(压缩后 1.70 GB → 153 MB),部署门槛从「20 GB 磁盘 + 十几分钟首拉」降到「10 GB + 一两分钟」。
-The chat-engine image went from **7.56 GB to 618 MB** (1.70 GB → 153 MB compressed).
+对话引擎镜像从 **7.56 GB 瘦到 618 MB**,首次要下载的量从 1.70 GB 降到 153 MB
+(实测冷拉:美国节点 123 秒 → 6 秒,新加坡节点 9 秒;国内没有测试机,未测)。
+磁盘要求从 20 GB 降到 10 GB。首次启动的耗时大头也随之从「下镜像」变成了「本地构建 api 与 web」。
+The chat-engine image went from **7.56 GB to 618 MB** — a 1.70 GB download became 153 MB
+(cold pull measured at 123 s → 6 s from US-Central, 9 s from Singapore; mainland China not measured).
 
 ### ✨ 新增 · Added
 - **对话引擎镜像改为单文件二进制**。旧镜像是「整个 opencode monorepo `bun install` 之后原样拷进运行层,再 `bun run` 源码」,
