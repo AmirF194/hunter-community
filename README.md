@@ -400,11 +400,16 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
 
 ### 🙏 贡献者
 
-<table>
-<tr>
-<td align="center" width="140"><a href="https://github.com/forever-ivy"><img src="https://github.com/forever-ivy.png?size=100" width="72" height="72" alt="forever-ivy" /><br /><b>forever-ivy</b></a><br /><sub>流式回复首帧修复<br />(<a href="https://github.com/agentpit-io/hunter-community/pull/1">#1</a>)</sub></td>
-</tr>
-</table>
+贡献者名单由 [All Contributors](https://allcontributors.org) 机器人维护。维护者在 issue 或 PR 下评论 `@all-contributors please add @用户名 for code` 即可添加,贡献类型见 [类型说明](https://allcontributors.org/docs/en/emoji-key)(代码、文档、SKILL 内容、翻译、报 bug、出点子等都算)。
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
 
 ### 🧩 基于 HunterCode 的项目
 

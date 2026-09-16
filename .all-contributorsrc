@@ -1,0 +1,16 @@
+{
+  "projectName": "hunter-community",
+  "projectOwner": "agentpit-io",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md",
+    "README_EN.md"
+  ],
+  "imageSize": 72,
+  "commit": false,
+  "commitConvention": "angular",
+  "contributorsPerLine": 7,
+  "linkToUsage": false,
+  "contributors": []
+}

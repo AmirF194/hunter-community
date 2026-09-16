@@ -401,11 +401,16 @@ See common errors in [`docs/01-getting-started.md`](./docs/01-getting-started.md
 
 ### 🙏 Contributors
 
-<table>
-<tr>
-<td align="center" width="140"><a href="https://github.com/forever-ivy"><img src="https://github.com/forever-ivy.png?size=100" width="72" height="72" alt="forever-ivy" /><br /><b>forever-ivy</b></a><br /><sub>Streaming first-frame fix<br />(<a href="https://github.com/agentpit-io/hunter-community/pull/1">#1</a>)</sub></td>
-</tr>
-</table>
+The list is maintained by the [All Contributors](https://allcontributors.org) bot. Maintainers comment `@all-contributors please add @username for code` on any issue or PR; see the [contribution types](https://allcontributors.org/docs/en/emoji-key) (code, docs, content, translation, bug reports, ideas and more).
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
 
 ### 🧩 Built with HunterCode
 
