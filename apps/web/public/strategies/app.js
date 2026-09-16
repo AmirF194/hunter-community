@@ -915,6 +915,7 @@ const KC = { el: null, chart: null, cache: new Map(),
              lastTouch: 0,         // 最近一次触摸的时刻 —— 触摸之后浏览器会补发假的 mouseover / mouseout,要认出来忽略
              asOf: null,           // asOf: 回溯日(screener 用);图照样画到最新收盘,只在那天画一条竖线
              limit: null,          // 日线根数:看板设 KC_LIMIT_3Y(三年),不设就是 KC_LIMIT(一年)
+             ro: null,             // ResizeObserver:弹层排好版 / 窗口变化时把图重量一次(见 kcFit)
              markOf: null }        // 页面可选:async (code, td) → 标记 | null(screener 用来标历史命中日)
 const KC_LIMIT = 250          // 一年大约 250 个交易日
 // 三年(2026-09-16 用户:「既然已经有 3 年数据了,K 线图上也支持 3 年,不然看不到前两年的买入点」)。
@@ -1347,13 +1348,28 @@ function kcRender(code, name, payload, mark) {
   box.innerHTML = ''
   if (!window.echarts) { kcMsg('图表库没加载出来'); return }
   KC.chart = window.echarts.init(box)
+  kcWatchSize(box)
   KC.chartCode = code
   KC.chart.setOption(kcOption(rows, mark, zoom))
   kcPlace(el._rect || { right: 0, left: 0, top: 0, height: 0 })
-  // 会话里第一次打开时弹层还没排好版,echarts 在 init 那一刻量到的宽度是 0 ——
-  // 2026-09-16 线上实测:第一只票整张图空白(canvas 宽 0、容器 535),第二只才正常。
-  // 排版之后再量一次,对不上就 resize;比在 init 前猜尺寸可靠。
-  if (KC.chart && box.clientWidth && KC.chart.getWidth() !== box.clientWidth) KC.chart.resize()
+  kcFit(box)
+}
+
+// 会话里第一次打开时弹层还没排好版,echarts 在 init 那一刻量到的宽度是 0 —— 线上实测第一只票整张图空白
+// (canvas 宽 0、容器 535),第二只才正常。**同步补量不够**(2026-09-16 第二次实测):kcPlace 之后那一刻
+// 容器仍是 0,条件被短路跳过,等浏览器排好版已经没人再量。挂 ResizeObserver:尺寸一变就重量,竞态没了。
+function kcFit(box) {
+  box = box || document.getElementById('kc-box')
+  if (!KC.chart || !box) return
+  const w = box.clientWidth
+  if (w && KC.chart.getWidth() !== w) KC.chart.resize()
+}
+
+function kcWatchSize(box) {
+  if (!box || typeof ResizeObserver === 'undefined') return
+  if (!KC.ro) KC.ro = new ResizeObserver(function () { kcFit() })
+  KC.ro.disconnect()
+  KC.ro.observe(box)
 }
 
 async function kcFetch(code) {

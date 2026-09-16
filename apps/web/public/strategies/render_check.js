@@ -1543,7 +1543,8 @@ try {
   const m = ctx.KF_MARK, none = ctx.KF_NONE, near = ctx.KF_NEAR
   const kf = [
     ['三年常量是 750 根', appJs.includes('const KC_LIMIT_3Y = 750')],
-    ['首次打开排版后补量宽度(第一张图曾经空白)', appJs.includes('KC.chart.getWidth() !== box.clientWidth) KC.chart.resize()')],
+    ['首次打开排版后补量宽度(第一张图曾经空白)', appJs.includes('function kcFit(box)') && appJs.includes('kcFit(box)')],
+    ['补量靠 ResizeObserver,不靠同步那一下(同步时容器还是 0)', appJs.includes('new ResizeObserver(') && appJs.includes('KC.ro.observe(box)')],
     ['根数可配:请求用 kcLimit()', appJs.includes("'?period=daily&limit=' + kcLimit()")],
     ['默认一年、看板设三年', ctx.KF_LIM0 === 250 && ctx.KF_LIM3 === 750],
     ['缓存按 代码@根数 分开', appJs.includes("const key = code + '@' + kcLimit()") && appJs.includes('KC.cache.set(key, out)')],
