@@ -423,6 +423,10 @@ app.include_router(internal_uzi_router.router, prefix="/api")
 from app.routers import internal_skills as internal_skills_router
 app.include_router(internal_skills_router.router, prefix="/api")
 
+# 大模型配置下发给 opencode 容器(M1 · 设计方案 3.3)
+from app.routers import internal_runtime as internal_runtime_router
+app.include_router(internal_runtime_router.router, prefix="/api")
+
 # ── 用户画像与记忆体 + admin 用户洞察后台 ──
 # ── 平台 key 门控 · 开源版解锁全部工具与 SKILL ──
 from app.routers import hunter_unlock as hunter_unlock_router

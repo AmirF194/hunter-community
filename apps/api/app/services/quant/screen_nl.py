@@ -42,10 +42,38 @@ from app.services.quant.screen_dsl import ScreenError
 
 log = logging.getLogger(__name__)
 
-# 模型锁死 gemini-3.5-flash(仓内铁律)。
+# gemini 部署仍然锁死 gemini-3.5-flash(仓内铁律)。
 # 3.6 / 3.8 对恰好 2 条 [system, user] 的短对话返 400,2026-09-04 上线 20+ 处全砸 500。
-# 这里正好就是 2 条消息的短对话,是那个 bug 的高危形态,不要动。
-MODEL = "gemini-3.5-flash"
+# 这里正好就是 2 条消息的短对话,是那个 bug 的高危形态,**不要把这条锁去掉**。
+GEMINI_PIN = "gemini-3.5-flash"
+
+
+def model_name() -> str:
+    """这里该用哪个模型。
+
+    改造前这是个写死的 `MODEL = "gemini-3.5-flash"` 常量。对 gemini 网关它是
+    必要的(见上面那条铁律),但对配了 DeepSeek / OpenAI 的开源用户,它等于把一个
+    这套部署根本没有的模型名发出去 —— 表现是「AI 识别」永远报 404 / UnknownModel。
+
+    所以判据改成**按当前生效的模型是不是 gemini 分流**:
+      · 是 gemini(演示站、内部部署)→ 仍然锁 gemini-3.5-flash,行为与改造前逐位一致
+      · 不是 → 用用户自己配的模型
+      · 一个都没配 → 空串(调用方在 get_client() 那一步就已经挡住了)
+    需要显式指定时设环境变量 `SCREEN_NL_MODEL`。
+    """
+    import os
+
+    forced = (os.getenv("SCREEN_NL_MODEL") or "").strip()
+    if forced:
+        return forced
+    try:
+        from app.services.online_analysis.llm_client import default_model
+        cur = default_model()
+    except Exception:          # noqa: BLE001
+        # 用例里 llm_client 被打成假模块(只有 get_client),拿不到就当没配 ——
+        # **不退回一个猜出来的模型名**。真的没配时调用方在 get_client() 就已被挡住。
+        cur = ""
+    return GEMINI_PIN if "gemini" in cur.lower() else cur
 
 _MAX_INPUT = 500
 
@@ -194,7 +222,7 @@ def translate(text: str, market_label: str, sma: list[int], ema: list[int],
     for attempt in (1, 2):
         try:
             completion = client.chat.completions.create(
-                model=MODEL,
+                model=model_name(),
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
                 max_tokens=1200,
@@ -232,7 +260,7 @@ def translate(text: str, market_label: str, sma: list[int], ema: list[int],
 
         return {
             "script": script,
-            "model": MODEL,
+            "model": model_name(),
             "attempts": attempt,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
@@ -425,7 +453,7 @@ def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: 
         user = f"解析器报错:{cur_err}\n\n脚本:\n{cur}{hint}"
         try:
             completion = client.chat.completions.create(
-                model=MODEL,
+                model=model_name(),
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
                 max_tokens=2000,
@@ -469,7 +497,7 @@ def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: 
 
         return {
             "script": nxt,
-            "model": MODEL,
+            "model": model_name(),
             "attempts": attempt,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,

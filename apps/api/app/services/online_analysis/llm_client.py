@@ -17,22 +17,50 @@ from openai import OpenAI
 from .prompts import parse_llm_json
 
 
-# ONE_API_* 是内部 SaaS 网关的历史命名,开源版用户没有那个网关。
-# 缺 ONE_API_KEY 时自动退回到 .env 里的统一 LLM_* 三件套 —— 这样 chat 走通了
-# 深度分析也就跟着走通,不需要用户再单独维护一套 key。
-_BASE_URL = os.getenv("ONE_API_BASE_URL") or os.getenv("LLM_BASE_URL", "http://104.197.139.51:3000/v1")
-_API_KEY  = os.getenv("ONE_API_KEY")     or os.getenv("LLM_API_KEY", "")
-_MODEL    = os.getenv("ONE_API_MODEL")   or os.getenv("LLM_DEFAULT_MODEL", "gemini-3.5-flash")
 # 30s 对 DeepSeek/Kimi 等推理型模型 + 长上下文经常不够(reasoning tokens 一多就到 40-60s),
 # 抬到 120s 避免 APITimeoutError 把结果吞成 502。上游本身也有超时兜底,不会无限阻塞。
 _TIMEOUT  = 120
 
 
+def _resolve() -> tuple[str, str, str]:
+    """(base_url, api_key, model) · 每次调用现取,**不能缓存成模块级常量**。
+
+    配置现在可以来自数据库(初始化向导写的),而数据库里的值是运行时可变的 ——
+    写成模块级 `os.getenv(...)` 的话,向导保存完 api 进程里还是旧值,要重启容器
+    才生效,而「不用重启」正是向导的卖点。
+
+    ONE_API_* 是内部 SaaS 网关的历史命名,开源版用户没有那个网关,留着是为了不
+    改内部部署的行为;缺它时走 runtime_config(环境变量非空 → 数据库)。
+
+    ⚠️ **不给 base_url / model 任何默认值。** 这里原来的默认地址是我们自己演示站
+    的网关(104.197.139.51:3000)—— 开源用户没填 LLM_BASE_URL 时,他的数据会被
+    发到我们的服务器上。模型名同理:猜一个 gemini-3.5-flash 只会让配了 DeepSeek
+    的用户收到看不懂的 404。没配就是没配。
+    """
+    from app.services.runtime_config import llm as _runtime_llm
+
+    cfg = _runtime_llm()
+    base_url = (os.getenv("ONE_API_BASE_URL") or "").strip() or cfg.base_url
+    api_key = (os.getenv("ONE_API_KEY") or "").strip() or cfg.api_key
+    model = (os.getenv("ONE_API_MODEL") or "").strip() or cfg.model
+    return base_url, api_key, model
+
+
 def get_client() -> OpenAI | None:
-    if not _API_KEY:
-        logger.warning("online_analysis llm: 无可用 key · 请在 .env 里填 LLM_API_KEY(或 ONE_API_KEY)")
+    base_url, api_key, model = _resolve()
+    if not (base_url and api_key and model):
+        logger.warning("online_analysis llm: 大模型尚未配置(base_url {} · key {} · model {})"
+                       " · 请在 .env 里填 LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL,"
+                       "或在首页完成初始化向导",
+                       "有" if base_url else "无", "有" if api_key else "无",
+                       "有" if model else "无")
         return None
-    return OpenAI(api_key=_API_KEY, base_url=_BASE_URL, timeout=_TIMEOUT)
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=_TIMEOUT)
+
+
+def default_model() -> str:
+    """当前生效的模型名。没配返回空串(此时 get_client() 也拿不到 client)。"""
+    return _resolve()[2]
 
 
 def llm_json_call(system: str, user: str, *,
@@ -52,7 +80,7 @@ def llm_json_call(system: str, user: str, *,
     if client is None:
         return None, {"error": "no_api_key", "tokens_in": 0, "tokens_out": 0}
 
-    use_model = model or _MODEL
+    use_model = model or default_model()
     t0 = time.time()
     try:
         completion = client.chat.completions.create(

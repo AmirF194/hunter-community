@@ -28,11 +28,19 @@ if [ ! -w /home/hunter/.local ]; then
     exit 1
 fi
 
+# ── 密钥(设计方案 3.2 · M1 子任务 C)────────────────────────────
+# 必须 `.`(source)进来,不能直接执行 —— 直接执行的话 export 只作用于子进程,
+# opencode 本体拿不到 JWT_SECRET,hunter-auth 插件验不了签,表现是对话莫名 401。
+# 环境变量非空时优先(云平台走模板注入),否则读 hunter_secrets 卷里的 secrets.env
+# (本地 compose 由 api 首启时生成)。读不到只告警不退出。
+. /opt/hunter-boot/load-secrets.sh
+
 python3 /opt/hunter-boot/gen-config.py
 
 # 新镜像(1.18.12-slim.1 起)是单文件二进制,旧镜像只有 bun + 源码。两种都要能起来:
-# 这个脚本是 bind mount 进容器的(compose 里 ./scripts/opencode:/opt/hunter-boot:ro),
-# 「脚本新 + 镜像旧」和「镜像新 + 脚本旧」都是常态。后者由镜像里的 bun 垫片兜住。
+# 本脚本现在是 COPY 进包装镜像的(M1 · 见 deploy/opencode.Dockerfile),但基础镜像的
+# 版本由 OPENCODE_TAG 决定,用户把它钉回旧标签是常态 —— 那时没有 opencode 二进制,
+# 由镜像里的 bun 垫片兜住。(开发时仍可用 docker-compose.dev.yml 把本目录挂回去。)
 if command -v opencode >/dev/null 2>&1; then
     exec opencode serve --hostname 0.0.0.0 --port 3901
 fi
