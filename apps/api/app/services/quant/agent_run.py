@@ -115,7 +115,6 @@ ALTER TABLE agent_trade ADD COLUMN IF NOT EXISTS branch TEXT NOT NULL DEFAULT 'b
 ALTER TABLE agent_trade ADD COLUMN IF NOT EXISTS grade TEXT;
 ALTER TABLE agent_trade ADD COLUMN IF NOT EXISTS grade_detail TEXT;
 CREATE INDEX IF NOT EXISTS agent_trade_date_idx ON agent_trade (branch, trade_date);
-ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS extra TEXT;
 CREATE TABLE IF NOT EXISTS agent_position (
     code         TEXT NOT NULL,
     name         TEXT,
@@ -136,6 +135,9 @@ CREATE TABLE IF NOT EXISTS agent_position (
 ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS branch TEXT NOT NULL DEFAULT 'base';
 ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS stop DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS risk DOUBLE PRECISION NOT NULL DEFAULT 0;
+-- ALTER 必须排在 CREATE 之后:原来 extra 这句在建表前面,线上库表早就有所以不报错,
+-- 全新安装整段 DDL 失败,小鹿智能体所有接口 500(2026-09-17 本地 docker 实测)
+ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS extra TEXT;
 ALTER TABLE agent_position DROP CONSTRAINT IF EXISTS agent_position_pkey;
 CREATE UNIQUE INDEX IF NOT EXISTS agent_position_uq ON agent_position (branch, code);
 """
