@@ -370,7 +370,7 @@
 // 后端还没实现时,页面显示「接口尚未实现」的说明卡,不是白屏、也不是假数据。
 // ═══════════════════════════════════════════════════════════════════
 document.body.innerHTML = renderShell('agent', '策略广场 / 小鹿智能体',
-  '自迭代量化原型 · 每日自跑 · 美股',
+  '自迭代量化原型 · 每日自跑 · 美股 / A股',
   '<button class="btn small" id="ag-reload"><span class="hi hi-refresh"></span> 刷新</button>')
 
 const container = document.getElementById('page-content')
@@ -397,11 +397,15 @@ function pct(v, dg, sign) {
   if (s == null) return NA
   return (sign && v > 0 ? '+' : '') + s + '%'
 }
-function money(v, sign) {
+// 货币符号:看板按后端 d.currency(A 股线是 ¥,2026-09-17),研究台每条线自带 ln.currency。
+// 后端没给(老接口 / fixture)一律按美元 —— 小鹿原来只有美股线
+let CUR = '$'
+function money(v, sign, sym) {
   if (!Number.isFinite(v)) return NA
   const a = Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 0 })
-  return (v < 0 ? '-' : (sign ? '+' : '')) + '$' + a
+  return (v < 0 ? '-' : (sign ? '+' : '')) + (sym == null ? CUR : sym) + a
 }
+function lineSym(ln) { return (ln && ln.currency && ln.currency.symbol) || '$' }
 function int(v) { return Number.isFinite(v) ? String(Math.round(v)) : NA }
 // 中式惯例:红涨绿跌。标的虽是美股,但与策略工作台 / 回测结果保持一致,
 // 换成美式绿涨红跌得整站一起换(style.css 的 --up / --dn)。
@@ -546,7 +550,7 @@ function rsCard(ln) {
     rsKv('最大回撤', pct(m && m.max_dd_pct, 2), m && Number.isFinite(m.max_dd_pct) && m.max_dd_pct < 0 ? 'neg' : '') +
     rsKv('完整交易', m && Number.isFinite(m.cycles) ? int(m.cycles) + ' 笔' : NA, '') +
     rsKv('胜率', pct(m && m.win_rate, 1), '') +
-    rsKv('每笔净损益', m && Number.isFinite(m.expectancy_net) ? money(m.expectancy_net, true) : NA, dir(m && m.expectancy_net)) +
+    rsKv('每笔净损益', m && Number.isFinite(m.expectancy_net) ? money(m.expectancy_net, true, lineSym(ln)) : NA, dir(m && m.expectancy_net)) +
     '</div>' : ''
   const v = ln.verdict
   const vtxt = st === 'archived' ? (ln.archive_reason || '') : (v && v.text) || ''
@@ -588,13 +592,13 @@ function rsTable(r) {
       '<td class="n">' + pct(m.win_rate, 1) + '</td>' +
       '<td class="n">' + num(m.profit_factor, 2) + '</td>' +
       '<td class="n">' + num(m.sharpe, 2) + '</td>' +
-      '<td class="n ' + dir(m.expectancy_net) + '">' + (Number.isFinite(m.expectancy_net) ? money(m.expectancy_net, true) : NA) + '</td></tr>'
+      '<td class="n ' + dir(m.expectancy_net) + '">' + (Number.isFinite(m.expectancy_net) ? money(m.expectancy_net, true, lineSym(ln)) : NA) + '</td></tr>'
   }).join('')
   return '<div class="ag-scroll"><table class="ag-tb rs-tb"><thead><tr><th>研究线</th><th>阶段</th>' +
     '<th style="text-align:right">总收益</th><th style="text-align:right">超额 pt</th><th style="text-align:right">最大回撤</th>' +
     '<th style="text-align:right">完整交易</th><th style="text-align:right">胜率</th><th style="text-align:right">盈亏比</th>' +
     '<th style="text-align:right">夏普</th><th style="text-align:right">每笔净损益</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    '<div class="ag-note" style="margin-top:8px">超额 = 总收益 − 同期标普 500(百分点)。胜率按每次卖出计(和方向卡同口径);' +
+    '<div class="ag-note" style="margin-top:8px">超额 = 总收益 − 同期各自市场的基准(美股线对标普 500、A 股线对沪深 300,百分点)。胜率按每次卖出计(和方向卡同口径);' +
     '完整交易与每笔净损益按持仓周期、<b>已扣手续费</b>。<b>完整交易少于 30 笔的线,这些数只供参考,不当结论。</b></div>'
 }
 
@@ -1340,7 +1344,7 @@ function vHistory(d) {
       // 净损益是**扣完手续费**的;毛利放 hover —— 两个数都要能看到,
       // 否则用户拿它和上面总览(引擎零费用口径)对不上,会以为哪边算错了
       const pnlTip = Number.isFinite(r.pnl_gross) && Number.isFinite(r.fee)
-        ? ' title="扣费前 ' + money(r.pnl_gross, true) + ' · 手续费 ' + fixed(r.fee, 2) + ' USD"'
+        ? ' title="扣费前 ' + money(r.pnl_gross, true) + ' · 手续费 ' + fixed(r.fee, 2) + ' ' + esc(((LAST_D || {}).currency || {}).code || 'USD') + '"'
         : ''
       const tail = i > 0 ? '' :
         '<td class="n sz mid"' + span + '>' + (Number.isFinite(r.shares) ? int(r.shares) + ' 股' : NA) +
@@ -1522,6 +1526,7 @@ function vBanner(n) {
 let LAST_D = null       // 导出 CSV 要用最近一次拿到的整份数据(策略 / 护栏 / 规则手册都在里面)
 function render(d, notice) {
   LAST_D = d || {}
+  CUR = (d && d.currency && d.currency.symbol) || '$'
   if (d && d.branch) { try { localStorage.setItem(RS_LAST_KEY, String(d.branch)) } catch (e) { /* 存不了就算了 */ } }
   // 返回 html 而不只是写进 container:render_check.js 靠这个返回值断言区块顺序
   const html = '<div class="ag-wrap">' + vBanner(notice) + vTopNav('dash') + vLineBanner(d) +
@@ -1531,7 +1536,7 @@ function render(d, notice) {
     vVersions(d) + vLessons(d) +
     '<div class="ag-note" style="text-align:center;padding:6px 0 0">' +
     '涨跌配色沿用站内中式惯例(<span style="color:var(--up);font-weight:650">红涨</span> · ' +
-    '<span style="color:var(--dn);font-weight:650">绿跌</span>),与策略工作台、回测结果一致 —— 虽然标的是美股。' +
+    '<span style="color:var(--dn);font-weight:650">绿跌</span>),与策略工作台、回测结果一致。' +
     '</div></div>'
   container.innerHTML = html
   bindOps()

@@ -78,6 +78,19 @@ LINES: dict = {
         "auto_kill": False,
         "kill_text": "用户研究线:回测关与 30 笔判定照常计算,只作参考结论,不自动淘汰;是否淘汰由用户决定",
     },
+    # 2026-09-17 用户:第一条 A 股研究线。对照组是美股 VCP,市场、货币、基准都不同,
+    # 「回撤不超过对照组 1.5 倍」「同段收益不输对照组」比不出意义 → compare_to = None,只按每笔净损益判
+    "limitup": {
+        "label": "涨停后强势整理", "branches": ["limitup"], "best": "limitup",
+        "status": "backtest", "created_at": "2026-09-17", "market": "a",
+        "hypothesis": "A 股涨停后三天没再涨停、收盘都守在涨停日收盘之上,说明资金没有撤,第四天收盘买入、次日收盘卖出能赚到延续",
+        "rules_draft": ("进:4 个交易日前涨停(主板 10% / 创业板科创板 20%;主板 ST 2025-07-07 前 5%)· 之后三天每天都没涨停 · 三天收盘都高于涨停日收盘"
+                        " → 信号当天收盘买入 1 万元 · 出:次日收盘全部卖出(跌停 / 停牌顺延)· 每个信号独立,不限持仓 · 手续费按 A 股实际扣"),
+        "pool": "涨停后强势整理预筛池(A 股全市场日线时间回溯,板块涨停门槛由引擎按代码判)",
+        "compare_to": None,
+        "auto_kill": False,
+        "kill_text": "用户研究线:回测关与 30 笔判定照常计算,只作参考结论,不自动淘汰;是否淘汰由用户决定",
+    },
 }
 
 
@@ -130,7 +143,7 @@ def branch_metrics(cur, branch: str) -> dict | None:
     days = cur.fetchall()
     if not days:
         return None
-    init = ar.av.GUARDS["initial_capital"]
+    init = ao.initial_capital(branch)
     eq = [r[1] for r in days]
     b0 = next((r[2] for r in days if r[2]), None)
     pnl_pct = (eq[-1] / init - 1) * 100
@@ -143,7 +156,7 @@ def branch_metrics(cur, branch: str) -> dict | None:
     wins = [t for t in sells if t[9] is not None and t[9] > 0]
     gains = sum(t[9] for t in wins)
     losses = -sum(t[9] for t in sells if t[9] is not None and t[9] < 0)
-    rounds = ar._trade_rounds(trades, {})
+    rounds = ar._trade_rounds(trades, {}, market=ao.market_of(branch))
     cycles = len(rounds)
     net = sum(r["pnl_abs"] for r in rounds)
     return {
@@ -159,6 +172,7 @@ def branch_metrics(cur, branch: str) -> dict | None:
         "cycles": cycles,
         "expectancy_net": round(net / cycles, 2) if cycles else None,
         "fee_total": round(sum(r["fee"] for r in rounds), 2),
+        "currency": ao.currency(branch),
     }
 
 
@@ -174,7 +188,7 @@ def window_return(m: dict, start: date, end: date) -> float | None:
 # 判定(纯函数,tests/test_agent_research.py 直接测)
 # ═══════════════════════════════════════════════════════════════
 
-def judge(stage: str, m: dict | None, cmp_: dict | None, caught_up: bool = True) -> dict:
+def judge(stage: str, m: dict | None, cmp_: dict | None, caught_up: bool = True, unit: str = "美元") -> dict:
     """→ {decision: wait | pass | kill, text}。m / cmp_ 是 branch_metrics 的结果。
 
     stage = backtest:追到最新交易日才判(没追完 = wait);期望 ≤ 0 或回撤超过对照组 1.5 倍 → kill;否则 pass(进纸上跑)。
@@ -189,24 +203,24 @@ def judge(stage: str, m: dict | None, cmp_: dict | None, caught_up: bool = True)
         if exp_ is None:
             return {"decision": "kill", "text": "全年回测跑完,一笔完整交易都没有 —— 没法证明假设,淘汰"}
         if exp_ <= 0:
-            return {"decision": "kill", "text": f"全年回测:{m['cycles']} 笔完整交易,每笔平均净损益 {exp_:+,.0f} 美元(已扣费)≤ 0 —— 没过回测关,淘汰"}
+            return {"decision": "kill", "text": f"全年回测:{m['cycles']} 笔完整交易,每笔平均净损益 {exp_:+,.0f} {unit}(已扣费)≤ 0 —— 没过回测关,淘汰"}
         if cmp_ is not None and cmp_.get("max_dd_pct") is not None and m["max_dd_pct"] < cmp_["max_dd_pct"] * GATE_DD_MULT:
             return {"decision": "kill", "text": (f"全年回测:最大回撤 {m['max_dd_pct']:.2f}% 超过对照组 {cmp_['max_dd_pct']:.2f}% 的 "
                                                  f"{GATE_DD_MULT:g} 倍 —— 没过回测关,淘汰")}
-        return {"decision": "pass", "text": (f"全年回测过关:{m['cycles']} 笔完整交易,每笔平均净损益 {exp_:+,.0f} 美元(已扣费),"
+        return {"decision": "pass", "text": (f"全年回测过关:{m['cycles']} 笔完整交易,每笔平均净损益 {exp_:+,.0f} {unit}(已扣费),"
                                              f"最大回撤 {m['max_dd_pct']:.2f}% —— 进入纸上跑,满 {KILL_MIN_CYCLES} 笔再判")}
     if stage == "paper":
         if m["cycles"] < KILL_MIN_CYCLES:
             return {"decision": "wait", "text": f"已走完 {m['cycles']}/{KILL_MIN_CYCLES} 笔完整交易,不满 {KILL_MIN_CYCLES} 笔不下结论"}
         if exp_ is not None and exp_ < 0:
-            return {"decision": "kill", "text": f"满 {m['cycles']} 笔:每笔平均净损益 {exp_:+,.0f} 美元(已扣费)< 0 —— 淘汰"}
+            return {"decision": "kill", "text": f"满 {m['cycles']} 笔:每笔平均净损益 {exp_:+,.0f} {unit}(已扣费)< 0 —— 淘汰"}
         if cmp_ is not None:
             start, end = max(m["first"], cmp_["first"]), min(m["last"], cmp_["last"])
             r1, r2 = window_return(m, start, end), window_return(cmp_, start, end)
             if r1 is not None and r2 is not None and r1 < r2:
                 return {"decision": "kill", "text": (f"满 {m['cycles']} 笔:{start} → {end} 收益 {r1:+.2f}%,"
                                                      f"不如对照组同段 {r2:+.2f}% —— 淘汰")}
-        return {"decision": "pass", "text": f"满 {m['cycles']} 笔判定通过:每笔平均净损益 {exp_:+,.0f} 美元(已扣费),同段收益不输对照组 —— 可以开优化器或晋级主线"}
+        return {"decision": "pass", "text": f"满 {m['cycles']} 笔判定通过:每笔平均净损益 {exp_:+,.0f} {unit}(已扣费),同段收益不输对照组 —— 可以开优化器或晋级主线"}
     return {"decision": "wait", "text": STATUS_TEXT.get(stage, stage)}
 
 
@@ -231,8 +245,13 @@ def _event(ln: dict, text: str) -> list:
 
 def evaluate(cur) -> list[dict]:
     """对 backtest / paper 的线各判一次,状态有变就落库。→ [{key, decision, text}]"""
-    cur.execute("SELECT max(trade_date) FROM agent_day")
-    latest = cur.fetchone()[0]
+    # 「追到最新交易日」按市场分开算:A 股比美股早收盘一天,混在一起取 max 的话美股线永远追不上
+    cur.execute("SELECT branch, max(trade_date) FROM agent_day GROUP BY branch")
+    latest_of: dict = {}
+    for b, d in cur.fetchall():
+        if b in ao.BRANCHES:
+            mk = ao.market_of(b)
+            latest_of[mk] = max(latest_of.get(mk, d), d)
     lines = all_lines(cur)
     by_key = {ln["key"]: ln for ln in lines}
     out = []
@@ -245,7 +264,9 @@ def evaluate(cur) -> list[dict]:
         ct = ln.get("compare_to")
         if ct and ct[0] in by_key:
             cmp_ = branch_metrics(cur, ct[1])
-        v = judge(st, m, cmp_, caught_up=bool(m and latest and m["last"] >= latest))
+        latest = latest_of.get(ao.market_of(ln["best"]))
+        v = judge(st, m, cmp_, caught_up=bool(m and latest and m["last"] >= latest),
+                  unit=ao.currency(ln["best"])["unit"])
         if ln.get("auto_kill") is False:
             # 用户自己的研究对象(2026-09-13 用户:「我还没开始调整参数你就给我淘汰了」)——
             # 回测关照算,只当参考写进 verdict,**状态不动**。淘汰 / 晋级由用户决定
@@ -335,7 +356,6 @@ def board(cur) -> dict:
     cur.execute("SELECT trade_date, bench_close FROM agent_day WHERE branch=%s ORDER BY trade_date", (LINES["vcp"]["best"],))
     bench = {r[0]: r[1] for r in cur.fetchall()}
     b0 = next((bench[d] for d in axis if bench.get(d)), None)
-    init = ar.av.GUARDS["initial_capital"]
     out_lines = []
     for ln in lines:
         brs = []
@@ -360,7 +380,10 @@ def board(cur) -> dict:
             "metrics": ({k: m[k] for k in ("pnl_pct", "benchmark_pct", "excess_pt", "max_dd_pct", "sells", "win_rate",
                                             "profit_factor", "sharpe", "cycles", "expectancy_net", "fee_total", "days")}
                         | {"first": str(m["first"]), "last": str(m["last"])}) if m else None,
-            "nav": ([round((m["equity"][d] / init - 1) * 100, 3) if d in m["equity"] else None for d in axis] if m else None),
+            "nav": ([round((m["equity"][d] / ao.initial_capital(best) - 1) * 100, 3) if d in m["equity"] else None for d in axis]
+                    if m else None),
+            # 每条线自己的市场 / 货币 / 基准(A 股线是人民币 + 沪深300);表格里的金额和「超额」按这个读
+            "currency": ao.currency(best) if best else None,
         })
     return {
         "common": {"start": str(axis[0]) if axis else None, "end": str(axis[-1]) if axis else None, "days": len(axis),

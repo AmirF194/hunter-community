@@ -2218,6 +2218,46 @@ for (const page of ['index.html', 'factors.html', 'workbench.html', 'backtest.ht
   else { failed++; console.log('FAIL 标签页图标 ·', page, '没有声明 /icon.png') }
 }
 
+// ─── 小鹿 · 按线的货币符号(2026-09-17 A 股「涨停后强势整理」线)──────────
+// 看板金额跟 d.currency.symbol 走,研究台每条线跟 ln.currency 走;没给就是美元(老接口 / 美股线)。
+// 前科风险:money() 原来写死 '$',A 股线的 1 万人民币会显示成 $10,000
+try {
+  const ctx = vm.createContext(makeContext('agent.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  inlineScripts(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))
+    .forEach((src, i) => vm.runInContext(src, ctx, { filename: `agent-ccy#${i + 1}` }))
+  vm.runInContext(`
+    var CCY_BASE = { state:'running', paper:true, version:'v1', day_count:2,
+      strategy:{ name:'涨停后强势整理(A 股)', version:'v1', summary:'x', market_label:'A股' },
+      guardrails:{ initial_capital:1000000, long_only:true, triggered_today:false },
+      overview:{ pnl_abs:-12345, pnl_pct:-1.23, equity:987655, cash:900000, benchmark_symbol:'沪深300' },
+      nav:{ points:[], benchmark_symbol:'沪深300' }, rules:[], holdings:{ items:[] }, watchlist:{ items:[] },
+      trades:{ items:[] }, versions:[], lessons:[] }
+    var H_CNY = render(Object.assign({}, CCY_BASE, { currency:{ symbol:'¥', code:'CNY', unit:'元', market:'a' } }))
+    var H_USD = render(CCY_BASE)
+    var H_RS_CCY = rsCard({ key:'limitup', label:'涨停后强势整理', status:'backtest', status_text:'全年回测',
+      branches:[{ key:'limitup', label:'基准' }], best_branch:'limitup', currency:{ symbol:'¥' },
+      metrics:{ pnl_pct:-1, excess_pt:null, max_dd_pct:-2, cycles:30, win_rate:40, expectancy_net:-25 } })
+    var H_RS_USD = rsCard({ key:'donchian', label:'唐奇安', status:'backtest', status_text:'全年回测',
+      branches:[{ key:'donchian', label:'基准' }], best_branch:'donchian',
+      metrics:{ pnl_pct:-1, excess_pt:null, max_dd_pct:-2, cycles:30, win_rate:40, expectancy_net:-437 } })
+  `, ctx, { filename: 'assert-currency' })
+  const checks = [
+    ['A 股线看板金额用 ¥', /-¥12,345/.test(ctx.H_CNY) && /¥1,000,000/.test(ctx.H_CNY)],
+    ['A 股线看板不出现 $', !/\$\d/.test(ctx.H_CNY)],
+    ['没给 currency 仍是 $(美股线不变)', /-\$12,345/.test(ctx.H_USD) && !/¥/.test(ctx.H_USD)],
+    ['渲染过 A 股线后再渲染美股线,符号换回 $', /\$1,000,000/.test(ctx.H_USD)],
+    ['研究台卡片按线的货币', /-¥25/.test(ctx.H_RS_CCY) && /-\$437/.test(ctx.H_RS_USD)],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 小鹿货币 ·', name)
+    else { failed++; console.log('FAIL 小鹿货币 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 小鹿货币 · 断言脚本本身出错 ·', e && e.stack ? e.stack.split('\n')[0] : e)
+}
+
 // setImmediate:上面有一组断言挂在 async 函数的 await 链上(微任务),同步退出会跳过它们
 setImmediate(() => {
   console.log(failed ? `SOME FAILED (${failed})` : 'ALL OK')
