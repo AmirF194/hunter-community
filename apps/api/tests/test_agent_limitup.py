@@ -80,6 +80,15 @@ def test_st_growth_board_needs_20pct():
     assert not lu.entry_checks(ind([10.0, 11.03, 11.1, 11.05, 11.2]), "300044", "*ST赛为")["L-01"]
 
 
+def test_impossible_jump_is_data_error():
+    # 主板一天涨 19.4% 不可能(600508 拆股修正改错的真实样子),双创 21.6% 同理
+    assert not lu.entry_checks(ind([7.424, 8.864, 9.057, 9.007, 9.043]), "600508", "上海能源")["L-01"]
+    assert not lu.entry_checks(ind([44.475, 54.101, 54.954, 55.729, 54.864]), "300895", "测试")["L-01"]
+    # 边界:主板 10.9%、双创 20.9% 仍算
+    assert lu.entry_checks(ind([10.0, 11.09, 11.2, 11.15, 11.3]), "600001", "测试")["L-01"]
+    assert lu.entry_checks(ind([10.0, 12.09, 12.2, 12.15, 12.3]), "300001", "测试")["L-01"]
+
+
 def test_limit_again_rejected():
     # 第二天又涨停
     f = lu.entry_checks(ind([10.0, 11.0, 12.1, 12.0, 12.2]), "600001", "测试")

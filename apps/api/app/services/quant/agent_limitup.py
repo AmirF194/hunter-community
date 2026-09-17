@@ -53,6 +53,8 @@ PARAMS = {
     "hold_days": 1,              # 持有几个交易日后收盘卖出
     "lu_main": 0.098, "lu_growth": 0.198, "lu_st": 0.048,
     "st_10pct_from": "2025-07-07",   # 沪深主板 ST 涨跌幅从这天起 5% → 10%
+    # 涨幅合理性上限 = 名义涨停 + 1 个百分点:超过就是日线有问题,不算涨停(见 entry_checks)
+    "lu_cap_slack": 0.012,
     # 面板「护栏」卡要读这两个键;这条线不限持仓、不限单股占比(每笔 1 万 / 本金 100 万 = 1%)
     "max_holdings": 1000, "max_pos_pct": 0.01,
     "watch_pool_days": 1,
@@ -138,7 +140,10 @@ def indicators(bars: list[tuple], p: dict = PARAMS, bench: dict | None = None) -
 def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> dict:
     lim, board = limit_of(code, name, p, ind.get("date"))
     c, chg = ind["closes"], ind["chg"]
-    l01 = chg[0] >= lim
+    # 上限:主板一天涨不到 11%、双创涨不到 21%。2026-09-17 全年核对发现 screen_asof 的拆股修正会把少数 A 股
+    # 前一根收盘改错,造出假涨停(600508 原始 9.43 → 8.86 跌 6%,修正后 7.42 → 8.86「涨 19.4%」被买入)
+    cap = lim + p["lu_cap_slack"] + 0.002
+    l01 = lim <= chg[0] <= cap
     l02 = all(x < lim for x in chg[1:])
     l03 = all(x > c[1] for x in c[2:])
     return {"L-01": l01, "L-02": l02, "L-03": l03, "ok": l01 and l02 and l03, "limit": lim, "board": board}
