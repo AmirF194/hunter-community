@@ -1360,8 +1360,29 @@ try {
     ['复制:多个参数按脚本里 input 的先后,同名参数只带一次,整词匹配', CP[1].text === 'input minStreak = 3;\ninput minStreak2 = 5;\ngreenStreak >= minStreak and greenStreak < minStreak2 * minStreak' && CP[1].params === 2],
     ['复制:没用参数的 def 原样一句', CP[2].text === 'def up = close > close[1];' && CP[2].params === 0],
     ['复制:函数参数里的参数也带上', CP[3].text === 'input minStreak2 = 5;\ndef ma = Average(close, minStreak2);'],
-    ['复制按钮说明会带参数', /title="复制这一条的脚本文本\(连同它用到的参数\)"/.test(String(ctx.EP_COPY_HTML))],
+    ['复制按钮说明会带参数', /title="复制这一条的脚本文本\(连同它用到的参数和中间定义,粘回生成框可直接用\)"/.test(String(ctx.EP_COPY_HTML))],
   ]
+  // 2026-09-17:复制出来的片段要自带**间接**依赖(rng3m 用到 minRng、c_depth 用到 rng3m),粘回生成框才认得。
+  // 顺序:参数在前(按脚本先后)、中间定义其次(按脚本先后)、这一条最后;没用到的定义 / 条件不带
+  vm.runInContext(`
+    S.conditions = [
+      { name: 'minRng', kind: 'input', expr: '0.15' },
+      { name: 'unused', kind: 'input', expr: '9' },
+      { name: 'hi', kind: 'def', expr: 'High.3M' },
+      { name: 'rng3m', kind: 'def', expr: '(hi - Low.3M) / hi' },
+      { name: 'c_price', kind: 'def', expr: 'close > 10', is_bool: true },
+      { name: 'c_depth', kind: 'def', expr: 'rng3m # 这里不用 unused\\n  >= minRng', is_bool: true },
+      { name: 'scan#1', kind: 'term', expr: 'rng3m < 0.5', is_bool: true },
+    ]
+    var TD_CP = [copySnippet(S.conditions[5]), copySnippet(S.conditions[6]), copySnippet(S.conditions[4])]
+  `, ctx)
+  const TD = ctx.TD_CP
+  ep.push(
+    ['⭐复制带上间接用到的中间定义与参数(按脚本先后)', TD[0].text === 'input minRng = 0.15;\ndef hi = High.3M;\ndef rng3m = (hi - Low.3M) / hi;\ndef c_depth = rng3m # 这里不用 unused\n  >= minRng;' && TD[0].params === 1 && TD[0].defs === 2],
+    ['复制 term 行也带中间定义', TD[1].text === 'def hi = High.3M;\ndef rng3m = (hi - Low.3M) / hi;\nrng3m < 0.5' && TD[1].defs === 2],
+    ['没依赖的条件原样一句', TD[2].text === 'def c_price = close > 10;' && TD[2].params === 0 && TD[2].defs === 0],
+    ['生成请求在追加时带上当前脚本当 context', /context: appending \? buildScript\(true\) : null/.test(sc)],
+  )
   for (const [name, ok] of ep) {
     if (ok) console.log('PASS 编辑框参数值 ·', name)
     else { failed++; console.log('FAIL 编辑框参数值 ·', name, ' | ', JSON.stringify({ W, A, B, C, D, E, RT, CP }), html.slice(html.indexOf('cd-edit"'), html.indexOf('cd-edit"') + 160)) }

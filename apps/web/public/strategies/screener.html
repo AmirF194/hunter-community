@@ -680,7 +680,7 @@ function vCond(c, i) {
       '<button data-act="edit" data-i="' + i + '" title="编辑原文">✎</button>' +
       // 复制一条 = 再来一句同样的 def;term 不是 def,复制出来是 plot 里两句一模一样的 and,没意义
       (isTerm ? '' : '<button data-act="dup" data-i="' + i + '" title="复制一条">⧉</button>') +
-      '<button data-act="copy" data-i="' + i + '" title="复制这一条的脚本文本(连同它用到的参数)">⎘</button>' +
+      '<button data-act="copy" data-i="' + i + '" title="复制这一条的脚本文本(连同它用到的参数和中间定义,粘回生成框可直接用)">⎘</button>' +
       '<button data-act="probe" data-i="' + i + '" title="只用这一条扫一次">🐞</button>' +
       sw +
       '<button class="del" data-act="del" data-i="' + i + '" title="删除">✕</button>' +
@@ -1536,7 +1536,8 @@ function onCondAction(e) {
   }
   if (act === 'copy') {
     const sn = copySnippet(c)
-    copyText(sn.text, sn.params ? '这一条(连同 ' + sn.params + ' 个参数)' : '这一条'); return
+    const extra = [sn.params ? sn.params + ' 个参数' : '', sn.defs ? sn.defs + ' 个中间定义' : ''].filter(Boolean).join('、')
+    copyText(sn.text, extra ? '这一条(连同 ' + extra + ')' : '这一条'); return
   }
   if (act === 'probe') { probeOne(c); return }
 }
@@ -1608,15 +1609,32 @@ async function commitEdit(text) {
 // 原来复制出来只有 `totalReturn >= minTotalReturn`,阈值 0.80 在另一句 input 里,粘到别处就丢了。
 // 现在前面带上**这一条直接用到的** input 行(按脚本里 input 的先后),后面是这一条本身 —— 整段是合法 ThinkScript,能直接粘。
 // 只带直接引用的参数,和条件行上显示「参数名(值)」的范围一致;中间定义(totalReturn 怎么算)不带,那是整份脚本的事,用「复制脚本」
+// 2026-09-17 起连同它**间接**用到的中间定义一起复制(原来只带直接用到的参数、不带中间定义):
+// 用户复制「c_depth: rng3m >= 0.15」粘回生成框,rng3m 不在片段里,单独解析必然「不认识」——自家复制的东西自家不认。
+// 现在复制出来的片段自带依赖,粘到替换模式、别的脚本、thinkorswim 都能用;追加回同一份脚本时,
+// 和原脚本一字不差的依赖由后端沿用原来的(screen_dsl.complete_fragment),不会多出 rng3m_2。
 function copySnippet(c) {
-  const used = S.conditions.filter(function (o) {
-    return o.kind === 'input' && o.name !== c.name && paramRe(o.name).test(stripComments(c.expr || ''))
-  })
-  const body = c.kind === 'term' ? String(c.expr || '').trim()
-    : (c.kind === 'input' ? 'input ' : (c.kind === 'rec' ? 'rec ' : 'def ')) + c.name + ' = ' + c.expr + ';'
+  const byName = {}
+  S.conditions.forEach(function (o) { if (o.kind !== 'term') byName[o.name] = o })
+  const need = {}
+  const walk = function (expr, self) {
+    const code = stripComments(expr || '')
+    Object.keys(byName).forEach(function (n) {
+      if (n === self || need[n] || !paramRe(n).test(code)) return
+      need[n] = 1
+      walk(byName[n].expr, n)
+    })
+  }
+  walk(c.expr, c.name)
+  const deps = S.conditions.filter(function (o) { return o.kind !== 'term' && need[o.name] && o.name !== c.name })
+  const kw = function (o) { return o.kind === 'input' ? 'input ' : (o.kind === 'rec' ? 'rec ' : 'def ') }
+  const used = deps.filter(function (o) { return o.kind === 'input' })
+  const defs = deps.filter(function (o) { return o.kind !== 'input' })
+  const body = c.kind === 'term' ? String(c.expr || '').trim() : kw(c) + c.name + ' = ' + c.expr + ';'
   const lines = used.map(function (o) { return 'input ' + o.name + ' = ' + String(o.expr).trim() + ';' })
+    .concat(defs.map(function (o) { return kw(o) + o.name + ' = ' + o.expr + ';' }))
   lines.push(body)
-  return { text: lines.join('\n'), params: used.length }
+  return { text: lines.join('\n'), params: used.length, defs: defs.length }
 }
 
 // ─── 编辑框里的参数值(2026-09-15 用户)───────────────────────────────
@@ -1927,7 +1945,10 @@ async function generate(allowAi) {
   // 早先的做法是把两段脚本用字符串拼起来(还得把旧的 plot 降级成 def),
   // 实测会把脚本绞成 `def scan2 = … and scan and cond_pe;`,而且 400 之后
   // 用户完全看不出发生了什么。结构化合并没有这类惊喜。
-  const r = await post(PARSE_API, { script: text, market: S.market, allow_ai: !!allowAi })
+  // 追加时把当前脚本当上下文带上:条件行「复制这一条」复制出来的片段没有 plot、还会引用原脚本的定义 / 参数,
+  // 单独解析必然失败(2026-09-17 用户:自家复制的东西自家不认)。后端只把片段自己的条件行还回来
+  const r = await post(PARSE_API, { script: text, market: S.market, allow_ai: !!allowAi,
+    context: appending ? buildScript(true) : null })
   S.generating = false
   if (!r.ok) {
     if (gateOf(r)) { render(); return }

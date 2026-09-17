@@ -962,7 +962,7 @@ def official_preset_of(script: str, market_key: str) -> dict | None:
 
 
 def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
-                 user_id: str | None = None, on_ai=None) -> dict:
+                 user_id: str | None = None, on_ai=None, context: str | None = None) -> dict:
     """只解析、不拉数 —— 界面上点「生成」走这条,把脚本变成可视化条件行。
 
     和 run_script 共用同一个编译器,所以**界面上看到的条件就是真正会跑的条件**。
@@ -985,9 +985,28 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     ai = None
     kw = None
     original_text = script
+    # 条件行「复制这一条」复制出来的片段(没有 plot)—— 补成完整脚本;追加模式带着当前脚本当上下文(2026-09-17)
+    frag = None
+    frag_err: ScreenError | None = None
+    if context is not None and len(context) > 20000:
+        context = None
     try:
-        c: Compiled = _compile(script)
+        frag = screen_dsl.complete_fragment(script, context, _compile)
+    except ScreenError as fe:
+        frag_err = fe
+        if not context and "不认识" in str(fe):
+            frag_err = ScreenError(
+                f"{fe}\n这像是从条件行「复制这一条」复制出来的片段,它用到的定义在原脚本里 —— "
+                f"用「追加」模式粘到那份脚本上,或者用「复制脚本」拿完整脚本。")
+    try:
+        if frag is not None:
+            script = frag["src"]
+            c = frag["c"]
+        else:
+            c: Compiled = _compile(script)
     except ScreenError as script_err:
+        if frag_err is not None:
+            script_err = frag_err
         # 解析不了 —— 按"最省"的顺序往下试。
         #
         # ① 写着 def/plot 却解析不过 = 他的脚本有错,真实报错原样给他,**同时**给「AI 修错」按钮。
@@ -1052,6 +1071,21 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
                 ai["script"] = script
 
     d = screen_dsl.decompose(script, c, has_field, meta.sma, meta.ema, meta.rsi)
+    if frag is not None and frag["context"]:
+        # 追加:上下文(当前脚本)只用来让片段编译得过,交给前端的只能是片段自己的条件行 ——
+        # 否则 mergeAppend 会把原脚本的条件再追加一遍。term 行的名字是「plot名#k」或「宿主#k」
+        own = frag["frag_names"] | {frag["plot_name"]}
+
+        def _mine(n: str) -> bool:
+            return n in frag["frag_names"] or n.split("#", 1)[0] in own and "#" in n
+        d["conditions"] = [x for x in d.get("conditions") or [] if _mine(x["name"])]
+        d["plot_refs"] = [n for n in d.get("plot_refs") or [] if n in frag["frag_names"]]
+        d["plot_order"] = [n for n in d.get("plot_order") or [] if _mine(n)]
+        d["combine"] = "all"
+        d["term_host"] = ""
+        d["extra_plots"] = []
+        d["plot_name"] = frag["plot_name"]
+        d["plot_expr"] = ""
 
     warnings = [DELAY_WARN]
     if c.series is not None:
@@ -1088,6 +1122,8 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     d["fields"] = c.fields
     # 界面据此提示「官方示例 · 不计扫描次数」;真正是否扣次数由 /screener/run 再判一次(前端的话不算数)
     d["official_preset"] = official_preset_of(script, md.key)
+    if frag is not None:
+        warnings.extend(frag["notes"])
     d["warnings"] = warnings
     if kw:
         # 本地关键词匹配出来的 —— 同样要可核对:哪一句变成了哪个表达式。

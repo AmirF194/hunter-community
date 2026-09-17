@@ -269,8 +269,8 @@ class _Parser:
         return self._next()
 
     # ── 程序 ────────────────────────────────────────────────
-    def parse(self) -> tuple[list["Stmt"], str]:
-        """→ ([Stmt, ...], 最终 plot 的名字)"""
+    def parse(self, require_plot: bool = True) -> tuple[list["Stmt"], str]:
+        """→ ([Stmt, ...], 最终 plot 的名字)。require_plot=False 只给「粘进来的片段」用(见 complete_fragment)"""
         stmts: list[Stmt] = []
         plot_name: str | None = None
         seen: set[str] = set()
@@ -332,7 +332,7 @@ class _Parser:
                 plot_name = name
         if not stmts:
             raise ScreenError("脚本是空的。至少要有一句 `plot scan = <条件>;`")
-        if plot_name is None:
+        if plot_name is None and require_plot:
             raise ScreenError(
                 "脚本里没有 plot 语句 —— 少了最终的筛选条件。"
                 "最后加一句,例如:plot scan = cond_price and cond_volume;")
@@ -807,6 +807,161 @@ def _needs_series(stmts: list[Stmt]) -> bool:
         if walk(st.node, st.name):
             return True
     return False
+
+
+_STMT_KINDS = ("def", "input", "rec", "declare")
+
+
+def _split_fragment(text: str):
+    """→ (语句部分原文, 结尾的裸表达式或 None, tokens);有 plot / 词法不通 → None。"""
+    try:
+        toks = _tokenize(text)
+    except ScreenError:
+        return None
+    if not toks or any(t.kind == "plot" for t in toks):
+        return None
+    semis = [k for k, t in enumerate(toks) if t.kind == "op" and t.val == ";"]
+    after = toks[semis[-1] + 1:] if semis else toks
+    if not after or after[0].kind in _STMT_KINDS:
+        return text, None, toks
+    cut = after[0].pos
+    tail = "\n".join(line.split("#", 1)[0] for line in text[cut:].split("\n")).strip().rstrip(";").strip()
+    return text[:cut], (tail or None), toks
+
+
+def _close_last_stmt(body: str) -> str:
+    """最后一句漏写分号时补上(单独一份脚本里解析器容忍,但后面要接补上的 plot,不补就成了「缺分号」)。
+    分号补在那一行**代码**的末尾,不补进行尾注释里。"""
+    lines = body.split("\n")
+    for k in range(len(lines) - 1, -1, -1):
+        code, sep, comment = lines[k].partition("#")
+        if code.strip():
+            if not code.rstrip().endswith(";"):
+                lines[k] = code.rstrip() + ";" + ((" " + sep + comment) if sep else "")
+            break
+    return "\n".join(lines)
+
+
+def complete_fragment(text: str, context: str | None, compile_fn) -> dict | None:
+    """「复制这一条」复制出来的片段 → 能编译的完整脚本。不是片段返回 None(调用方照原流程走)。
+
+    2026-09-17 用户:条件行上「复制这一条」(⎘)复制出 `def c_price_2 = close > 10;`,粘回生成框报
+    「脚本里没有 plot 语句」—— **自家复制出来的东西自家不认**。copySnippet 的产出有三种形状,都没有 plot:
+      · `def 名 = 表达式;` / `rec 名 = …;`            (条件行是 def)
+      · `input 参数 = 值; … 表达式`                    (条件行是 plot 里的一项,前面带它用到的参数)
+      · 上面两种里的表达式还会引用原脚本的中间定义(rng1m / bullStreak),单独粘贴时根本不认识
+    做法:
+      · 片段里没被别的语句引用的**布尔** def + 结尾的裸表达式,按 and 补成 plot(数值定义、input、rec 不算条件)
+      · 追加模式前端把当前脚本当 context 传进来:拼在片段前面编译,片段就能引用原脚本的定义和参数;
+        和原脚本重名的,input 同值直接沿用原来的,其余改名 `名_2`(与前端 mergeAppend 同规则)。
+        返回的 frag_names / plot_name 让调用方只把片段自己的条件行交给前端
+      · 片段里一条布尔条件都没有 → 报清楚,不猜
+    纯表达式(没有任何语句)且没有 context 时不算片段 —— 那是「close > 10」这种,交给本地关键词识别。
+    """
+    sp = _split_fragment(text)
+    if sp is None:
+        return None
+    stmts_src, tail, _toks = sp
+    ctx_stmts: list = []
+    if context and context.strip():
+        try:
+            ctx_stmts, _ = _Parser(context).parse()
+        except ScreenError:
+            context, ctx_stmts = None, []
+    else:
+        context = None
+    ctx_names = {st.name for st in ctx_stmts}
+    if not stmts_src.strip():
+        # 纯表达式:只有在追加、且确实用到了原脚本里的名字时才按片段处理
+        if not context or not tail:
+            return None
+        tail_ids = {t.val for t in (_tokenize(tail) or []) if t.kind == "ident"}
+        if not (tail_ids & ctx_names):
+            return None
+
+    notes: list[str] = []
+    if context:
+        fst, _ = _Parser(stmts_src).parse(require_plot=False) if stmts_src.strip() else ([], None)
+        ctx_src = {st.name: (st.kind, st.rec, " ".join(context[st.expr_start:st.expr_end].split()))
+                   for st in ctx_stmts}
+        taken = ctx_names | {st.name for st in fst}
+        # 片段内被别的语句引用的 = 依赖(参数 / 中间定义);没被引用的布尔 def = 用户复制的那条条件本身
+        fref: set[str] = set()
+        for st in fst:
+            fref |= _names_in(st.node) - {st.name}
+        if tail:
+            fref |= {t.val for t in _tokenize(tail) if t.kind == "ident"}
+        rename: dict[str, str] = {}
+        drops: set[str] = set()
+        for st in fst:
+            if st.name not in ctx_names:
+                continue
+            same = ctx_src[st.name] == (st.kind, st.rec, " ".join(stmts_src[st.expr_start:st.expr_end].split()))
+            is_cond = st.kind == "def" and not st.rec and _is_boolean(st.node) and st.name not in fref
+            # 依赖和原脚本里一字不差 → 沿用原来的,不复制一份 `rng1m_2`;条件本身重名照样改名追加(用户要的就是再加一条)
+            if same and not is_cond:
+                drops.add(st.name)
+                continue
+            k = 2
+            while f"{st.name}_{k}" in taken:
+                k += 1
+            rename[st.name] = f"{st.name}_{k}"
+            taken.add(rename[st.name])
+        if rename or drops:
+            toks = _tokenize(text)
+            edits: list[tuple[int, int, str]] = []
+            for i, t in enumerate(toks):
+                if t.kind in ("input", "def", "rec") and i + 1 < len(toks) and toks[i + 1].val in drops:
+                    end = next((u.pos + 1 for u in toks[i + 2:] if u.kind == "op" and u.val == ";"), None)
+                    if end is not None:
+                        edits.append((t.pos, end, ""))
+                elif t.kind == "ident" and t.val in rename and not any(a <= t.pos < b for a, b, _ in edits):
+                    edits.append((t.pos, t.pos + len(t.val), rename[t.val]))
+            for a, b, rep in sorted(edits, reverse=True):
+                text = text[:a] + rep + text[b:]
+            if not "\n".join(line.split("#", 1)[0] for line in text.split("\n")).strip():
+                raise ScreenError(
+                    f"粘进来的这段({'、'.join(sorted(drops))})和当前脚本里已有的一字不差,而且不是一条筛选条件"
+                    f"(是参数或数值定义),追加进来什么也不会多。要改它的值,直接在条件区下面的参数 / 中间定义里改。")
+            sp = _split_fragment(text)
+            if sp is None:
+                return None
+            stmts_src, tail, _toks = sp
+            for old, new in rename.items():
+                notes.append(f"粘进来的 {old} 和当前脚本里的重名,追加时改名为 {new}")
+            if drops:
+                notes.append(f"{'、'.join(sorted(drops))} 当前脚本里已有且一字不差,沿用原来的定义")
+
+    fst, _ = _Parser(stmts_src).parse(require_plot=False) if stmts_src.strip() else ([], None)
+    referenced: set[str] = set()
+    for st in fst:
+        referenced |= _names_in(st.node) - {st.name}
+    if tail:
+        referenced |= {t.val for t in _tokenize(tail) if t.kind == "ident"}
+    cands = [st.name for st in fst
+             if st.kind == "def" and not st.rec and st.name not in referenced and _is_boolean(st.node)]
+    if not cands and not tail:
+        names = "、".join(st.name for st in fst) or "(空)"
+        raise ScreenError(
+            f"粘进来的这段只有参数或数值定义({names}),没有筛选条件 —— 条件要是比大小 / 真假判断,"
+            f"例如 `def c = close > 10;`。要整份脚本请用条件区上方的「复制脚本」。")
+    items = list(cands)
+    if tail:
+        items.append(f"({tail})" if cands and re.search(r"\bor\b|\|\|", tail) else tail)
+    plot_name = "scan"
+    if context:
+        plot_name = "pasted"
+        while plot_name in ctx_names or plot_name in {st.name for st in fst}:
+            plot_name += "_"
+    body = _close_last_stmt(stmts_src.rstrip())
+    src = ((context.rstrip() + "\n") if context else "") + (body + "\n" if body else "") + \
+        f"plot {plot_name} = " + " and ".join(items) + ";"
+    c = compile_fn(src)
+    if not context:
+        notes.insert(0, f"粘进来的是一段没有 plot(最终筛选条件)的片段,已补上「plot {plot_name} = "
+                        + " and ".join(items) + ";」")
+    return {"src": src, "c": c, "frag_names": {st.name for st in fst}, "plot_name": plot_name,
+            "context": bool(context), "notes": notes}
 
 
 def compile_script(src: str, has_field, sma_periods: list[int],
