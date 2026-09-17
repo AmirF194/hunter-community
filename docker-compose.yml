@@ -292,6 +292,10 @@ services:
       # type/code/instruction(2026-09-07 茅台事故)。镜像重建要等 GHCR 登录,挂文件立即生效。
       # 文件头注释写了它是 huntercode 的副本,改动先改 huntercode。
       - ./scripts/opencode-mcp/uzi_mcp.py:/opt/opencode-workspace/mcp/uzi_mcp.py:ro
+      # 覆盖镜像自带的 hunter_user_mcp.py(2026-09-17)· 镜像那份描述让模型「预测走势调
+      # hunter_cap_kpred」,而 kpred 已删(_24 §4.1),模型会去找一个不存在的工具。
+      # 同样是 huntercode 的副本,镜像能拉新版之后这一行可以删。
+      - ./scripts/opencode-mcp/hunter_user_mcp.py:/opt/opencode-workspace/mcp/hunter_user_mcp.py:ro
       # 覆盖镜像自带的 hunter-mcp-context.ts · HUNTER_TOOLS Set 里加了 watchlist_add,
       # 不然 tool.execute.before hook 不注入 _hermes_user_id · api 收不到
       # X-Hunter-User-Id → 401 unauthorized · LLM 会告诉用户"请登录",很误导。

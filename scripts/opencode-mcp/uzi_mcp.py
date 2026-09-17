@@ -6,7 +6,7 @@
 # 返 denied,机器上也没有 gh),等镜像不如直接挂文件。
 #
 # 改动只在 huntercode 仓做,改完再把文件整个拷过来(保留本段头注释),不要在这里单独改。
-# 当前对应 huntercode 提交:8205168(2026-09-17 · httpx 超时改读 UZI_HTTP_TIMEOUT)
+# 当前对应 huntercode 提交:346f1119cc(2026-09-17 · 描述不再让模型调已删除的 kpred)
 """uzi-mcp · hunter-UZI-Skill 深度分析入口 · Sprint 3 P2 · Phase 1 MVP
 
 薄代理：把 opencode LLM 的 tool_call 转发到 hermes-api /api/internal/uzi/*。
@@ -70,7 +70,9 @@ async def list_tools():
                 "**仅当**用户明确要求「深度分析 / 深度看看 / 深挖 / 基本面分析 / 投资论点 / 多空辩论」时用。"
                 "**不要用来做以下场景**（有更合适的轻量 tool）："
                 "查行情/最新价 → 用 stock_quickview（3-8 秒 · 也返 30 天 K 线）；"
-                "走势预测/涨跌预测/未来 N 天怎么走 → 用 kpred（10-30 秒 · Kronos 时序大模型）；"
+                "走势预测/涨跌预测/未来 N 天怎么走 → 看你的工具列表里有没有 K 线预测工具"
+                "（SaaS 部署叫 kronos_kronos_forecast）· 有就用它,没有就如实告诉用户本部署不提供走势预测,"
+                "**不要**拿本工具凑数；"
                 "拉新闻 → 用 stock_news。"
                 "**做什么**：拉实时行情+30日K线+财务+龙虎榜+十大股东+治理+新闻 → Gemini 合成结构化 markdown。"
                 "**正在按某个 SKILL 分析时,必须把该 SKILL 要求的报告结构填进 `outline`** —— "
