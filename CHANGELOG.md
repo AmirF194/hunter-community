@@ -5,11 +5,66 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### ✨ 新增 · Added
+- **`git clone` 之后不用改任何文件就能起来**。`docker compose up -d` 直接拉预构建镜像跑,
+  `JWT_SECRET` 留空会在首次启动自动生成并写进 `hunter_secrets` 卷(opencode 与 web 只读挂同一个卷读回同一把)。
+  从零到六个服务健康需要编辑的文件从 4 处变成 **0 处**。大模型仍需配置,图形化向导在下一个版本。
+  A fresh clone now boots with `docker compose up -d` — no file edits, secrets are generated on first start.
+- **四个自家服务全部改成自包含的预构建镜像**(`api` / `web` / `opencode` / `llm-shim`),
+  `linux/amd64` + `linux/arm64` 双架构。原来 compose 里 16 处挂载仓库文件的地方一处都不剩 ——
+  那些文件(SKILL、静态数据、迁移 SQL、MCP 脚本、插件)现在都打进镜像,云平台上没有仓库目录也能跑。
+- **数据库迁移改由 api 启动时执行**,带 `schema_migrations` 账本与 advisory lock(多副本安全)。
+  原来挂给 postgres 的 `docker-entrypoint-initdb.d` **只在数据卷第一次创建时执行**,
+  所以老部署一直缺表缺列。升级后第一次启动会把没跑过的迁移补齐,日志里逐个列出来。
+- **大模型配置可以存数据库并热生效**,不重启容器(实测端到端 9.2 秒,MCP 全部重连)。
+  本版本只提供服务函数,界面在下一个版本。
+- **`scripts/migrate-volumes.sh`** · 升级用:把 `user-skills/` 与 `data-packages/` 搬进新的具名卷。
+- **`docker-compose.dev.yml`** · 开发者用:带回本地构建与全部源码挂载。
+  `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`
+
 ### 🐛 修复 · Fixed
+- **`db/migrations/` 里有 7 个迁移文件一直在静默失败**。它们 ALTER 的目标表(`stocks` / `klines` /
+  `backtest_result`)是 api 启动时 `init_db()` 建的,而 postgres 的 initdb 在 api 第一次启动**之前**就跑,
+  那时表还不存在;initdb 的 psql 默认不带 `ON_ERROR_STOP`,失败被静默吞掉。
+  现在迁移分两阶段:先 `init_db()` 建基础表,再跑增量迁移。
+- **手工补跑过迁移的部署升级后 api 起不来**。`0010_daily_close_view.sql` 与 `0014` 定义同一个视图、
+  0014 多一列,而 `CREATE OR REPLACE VIEW` 不许减列 —— 账本为空的库会从 0001 重跑,正好撞上
+  `cannot drop columns from view`。0010 开头补了 `DROP VIEW IF EXISTS`。
+- **开源部署的数据可能被发到项目方的网关**。18 处把 `LLM_BASE_URL` / `ONE_API_BASE_URL` 的默认值
+  写成了项目演示站的网关地址,用户没配地址时请求会发到那里。现在未配置就是未配置,如实报错。
+  Removed 18 hardcoded fallbacks that pointed at the project's own LLM gateway.
+- **保存 SKILL 要等 30 秒然后提示「请重启 opencode」**,而文件其实早就写好了。
+  api 用同步 HTTP 调 opencode,而 opencode 会回头来拉 api 的清单,单 worker 的事件循环被自己堵死。
+  现在走线程池,**30.07 秒 → 0.164 秒**。
+- **llm-shim 缺 `LLM_BASE_URL` 时不再拒绝启动**;上游地址加了白名单校验(拒绝内部服务名、回环、
+  内网网段与 `169.254.169.254` 云元数据地址),防止它被当成访问内网的跳板。
+- **未配置大模型时对话会一直转圈**(实测 100 秒以上没有返回)。现在 llm-shim 立刻返回
+  OpenAI 兼容的中文错误体,流式请求返回合法的 SSE 错误帧。
 - **配了宿主机代理,对话仍一直超时**:大模型请求由 llm-shim 容器发出,但 `HTTP_PROXY_UPSTREAM` / `HTTPS_PROXY_UPSTREAM`
   原来只传给了 api 容器。宿主机开 TUN 代理,或网关按 TLS 指纹拦截容器直连(aihubmix 实测报 `SSL: UNEXPECTED_EOF`)时,
   shim 连不上上游,前端表现为对话一直转圈。现在 llm-shim 与 api 共用这组变量,留空时行为不变。
   The LLM proxy variables are now passed to the llm-shim container as well, which is where model requests are sent from.
+
+### 🔧 变更 · Changed
+- `docker-compose.yml` **默认只用预构建镜像**,不再有 `build:` 段。版本由 `HUNTER_VERSION` 控制
+  (默认 `1.1.0-rc1`),镜像源由 `HUNTER_REGISTRY` 控制。要本地构建请叠加 `docker-compose.dev.yml`。
+- `JWT_SECRET` 不再是必填项(原来缺了直接拒绝启动)。**已经填了的不要动** ——
+  它派生了加密已存 key 的 AES 密钥,换掉会让所有已保存的 key 解不开、登录全部失效。
+- 用户 SKILL 不再靠 api 与 opencode 共享目录,改由 opencode 按 URL 向 api 拉取
+  (云平台上两个服务通常不能共用一个卷)。
+- `user-skills/` 与 `data-packages/` 从 bind mount 改为 api 自己的具名卷。
+  **老用户升级必须跑一次 `scripts/migrate-volumes.sh`**,否则装过的 SKILL 会从界面上消失
+  (文件没丢,只是容器看不到了)。
+
+### ⚠️ 升级注意 · Upgrade notes
+
+```bash
+git pull
+docker compose pull && docker compose up -d
+bash scripts/migrate-volumes.sh     # 装过 SKILL / 导入过数据包的老用户必须跑
+```
+
+`JWT_SECRET` 已经填在 `.env` 里的**不要动** —— 它派生了加密已存 key 的 AES 密钥。
 
 ## [1.0.1] - 2026-09-17
 
