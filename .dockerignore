@@ -43,3 +43,20 @@ apps/api/venv
 **/*.egg-info
 **/.mypy_cache
 **/.ruff_cache
+
+# ── 运行时数据目录:一律不进构建上下文 ─────────────────────────
+# 这两个目录在**已有部署**里装着用户的东西(v1.0.x 把它们 bind mount 给 api),
+# 而且里面的文件是容器以 root 写的 —— 构建时 docker 读不了,报
+#   checking context: no permission to read from '.../data-packages/xxx.tar'
+# 整个构建当场失败。2026-09-18 在演示站 fin-r1 上实测踩到(data-packages 里
+# 有一个 root 属主的 .tar 数据包)。
+#
+# 它们也**本来就不该进镜像**:v1.1.0 起这两处是 api 自己的具名卷
+# (hunter_user_skills / hunter_packages),镜像里放一份只会和卷里的内容打架。
+# 老部署升级用 scripts/migrate-volumes.sh 把它们搬进卷。
+data-packages
+user-skills
+
+# 部署目录里常见的备份文件(.env.bak-* 之类)· 可能含密钥,更不该进上下文
+**/.env.bak*
+**/*.bak
