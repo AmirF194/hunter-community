@@ -73,15 +73,34 @@ def _format_filtered(facts: list) -> str:
     return "\n".join(f"  - {f.get('text','')}" for f in facts)
 
 
+def _resolve_llm() -> tuple[str, str, str]:
+    """(base_url, api_key, model) · ONE_API_* 优先,否则 runtime_config
+    (环境变量非空 → 数据库 · 初始化向导写的)。
+
+    **在函数里现取,不做模块级常量** —— 向导改完配置后 api 进程不重启也要生效。
+    **不给 base_url / model 任何默认值**:原来的默认地址是我们自己演示站的网关
+    (104.197.139.51:3000),开源用户没配 LLM_BASE_URL 时,他的数据会被发到我们
+    的服务器上;模型名猜一个 gemini-3.5-flash 同理只会换来一个看不懂的 404。
+    """
+    from app.services.runtime_config import llm as _runtime_llm
+
+    cfg = _runtime_llm()
+    return ((os.getenv("ONE_API_BASE_URL") or "").strip() or cfg.base_url,
+            (os.getenv("ONE_API_KEY") or "").strip() or cfg.api_key,
+            (os.getenv("ONE_API_MODEL") or "").strip() or cfg.model)
+
+
 def _call_llm(user: str) -> str:
     system = "你是一位专业的空头股票分析师，使用简体中文，直接输出分析文本（非 JSON）。"
-    # ONE_API_* 是内部 SaaS 网关的历史命名 · 开源版用户没那个网关 · 缺 key 时回退到
-    # .env 里统一的 LLM_* 三件套。timeout 60 → 120 因为推理型模型 reasoning tokens 一多就 40-60s+。
-    api_key   = os.getenv("ONE_API_KEY")      or os.getenv("LLM_API_KEY", "")
-    base_url  = os.getenv("ONE_API_BASE_URL") or os.getenv("LLM_BASE_URL", "http://104.197.139.51:3000/v1")
-    model     = os.getenv("ONE_API_MODEL")    or os.getenv("LLM_DEFAULT_MODEL", "gemini-3.5-flash")
-    if not api_key:
-        logger.warning("bear_researcher: 无可用 key · 请在 .env 里填 LLM_API_KEY(或 ONE_API_KEY)")
+    # 地址 / key / 模型名见 _resolve_llm() —— 环境变量非空优先,否则读数据库。
+    # timeout 60 → 120 因为推理型模型 reasoning tokens 一多就 40-60s+。
+    base_url, api_key, model = _resolve_llm()
+    if not (base_url and api_key and model):
+        logger.warning("bear_researcher: 大模型尚未配置(base_url {} · key {} · model {})"
+                       " · 请在 .env 里填 LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL,"
+                       "或在首页完成初始化向导",
+                       "有" if base_url else "无", "有" if api_key else "无",
+                       "有" if model else "无")
         return "（空头分析暂不可用）"
     try:
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=120)
