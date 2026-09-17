@@ -33,7 +33,7 @@
 | 2 | 大模型三项只能写 `.env`；opencode 缺配置时入口脚本 `gen-config.py` 退出，llm-shim 缺 `LLM_BASE_URL` 也退出（`shim.py` 第 382 行） | `scripts/opencode/*`、`scripts/llm-shim/shim.py` | 没有「先起来、再配置」的可能；向导无处容身 |
 | 3 | 13 处挂载仓库文件：opencode 挂入口脚本、6 个 MCP/插件文件、SKILL 目录；api 挂 `skills/`、`data/`、`user-skills/`、`data-packages/`；llm-shim 整个源码目录；postgres 挂迁移目录；web 挂 `public/` | `docker compose config` 实测 | 云平台只能拉镜像，拿不到仓库文件 |
 | 4 | `user-skills/` 被 api（读写）和 opencode（只读）**同时挂载** | 同上 | 云平台上两个服务通常不能共用一个卷 → 用户在界面装的 SKILL，模型看不到 |
-| 5 | 数据库迁移靠 postgres 的 `docker-entrypoint-initdb.d`，**只在第一次建卷时执行** | compose | 老用户升级后缺表缺列。**今天本机就踩到**：数据卷建于 8 月，页面 `compliance-status` 接口 500（缺 `compliance_ack_at` 列），手工补跑 21 个迁移后恢复 |
+| 5 | 数据库迁移靠 postgres 的 `docker-entrypoint-initdb.d`，**只在第一次建卷时执行** | compose | 老用户升级后缺表缺列。**今天本机就踩到**：数据卷建于 8 月，页面 `compliance-status` 接口 500（缺 `compliance_ack_at` 列），手工补跑全部迁移后恢复（实际是 22 个文件，见 3.4 的 M1 实测更正）|
 | 6 | api / web 镜像已由 `docker-publish.yml` 推 GHCR，但只有 amd64；compose 仍用本地 `build:` | `.github/workflows/docker-publish.yml` | 云平台要用预构建镜像；arm64 机器（Apple Silicon、部分国产云）需多架构 |
 | 7 | web 镜像构建时 `NEXT_PUBLIC_API_URL` 为空 → 前端走同源 `/api/*`，由 web 自带转发到 api | `apps/web/app/api/[...path]/route.ts`、publish 工作流未传构建参数 | **有利**：web 是唯一对外入口，云平台只需给 web 绑域名 |
 | 8 | 单用户模式默认开（`HUNTER_SINGLE_USER=1`）：任何人访问即得管理员身份 | `routers/auth.py` | 云平台实例一创建就在公网上，**谁先打开谁就是管理员** → 必须有「初始化口令」 |
@@ -169,7 +169,11 @@ opencode 写入实例目录 `config.json` 并在响应后销毁实例；下一�
   - 建表 `schema_migrations(filename text primary key, checksum text, applied_at timestamptz)`
   - `pg_advisory_lock` 防多副本并发
   - 按文件名顺序执行未记录的迁移；已记录但校验和变化 → 日志 WARNING，不重跑
-  - **首次在老库上运行**：现有迁移全部可重复执行（已核实 21 个文件均为 `IF NOT EXISTS` / `CREATE OR REPLACE` 写法），全部跑一遍后记录
+  - **首次在老库上运行**：现有迁移全部跑一遍后记录。
+    > **M1 实测更正（2026-09-18）**：① 迁移文件实际是 **22 个**不是 21 个（有两个 `0020_` 前缀），加 M1 新增的 `0022_schema_migrations.sql` 共 23 个。
+    > ② 「全部可重复执行」**不成立**：`0010_daily_close_view.sql` 与 `0014` 定义同一个视图、0014 多一列，而 `CREATE OR REPLACE VIEW` 不许减列，在跑过 0014 的库上重跑 0010 会报 `cannot drop columns from view`。已在 0010 开头补 `DROP VIEW IF EXISTS daily_close;` 根治（当时还没有任何库记录过它的 checksum，改的代价为零）。
+    > ③ 迁移**必须排在 `init_db()` 之后**：7 个迁移文件 ALTER 的目标表是 `init_db()` 建的，而原来 postgres 的 initdb 在 api 启动之前就跑它们，那几个迁移一直在静默失败。
+    > 详见 [`M1-成果与测试报告.md`](./M1-成果与测试报告.md) 第三节。
 - CI 增加迁移校验：新迁移文件必须可重复执行（grep 规则 + 空库连跑两遍）
 - 删除 postgres 的 initdb 挂载
 
