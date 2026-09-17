@@ -203,6 +203,13 @@ services:
     <<: *restart
     environment:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
+      # 大模型请求是从这个容器发出去的,代理必须配在这里,只配给 api 没用。
+      # 宿主机开了 TUN 代理,或网关按 TLS 指纹拦容器直连(aihubmix 实测:
+      # 直连报 SSL UNEXPECTED_EOF,走宿主机代理 200)时,对话会一直超时。
+      # 与 api 服务共用同一组 *_UPSTREAM 变量;留空则不走代理。
+      HTTP_PROXY: ${HTTP_PROXY_UPSTREAM:-}
+      HTTPS_PROXY: ${HTTPS_PROXY_UPSTREAM:-}
+      NO_PROXY: ${NO_PROXY_UPSTREAM:-localhost,127.0.0.1,api,web,postgres,redis,opencode,llm-shim}
     volumes:
       - ./scripts/llm-shim:/app:ro
     command: ["python3", "/app/shim.py"]

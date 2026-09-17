@@ -5,6 +5,12 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### 🐛 修复 · Fixed
+- **配了宿主机代理,对话仍一直超时**:大模型请求由 llm-shim 容器发出,但 `HTTP_PROXY_UPSTREAM` / `HTTPS_PROXY_UPSTREAM`
+  原来只传给了 api 容器。宿主机开 TUN 代理,或网关按 TLS 指纹拦截容器直连(aihubmix 实测报 `SSL: UNEXPECTED_EOF`)时,
+  shim 连不上上游,前端表现为对话一直转圈。现在 llm-shim 与 api 共用这组变量,留空时行为不变。
+  The LLM proxy variables are now passed to the llm-shim container as well, which is where model requests are sent from.
+
 ## [1.0.1] - 2026-09-17
 
 对话引擎镜像从 **7.56 GB 瘦到 618 MB**,首次要下载的量从 1.70 GB 降到 153 MB

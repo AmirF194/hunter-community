@@ -134,7 +134,7 @@ docker compose up -d --build
 | 4 | `llm-shim` 反复重启，日志 `[shim] LLM_BASE_URL 未设置,无法转发`；`opencode` 一直不启动 | 同上，shim 没有上游地址就退出，opencode 要等 shim 健康才会启动 | 同第 3 条 |
 | 5 | 能发消息，但回复只有一行「深度思考完成」没有正文；日志里有 `Invalid schema ... type: "null"` | DeepSeek（`deepseek-v4-flash` / `deepseek-v4-pro`）拒绝部分工具的 `parameters: null` | `.env` 加 `LLM_SCHEMA_SANITIZE=1`，然后 `docker compose up -d`（**不能用 restart**，见第 8 条） |
 | 6 | 每条消息都失败，日志 `Invalid JSON payload received. Unknown name "$schema"` | Gemini 只认 OpenAPI 子集的工具 schema。默认 `auto` 只在**模型名含 gemini** 时清洗，网关给模型起了别名就识别不到 | `.env` 设 `LLM_SCHEMA_SANITIZE=1` 强制清洗，再 `docker compose up -d` |
-| 7 | macOS 开着 Clash / Verge 等 TUN 模式代理，容器里调大模型或拉数据一直超时 | TUN 劫持了容器直连外网的流量 | `.env` 填 `HTTP_PROXY_UPSTREAM` 和 `HTTPS_PROXY_UPSTREAM`（指向宿主机代理，如 `http://host.docker.internal:7890`，端口以你的代理软件为准），`NO_PROXY_UPSTREAM` 保持默认，再 `docker compose up -d` |
+| 7 | macOS 开着 Clash / Verge 等 TUN 模式代理，容器里调大模型或拉数据一直超时 | TUN 劫持了容器直连外网的流量 | `.env` 填 `HTTP_PROXY_UPSTREAM` 和 `HTTPS_PROXY_UPSTREAM`（指向宿主机代理，如 `http://host.docker.internal:7890`，端口以你的代理软件为准），`NO_PROXY_UPSTREAM` 保持默认，再 `docker compose up -d`（api 和发大模型请求的 llm-shim 都会走这个代理） |
 | 8 | 改了 `.env` 之后 `docker compose restart` 没有任何变化 | `restart` 只重启进程、不重读 `.env` | 改 `.env` 后一律 `docker compose up -d`（compose 会按新环境变量重建受影响的容器） |
 | 9 | 改了端口后，登录页或新闻页提示「网络错误」，浏览器请求还打到旧端口 | `NEXT_PUBLIC_API_URL` 是**构建期**写进前端产物的，改 `.env` 不会自动生效 | 同步改 `NEXT_PUBLIC_API_URL`（如 `http://localhost:8101`），然后 `docker compose up -d --build web` |
 | 10 | 端口被占，`Bind for 0.0.0.0:3100 failed: port is already allocated` | 本机已有服务占用 3100 / 8100 / 5442 / 6479 | 改 `.env` 里的 `WEB_HOST_PORT`、`API_HOST_PORT`、`POSTGRES_HOST_PORT`、`REDIS_HOST_PORT`；改了 API 端口要同时做第 9 条 |
@@ -142,7 +142,7 @@ docker compose up -d --build
 | 12 | 往 `skills/` 或 `user-skills/` 加了 SKILL，界面里看不到 | opencode 只在启动时扫描一次 SKILL 目录 | `docker compose restart opencode`（约 50 秒），再用 `python scripts/check_skill_sync.py` 核对 |
 | 13 | 聊一阵后提示「已达日 token 上限 500000 · 明日再试」 | 旧版 compose / 镜像的预算插件没有关闭。自部署用的是你自己的大模型额度，不该被限 | `git pull` 拿最新 `docker-compose.yml`（默认 `HUNTER_BUDGET_ENABLED=false`），再 `docker compose pull opencode && docker compose up -d` |
 | 14 | `opencode` 重启循环，日志 `EACCES: permission denied, mkdir '/home/hunter/.local/state'` | 自己改过挂载，只挂了 `.local/share/opencode`；docker 以 root 补建父目录，容器用户 1001 写不进去 | 恢复仓库里的挂载写法（整个 `/home/hunter/.local` 挂具名卷），再 `docker compose up -d opencode` |
-| 15 | 走 aihubmix 网关时连通性不稳、TLS 握手失败 | aihubmix 会拦截容器（Alpine）的 TLS 指纹 | 在宿主机起一个转发代理，让容器走 `http://host.docker.internal:<端口>/v1`，做法见 `docs/model-testing/results/2026-08-16_aihubmix_六家对比.md` |
+| 15 | 走 aihubmix 网关时对话一直超时；`docker compose logs llm-shim` 里是 `SSL: UNEXPECTED_EOF_WHILE_READING` | aihubmix 会拦截容器（Alpine）直连的 TLS 指纹 | 宿主机开着代理软件时，`.env` 填 `HTTPS_PROXY_UPSTREAM=http://host.docker.internal:<代理端口>`（llm-shim 与 api 共用这组变量），再 `docker compose up -d`；没有代理软件时，改用宿主机转发脚本，做法见 `docs/model-testing/results/2026-08-16_aihubmix_六家对比.md` |
 | 16 | 升级到 v1.0.1 之后打开页面「暂无对话」，但数据卷还在 | 对话引擎换成单文件二进制时，会话库的文件名会跟着 opencode 的 channel 变（源码版叫 `opencode-local.db`，编译版默认叫 `opencode.db`）。**卷、权限、路径全是对的，只是打开了一个空库** | 我们已在镜像里钉死 `OPENCODE_DB=opencode-local.db`，正常升级不会遇到。真遇到了**先别删卷**：`docker exec <opencode 容器> ls -la /home/hunter/.local/share/opencode/`，如果看到新建的空 `opencode.db` 而 `opencode-local.db` 还在，说明是这个问题；确认 `.env` 里没有覆盖 `OPENCODE_DB`，然后 `docker compose up -d opencode` |
 | 17 | `docker compose pull opencode` 报 `error from registry: denied` | 镜像是**公开**的，报 denied 通常不是没权限，而是机器上留着一份**过期的 GHCR 登录**——docker 会优先带上它，被拒之后**不会退回匿名** | `docker logout ghcr.io`，再 `docker compose pull opencode` |
 
