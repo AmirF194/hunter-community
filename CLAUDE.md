@@ -1337,6 +1337,29 @@ raw = prefill + resp.choices[0].message.content   # 记得拼回去
 
 ---
 
+## 模型调用失败要显示出来 · opencode 把错误记在 `info.error`,不发正文(2026-09-17)
+
+本地版点 SKILL 后只剩「深度思考完成」和空白。根因是 DeepSeek 账户余额 0,llm-shim 日志 `upstream 402 Insufficient Balance`;
+opencode 把 `{name:'APIError', data:{statusCode:402, message, responseBody}}` 写进那条 assistant 消息的 `error`,**parts 为空**。
+前端从来不读这个字段,所以失败看起来像「AI 卡住了」。
+
+- **排查「回答是空的」先看 llm-shim 日志和消息的 `info.error`**,别先怀疑 SKILL / MCP。读会话原文:
+  `docker compose exec -T opencode sh -c 'curl -s -u "opencode:$OPENCODE_SERVER_PASSWORD" localhost:3901/session/<id>/message'`
+  (不带 basic auth 返 401;Windows 上要落文件按 UTF-8 读,管道给 python 会按 GBK 解坏)。
+  DeepSeek 余额可直接查 `GET https://api.deepseek.com/user/balance`。
+- `lib/modelError.ts` 按状态码翻成中文说明卡(402 余额 / 401·403 密钥 / 429 限流 / 5xx / 其他如实写失败),标题改「回答未完成」,
+  上游原话折叠展示(外部原始数据,不翻不改)。**`MessageAbortedError` 是用户点了停止,不画错误卡。**
+  加新的失败类别时别猜原因 —— 认不出的就写「模型调用失败」+ 原话。
+- 这张卡是终态,不带计时器 / 转圈(同「工具卡片 completed 后不许假装还在生成」)。
+
+## 模板占位符在发送时处理(`lib/templateFill.ts`,2026-09-17)
+
+填入时选中整个 `{股票}` 挡不住用户双击只选中「股票」两个字,于是发出 `{goog}`。现在 `InputBox.handleSend` 发送前:
+括号里仍是模板占位名 → 拦下、重新选中、提示先填;换成别的内容 → 去掉括号。两条别改坏:
+① 只对 **draft 模板来源**生效(`tplSlotsRef`,发送 / 换会话时清),用户自己打的花括号不动;`股票` 例外,来源丢了也认它没填。
+② 括号里有空白 / 引号 / 冒号 / 逗号 / 嵌套或超过 30 字的不当占位符(JSON、代码)。
+用例思路见提交 `a1c5a6a` 说明;SaaS 同步在 `hunter` 8eff2dc(按单条消息渲染,结构不同,按语义对齐)。
+
 ## 停止生成:一个 `abortRef`,三条路径各自负责往里放取消函数
 
 2026-09-09 需求:正在生成回答时能一键掐掉。发送按钮在 `busy` 时原地变成方块图标。
