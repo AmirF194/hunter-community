@@ -760,6 +760,17 @@ category 被无视,一律进「自定义安装」)。
 bind mount 覆盖镜像文件(GHCR 拉取在服务器上 denied,机器上没有 gh)。改动先改 huntercode,
 再整个拷过来并更新文件头的提交号;不要在副本里单独改。
 
+**2026-09-17 盘点后的完整清单**:`scripts/opencode-mcp/` 下 `uzi_mcp.py` · `watchlist_mcp.py` ·
+`hunter_user_mcp.py`(新挂载)· `screener_mcp.py` · `hunter_capability_mcp.py` · `plugins/*.ts`
+**全部是 huntercode 的副本**。`hunter_capability_mcp.py` 以前只在本仓、huntercode 没有,已收回。
+为什么这条要写死:副本单独改就会漂移,而漂移的代价是隐性的 —— 本仓 08-21 在
+`plugins/hunter-mcp-context.ts` 补了 `hunter_user_` 前缀,huntercode 一个月没跟上,
+谁用 huntercode 重建镜像,用户自定义数据源就又拿不到身份(模型只会说"未获取到您的用户身份")。
+反方向同理:09-17 发现镜像里 `hunter_user_mcp` / `uzi_mcp` 的描述还在让模型"预测走势调 kpred",
+而 kpred 早按 `_24` §4.1 删了。**工具描述里别写死别的部署才有的工具名**,写成"有就用、没有就如实说"。
+核对办法:`docker compose exec -T opencode curl -s localhost:3901/mcp` 看 6 个 MCP 是否都 connected,
+再 `grep` 容器内文件确认是新版(bind mount 单文件要 `up -d` 重建才换 inode)。
+
 ---
 
 ## 铁律:流式转发层不许无条件扣留数据 · 补发必须是合法帧且排在 [DONE] 之前
