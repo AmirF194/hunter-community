@@ -198,6 +198,8 @@
     .sc-tb th{background:var(--bg,#FAF7F3);color:var(--muted);font-weight:500;font-size:11.5px;
       position:sticky;top:0;cursor:pointer;user-select:none}
     .sc-tb th .ar{color:var(--brand);margin-left:3px}
+    /* 数字列的列头也要右对齐,否则列头靠左、数字靠右,宽列上看起来错开一整格(2026-09-17 用户截图) */
+    .sc-tb th.n{text-align:right}
     .sc-tb td.n{text-align:right;font-family:ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
     .sc-tb tr:last-child td{border-bottom:none}
     .sc-tb .cd2{font-family:ui-monospace,Menlo,monospace;color:var(--brand-dark);font-weight:600}
@@ -1281,11 +1283,16 @@ function vTable(r) {
   }
   const skip = { name: 1, description: 1, close: 1, currency: 1 }
   const cols = (r.columns || []).filter(function (c) { return !skip[c] })
+  // 文字列(板块 / 行业 这类)列头和单元格一起靠左,数字列一起靠右 —— 按这次结果里的真实取值判断
+  const isText = {}
+  cols.forEach(function (c) {
+    isText[c] = picks.some(function (p) { const v = (p.fields || {})[c]; return v != null && typeof v !== 'number' })
+  })
   const head = '<tr><th>代码</th><th>名称</th><th data-sort="close" class="n">现价</th>' +
     cols.map(function (c) {
       // 中文列头 + 悬停看英文原名(与条件行一致);后端拿不准的字段 label 为空,照旧显示原名
       const lb = (r.column_labels || {})[c]
-      return '<th data-sort="' + esc(c) + '" class="n" title="' + esc(c) + '">' + esc(lb || c) +
+      return '<th data-sort="' + esc(c) + '"' + (isText[c] ? '' : ' class="n"') + ' title="' + esc(c) + '">' + esc(lb || c) +
         (S.sortBy === c ? '<span class="ar">' + (S.desc ? '↓' : '↑') + '</span>' : '') + '</th>'
     }).join('') + '</tr>'
   const rows = picks.map(function (p) {
@@ -1300,7 +1307,7 @@ function vTable(r) {
       '<td class="n">' + plain(p.close) + ' <span class="sc-na">' + esc(p.currency || '') + '</span></td>' +
       cols.map(function (c) {
         const v = f[c]
-        if (v == null) return '<td class="n">' + NA + '</td>'
+        if (v == null) return '<td' + (isText[c] ? '' : ' class="n"') + '>' + NA + '</td>'
         if (typeof v === 'number') return '<td class="n">' + num(v) + '</td>'
         return '<td>' + esc(String(v).slice(0, 22)) + '</td>'
       }).join('') + '</tr>'
