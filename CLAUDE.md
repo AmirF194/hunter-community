@@ -75,7 +75,7 @@ grep -rn "mock\|_mock\|Object.assign\|writeDefault\|\|\| 0" apps/web/public apps
 688981 给 659)。用它推股本 / 市值时必须带合理性边界(`_BPS_RANGE` / `_MCAP_RANGE` / `_TURNOVER_MAX`),
 越界丢该股票,不进截面排名。
 
-## 数据坑:外部扫描通道(`screen_source`)的四个陷阱
+## 数据坑:外部扫描通道(`screen_source`)的五个陷阱
 
 2026-09-10 接入全市场扫描(`apps/api/app/services/quant/screen_source.py` +
 `screen_dsl.py`,前端 `strategies/screener.html`)时实测出来的。
@@ -117,6 +117,18 @@ PB 全部 ≤6%),但**市值差得多**:中芯国际 -37%、比亚迪 -8%、格�
 
 规矩:`market_cap_basic` 只可用于排序和粗筛,**不许当市值真值展示给用户,不许写进因子**。
 返回体里 `warnings` 每次都带这句,前端不折叠、不做"下次不再提示"。
+
+### 5. A 股的名称、板块是英文,结果行统一过 `screen_cn` 换中文(2026-09-17 用户要求)
+
+上游给 A 股的 `description` 是英文公司名、`sector` 是它自己的 21 个英文大类。两个 `_pick`(快照模式、时间序列模式)
+在 `md.key == "a"` 时都走 `screen_cn.localize_a_pick`,**只改展示,求值早已结束**。新增第三种出结果的路径也要接上,否则又是英文。
+
+- 名称:仓库自带 `data/stocks_catalog_baseline.json`(5534 只,零网络)打底,后台线程每 24 小时用 akshare
+  `stock_info_a_code_name` 补新股(线上实测 5565 只 / 12 秒)。**不许改成同步拉**:会让每次扫描多等十几秒;失败只记日志、30 分钟后再试。
+- 清单里是交易所简称原样(「万  科Ａ」全角字母 + 对齐空格),NFKC 后去空白。
+- 两级都查不到的保留英文名 —— 英文名是真的,不能留空也不能编。板块对照表里没有的新类别同理原样显示。
+- 不用 `stock_industry` 表:只有 2977 只、分类老旧(还有「次新股」「开发区」),覆盖不到一半。
+- `industry` 字段(上游约 130 个细分行业)目前没翻,用户在脚本里显式加了才会出现,仍是英文。
 
 ### 另外两条
 

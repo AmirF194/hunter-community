@@ -48,7 +48,7 @@ import time
 
 import httpx
 
-from app.services.quant import screen_dsl, screen_rs, vcp
+from app.services.quant import screen_cn, screen_dsl, screen_rs, vcp
 from app.services.quant.screen_dsl import Compiled, ScreenError
 
 log = logging.getLogger(__name__)
@@ -657,7 +657,7 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
             + "如果某条条件缺得特别多,可以考虑去掉或换一个覆盖更全的字段。")
 
     def _pick(r: dict) -> dict:
-        return {
+        p = {
             "code": r.get("_code"),
             "symbol": r.get("_symbol"),
             "name": r.get("description") or r.get("name"),
@@ -665,6 +665,8 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
             "currency": r.get("currency") or md.currency,
             "fields": {k: v for k, v in r.items() if not k.startswith("_")},
         }
+        # A 股名称 / 板块换中文(扫描源给的是英文)· 只动展示,求值已经结束
+        return screen_cn.localize_a_pick(p) if md.key == "a" else p
 
     # keep_all:把全部命中一起带回去,路由存进 screen_resort,点列头排序时直接重排、不扣次数
     all_picks = [_pick(r) for r in hits] if keep_all else None
@@ -870,10 +872,11 @@ def _run_series(c: Compiled, md: MarketDef, market_key: str, has_field, limit: i
             f"{skipped} 只没能判断(是「算不出」,不是「不满足」):" + ";".join(parts) + "。")
 
     def _pick(r: dict) -> dict:
-        return {"code": r.get("_code"), "symbol": r.get("_symbol"),
-                "name": r.get("description") or r.get("name"),
-                "close": r.get("close"), "currency": r.get("currency") or md.currency,
-                "fields": {k: v for k, v in r.items() if not k.startswith("_")}}
+        p = {"code": r.get("_code"), "symbol": r.get("_symbol"),
+             "name": r.get("description") or r.get("name"),
+             "close": r.get("close"), "currency": r.get("currency") or md.currency,
+             "fields": {k: v for k, v in r.items() if not k.startswith("_")}}
+        return screen_cn.localize_a_pick(p) if md.key == "a" else p
 
     all_picks = [_pick(r) for r in hits] if keep_all else None
     picks = all_picks[:limit] if keep_all else [_pick(r) for r in hits[:limit]]
