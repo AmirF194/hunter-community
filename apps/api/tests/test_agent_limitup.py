@@ -18,6 +18,13 @@ def bars(closes, lows=None, start=date(2026, 3, 2)):
     return [(start + timedelta(days=i), c, c, lo, 1e6) for i, (c, lo) in enumerate(zip(closes, lows))]
 
 
+P2 = dict(lu.PARAMS, growth_only=False)       # v2 口径:板块不限。L-08 的用例用默认 PARAMS
+
+
+def checks(p, i, code, name):
+    return lu.entry_checks(i, code, name, p)
+
+
 def ind(closes, lows=None, prev=None):
     """5 根收盘 → 指标。前面补一根 T-5(默认 T-4 收盘的 0.9 倍,让 5 日均线向上),买入类用例不必每条都关心 L-07。"""
     lows = lows or closes
@@ -45,29 +52,29 @@ def test_limit_by_board(code, name, on, lim):
 
 def test_main_board_signal():
     # T-4 10.00 → T-3 11.00(+10%)→ 三天 11.20 / 11.05 / 11.30 都 > 11.00,每天都没涨停
-    f = lu.entry_checks(ind([10.0, 11.0, 11.2, 11.05, 11.3]), "600001", "测试")
+    f = checks(P2, ind([10.0, 11.0, 11.2, 11.05, 11.3]), "600001", "测试")
     assert f["ok"] and f["L-01"] and f["L-02"] and f["L-03"]
 
 
 def test_rounding_limit_counts():
     # 3.33 元涨停价 3.66,实际涨幅 9.91% —— 9.8% 门槛要算涨停
-    assert lu.entry_checks(ind([3.33, 3.66, 3.7, 3.68, 3.72]), "600001", "测试")["L-01"]
+    assert checks(P2, ind([3.33, 3.66, 3.7, 3.68, 3.72]), "600001", "测试")["L-01"]
 
 
 def test_main_board_not_limit():
-    assert not lu.entry_checks(ind([10.0, 10.9, 11.2, 11.05, 11.3]), "600001", "测试")["L-01"]
+    assert not checks(P2, ind([10.0, 10.9, 11.2, 11.05, 11.3]), "600001", "测试")["L-01"]
 
 
 def test_growth_board_needs_20pct():
     closes = [10.0, 11.0, 11.2, 11.05, 11.3]           # 创业板涨 10% 不算涨停
-    assert not lu.entry_checks(ind(closes), "300001", "测试")["L-01"]
+    assert not checks(P2, ind(closes), "300001", "测试")["L-01"]
     closes = [10.0, 12.0, 12.2, 12.1, 12.3]            # 涨 20% 才算
-    assert lu.entry_checks(ind(closes), "300001", "测试")["ok"]
+    assert checks(P2, ind(closes), "300001", "测试")["ok"]
 
 
 def test_growth_board_12pct_day_is_not_limit_again():
     # 创业板涨停后第二天涨 12%:不是涨停,L-02 过
-    f = lu.entry_checks(ind([10.0, 12.0, 13.44, 13.0, 13.1]), "300001", "测试")
+    f = checks(P2, ind([10.0, 12.0, 13.44, 13.0, 13.1]), "300001", "测试")
     assert f["L-02"] and f["ok"]
 
 
@@ -75,49 +82,49 @@ def test_st_main_board_before_and_after_rule_change():
     closes = [10.0, 10.5, 10.6, 10.55, 10.7]           # 涨 5%
     old = lu.indicators(bars([9.0] + closes, start=date(2025, 6, 2)))
     new = lu.indicators(bars([9.0] + closes, start=date(2026, 3, 2)))
-    assert lu.entry_checks(old, "600001", "ST测试")["ok"]          # 2025-07-07 前 5% 算涨停
-    assert not lu.entry_checks(new, "600001", "ST测试")["L-01"]    # 之后要 10%
+    assert checks(P2, old, "600001", "ST测试")["ok"]          # 2025-07-07 前 5% 算涨停
+    assert not checks(P2, new, "600001", "ST测试")["L-01"]    # 之后要 10%
 
 
 def test_st_growth_board_needs_20pct():
-    assert not lu.entry_checks(ind([10.0, 11.03, 11.1, 11.05, 11.2]), "300044", "*ST赛为")["L-01"]
+    assert not checks(P2, ind([10.0, 11.03, 11.1, 11.05, 11.2]), "300044", "*ST赛为")["L-01"]
 
 
 def test_impossible_jump_is_data_error():
     # 主板一天涨 19.4% 不可能(600508 拆股修正改错的真实样子),双创 21.6% 同理
-    assert not lu.entry_checks(ind([7.424, 8.864, 9.057, 9.007, 9.043]), "600508", "上海能源")["L-01"]
-    assert not lu.entry_checks(ind([44.475, 54.101, 54.954, 55.729, 54.864]), "300895", "测试")["L-01"]
+    assert not checks(P2, ind([7.424, 8.864, 9.057, 9.007, 9.043]), "600508", "上海能源")["L-01"]
+    assert not checks(P2, ind([44.475, 54.101, 54.954, 55.729, 54.864]), "300895", "测试")["L-01"]
     # 边界:主板 10.9%、双创 20.9% 仍算
-    assert lu.entry_checks(ind([10.0, 11.09, 11.2, 11.15, 11.3]), "600001", "测试")["L-01"]
-    assert lu.entry_checks(ind([10.0, 12.09, 12.2, 12.15, 12.3]), "300001", "测试")["L-01"]
+    assert checks(P2, ind([10.0, 11.09, 11.2, 11.15, 11.3]), "600001", "测试")["L-01"]
+    assert checks(P2, ind([10.0, 12.09, 12.2, 12.15, 12.3]), "300001", "测试")["L-01"]
 
 
 def test_limit_again_rejected():
     # 第二天又涨停
-    f = lu.entry_checks(ind([10.0, 11.0, 12.1, 12.0, 12.2]), "600001", "测试")
+    f = checks(P2, ind([10.0, 11.0, 12.1, 12.0, 12.2]), "600001", "测试")
     assert f["L-01"] and not f["L-02"] and not f["ok"]
 
 
 def test_close_equal_limit_day_rejected():
     # 用户原话「高于」:等于涨停日收盘不算
-    f = lu.entry_checks(ind([10.0, 11.0, 11.2, 11.0, 11.3]), "600001", "测试")
+    f = checks(P2, ind([10.0, 11.0, 11.2, 11.0, 11.3]), "600001", "测试")
     assert not f["L-03"] and not f["ok"]
 
 
 def test_close_below_limit_day_rejected():
-    f = lu.entry_checks(ind([10.0, 11.0, 11.2, 10.9, 11.3]), "600001", "测试")
+    f = checks(P2, ind([10.0, 11.0, 11.2, 10.9, 11.3]), "600001", "测试")
     assert not f["L-03"]
 
 
 def test_uses_limit_day_close_not_open():
     # 三天收盘都在涨停日收盘之上即可,和开盘价无关(用户没选开盘价口径)
-    assert lu.entry_checks(ind([10.0, 11.0, 11.01, 11.02, 11.03]), "600001", "测试")["ok"]
+    assert checks(P2, ind([10.0, 11.0, 11.01, 11.02, 11.03]), "600001", "测试")["ok"]
 
 
 # ─── L-07 5 日均线多头(2026-09-17 用户追加:收盘 > MA5 且 MA5 向上)─────────
 
 def test_ma5_up_and_above_passes():
-    f = lu.entry_checks(ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=10.5), "600001", "测试")
+    f = checks(P2, ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=10.5), "600001", "测试")
     assert f["L-07"] and f["ok"]
 
 
@@ -125,13 +132,13 @@ def test_ma5_not_rising_rejected():
     # T-5 收盘 11.5 > T 收盘 11.3 → MA5 比前一天低
     i = ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=11.5)
     assert i["ma5"] < i["ma5_prev"]
-    f = lu.entry_checks(i, "600001", "测试")
+    f = checks(P2, i, "600001", "测试")
     assert f["L-01"] and f["L-02"] and f["L-03"] and not f["L-07"] and not f["ok"]
 
 
 def test_ma5_flat_rejected():
     # T-5 收盘 = T 收盘 → MA5 持平,不算向上
-    f = lu.entry_checks(ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=11.3), "600001", "测试")
+    f = checks(P2, ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=11.3), "600001", "测试")
     assert not f["L-07"]
 
 
@@ -139,16 +146,16 @@ def test_close_below_ma5_rejected():
     # 涨停日后三天高位,T 收盘回落到 MA5 下面(仍高于涨停日收盘、MA5 仍向上)
     i = ind([10.0, 12.0, 13.5, 13.6, 12.2], prev=9.0)      # 创业板:T-3 涨 20%,之后每天 < 20%
     assert i["ma5"] > i["ma5_prev"] and 12.2 < i["ma5"]
-    f = lu.entry_checks(i, "300001", "测试")
+    f = checks(P2, i, "300001", "测试")
     assert f["L-03"] and not f["L-07"]
 
 
 def test_ma5_needs_six_bars():
     i = lu.indicators(bars([10.0, 11.0, 11.2, 11.05, 11.3]))
     assert i is not None and i["ma5"] is None
-    f = lu.entry_checks(i, "600001", "测试")
+    f = checks(P2, i, "600001", "测试")
     assert not f["L-07"] and f["ma5_na"] and not f["ok"]
-    it = lu.watch_item("600001", "测试", i, False, None)
+    it = lu.watch_item("600001", "测试", i, False, None, p=P2)
     assert "L-07" in it["fails"] and "算不出" in it["gap"]
 
 
@@ -158,6 +165,38 @@ def test_ma5_value():
     assert i["ma5_prev"] == pytest.approx((10.5 + 10.0 + 11.0 + 11.2 + 11.05) / 5)
 
 
+# ─── L-08 只做创业板 / 科创板(2026-09-17 用户追加,v3)──────────────────
+
+@pytest.mark.parametrize("code,ok", [("300001", True), ("301236", True), ("688981", True), ("689009", True),
+                                     ("600001", False), ("000001", False), ("002594", False), ("001896", False), ("603165", False)])
+def test_growth_only_board(code, ok):
+    growth = code.startswith(("3", "68"))
+    closes = [10.0, 12.0, 12.2, 12.1, 12.3] if growth else [10.0, 11.0, 11.2, 11.05, 11.3]
+    f = lu.entry_checks(ind(closes), code, "测试")          # 默认 PARAMS = v3
+    assert f["L-01"] and f["L-02"] and f["L-03"] and f["L-07"]
+    assert f["L-08"] is ok and f["ok"] is ok
+
+
+def test_growth_only_default_on_and_switch():
+    assert lu.PARAMS["growth_only"] is True
+    f = checks(P2, ind([10.0, 11.0, 11.2, 11.05, 11.3]), "600001", "测试")
+    assert f["L-08"] and f["ok"]
+
+
+def test_growth_only_watch_text_and_no_buy():
+    i = ind([10.0, 11.0, 11.2, 11.05, 11.3])
+    it = lu.watch_item("600001", "测试", i, False, None)
+    assert it["fails"] == ["L-08"] and "主板不做" in it["gap"] and it["progress_pct"] == 80
+    r = lu.run_day("2026-03-06", [], 1_000_000.0, None, [("600001", "测试", None)], None, 0, dict(lu.PARAMS), av.GUARDS,
+                   ind_of=lambda c: i)
+    assert r["fills"] == []
+
+
+def test_growth_only_rule_listed():
+    ids = [r["id"] for r in lu.rules_for()]
+    assert "L-08" in ids and "只做创业板" in {r["id"]: r["condition"] for r in lu.rules_for()}["L-08"]
+
+
 def test_short_bars():
     assert lu.indicators(bars([10.0, 11.0, 11.2, 11.3])) is None
 
@@ -165,7 +204,7 @@ def test_short_bars():
 # ─── 一天的决策 ────────────────────────────────────────────────────
 
 def run(date_iso, positions, cash, watch, ind_map):
-    return lu.run_day(date_iso, positions, cash, None, watch, None, 0, dict(lu.PARAMS), av.GUARDS,
+    return lu.run_day(date_iso, positions, cash, None, watch, None, 0, dict(P2), av.GUARDS,
                       ind_of=lambda c: ind_map.get(c))
 
 

@@ -23,6 +23,9 @@
        口径是用户在 AskUserQuestion 里选的「收盘 > MA5 且 MA5 向上」(没选 5>10>20 那种排列)。
        MA5 向上等价于 T 收盘 > T-5 收盘,要 6 根日线,不够就算不出、不买。
        v1(没有 L-07)一年结果:3003 笔、每笔净 -40 元、合计 -120,631 元,见仓内 CLAUDE.md 研究台第 9 条
+- L-08 只做创业板 / 科创板(2026-09-17 用户追加,v3):代码 300 / 301 / 688 / 689 开头。
+       依据是按板块拆 v1:主板每笔 -40 ~ -47 元且显著,双创 -20 ~ -26 元不显著 —— 这是看过结果再挑,要换时间段验证。
+       开关 `growth_only`(False = v2 口径)。v2 一年:2957 笔、每笔净 -37 元、合计 -108,754 元
 - L-04 仓位:1 万元 ÷ T 收盘价,**取整股、不按 100 股一手取整** —— 按手取整的话 100 元以上的票买不了,
        或者被抬成一手后金额远超 1 万,每笔金额不一样,总盈亏就被高价股绑架了。这是替用户做的决定,研究口径优先
 卖出:
@@ -62,6 +65,7 @@ PARAMS = {
     # 面板「护栏」卡要读这两个键;这条线不限持仓、不限单股占比(每笔 1 万 / 本金 100 万 = 1%)
     "max_holdings": 1000, "max_pos_pct": 0.01,
     "watch_pool_days": 1,
+    "growth_only": True,             # L-08 只做创业板 / 科创板(v3)
 }
 STOP_KEYS: tuple = ()
 MIN_BARS = 5                         # 卖出只要 5 根;买入的 L-07 要 6 根,不够时 ma5 为 None、不买
@@ -102,6 +106,11 @@ def limit_of(code: str, name: str | None, p: dict = PARAMS, on: str | None = Non
     return p["lu_main"], "主板 10%"
 
 
+def is_growth(code: str) -> bool:
+    """创业板(300 / 301)或科创板(688 / 689)。和 limit_of 里判 20% 涨停的前缀是同一组。"""
+    return str(code).startswith(("300", "301", "688", "689"))
+
+
 def rules_for(p: dict = PARAMS) -> list[dict]:
     amt = f"{p['amount']:,.0f}"
     return [
@@ -111,6 +120,8 @@ def rules_for(p: dict = PARAMS) -> list[dict]:
         {"id": "L-02", "kind": "buy", "condition": "没再涨停:之后三天(T-2、T-1、T)每天涨幅都没到同一门槛"},
         {"id": "L-03", "kind": "buy", "condition": "守住:这三天的收盘都高于涨停那天(T-3)的收盘价"},
         {"id": "L-07", "kind": "buy", "condition": "5 日均线多头:信号当天收盘高于 5 日均线,且 5 日均线比前一天高"},
+        {"id": "L-08", "kind": "buy", "condition": ("只做创业板 / 科创板:代码 300 / 301 / 688 / 689 开头,主板不买" if p.get("growth_only")
+                                                   else "板块不限(主板、创业板、科创板都做)")},
         {"id": "L-04", "kind": "risk", "condition": (f"仓位:每个信号买入 {amt} 元(按 {amt} ÷ 收盘价取整股,不按 100 股一手取整),"
                                                     f"信号当天收盘价成交;不限同时持仓,不设熔断 / 连亏暂停")},
         {"id": "L-05", "kind": "sell", "condition": (f"卖出:买入后第 {p['hold_days']} 个交易日收盘全部卖出;"
@@ -123,7 +134,7 @@ RULES = rules_for(PARAMS)            # agent_run 的复盘 / 规则手册按 RUL
 
 
 def summary(p: dict = PARAMS) -> str:
-    return (f"A 股涨停后强势整理:4 个交易日前涨停、之后三天没再涨停且收盘都高于涨停日收盘、当天收盘站上向上的 5 日均线的票,"
+    return ((f"只做创业板 / 科创板。" if p.get("growth_only") else "") + f"A 股涨停后强势整理:4 个交易日前涨停、之后三天没再涨停且收盘都高于涨停日收盘、当天收盘站上向上的 5 日均线的票,"
             f"信号当天收盘买入 {p['amount']:,.0f} 元,第 {p['hold_days']} 个交易日收盘卖出。"
             "涨停按板块区分(主板 10% / 创业板科创板 20%;主板 ST 2025-07-07 前 5%),手续费按 A 股实际扣。")
 
@@ -159,7 +170,8 @@ def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> di
     l03 = all(x > c[1] for x in c[2:])
     ma5, ma5p = ind.get("ma5"), ind.get("ma5_prev")
     l07 = ma5 is not None and ma5p is not None and c[4] > ma5 and ma5 > ma5p
-    return {"L-01": l01, "L-02": l02, "L-03": l03, "L-07": l07, "ok": l01 and l02 and l03 and l07,
+    l08 = (not p.get("growth_only")) or is_growth(code)
+    return {"L-01": l01, "L-02": l02, "L-03": l03, "L-07": l07, "L-08": l08, "ok": l01 and l02 and l03 and l07 and l08,
             "ma5_na": ma5 is None or ma5p is None, "limit": lim, "board": board,
             "over_cap": chg[0] > cap, "cap": cap}
 
@@ -179,7 +191,7 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
         return it
     f = entry_checks(ind, code, name, p)
     it["price"] = round(ind["close"], 2)
-    keys = ("L-01", "L-02", "L-03", "L-07")
+    keys = ("L-01", "L-02", "L-03", "L-07", "L-08")
     it["progress_pct"] = int(sum(1 for k in keys if f[k]) / len(keys) * 100)
     it["fails"] = [k for k in keys if not f[k]]
     c, chg = ind["closes"], ind["chg"]
@@ -189,7 +201,7 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
     if held:
         it["gap"] = "已持仓 · 等卖出"
     elif f["ok"]:
-        it["gap"] = "四条全满足 —— 今日收盘买入。" + detail
+        it["gap"] = "买入条件全满足 —— 今日收盘买入。" + detail
     else:
         why = []
         if f["over_cap"]:
@@ -203,6 +215,8 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
         if not f["L-07"]:
             why.append("L-07 5 日均线算不出(日线不足 6 根)" if f["ma5_na"] else
                        ("L-07 收盘没站上 5 日均线" if c[4] <= ind["ma5"] else "L-07 5 日均线没有向上"))
+        if not f["L-08"]:
+            why.append("L-08 主板不做(只做创业板 / 科创板)")
         it["gap"] = "不买:" + ";".join(why) + "。" + detail
     if blocked_reason:
         it["blocked"] = True
