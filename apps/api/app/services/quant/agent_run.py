@@ -1245,10 +1245,13 @@ def _strategy_block(universe_size, st: dict, branch: str = "base") -> dict:
 
 def _guard_block(halt_reason, p: dict, branch: str | None = None) -> dict:
     g = av.GUARDS
+    # 引擎声明 NO_GUARDS(涨停后强势整理线:信号彼此独立)→ 熔断 / 连亏两项给 null 并带 guards_off,
+    # 前端显示「不设」—— 照抄 GUARDS 的 -3% / 3 笔会让人以为这条线有护栏
+    off = bool(branch and getattr(ao.engine_of(branch), "NO_GUARDS", False))
     return {"initial_capital": ao.initial_capital(branch) if branch else g["initial_capital"],
             "max_position_pct": int(p.get("max_single_stock_pct", p.get("max_pos_pct", 0)) * 100),
-            "max_holdings": p["max_holdings"], "daily_loss_halt_pct": g["daily_loss_halt_pct"],
-            "consecutive_loss_pause": g["consecutive_loss_pause"], "long_only": True,
+            "max_holdings": p["max_holdings"], "daily_loss_halt_pct": None if off else g["daily_loss_halt_pct"],
+            "consecutive_loss_pause": None if off else g["consecutive_loss_pause"], "guards_off": off, "long_only": True,
             "triggered_today": bool(halt_reason) if halt_reason is not None else False,
             "triggered_text": halt_reason}
 

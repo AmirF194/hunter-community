@@ -878,8 +878,9 @@ function vGuard(d) {
     ['起始资金', money(g.initial_capital)],
     ['单票上限', pct(g.max_position_pct, 0)],
     ['最多持仓', Number.isFinite(g.max_holdings) ? int(g.max_holdings) + ' 只' : NA],
-    ['单日亏损熔断', pct(g.daily_loss_halt_pct, 0)],
-    ['连亏停机', Number.isFinite(g.consecutive_loss_pause) ? int(g.consecutive_loss_pause) + ' 笔停一天' : NA],
+    // guards_off:这条线明确不设这两项(每个信号独立,涨停后强势整理线)。和「没给数」的 — 不是一回事,要写出来
+    ['单日亏损熔断', g.guards_off === true ? '不设' : pct(g.daily_loss_halt_pct, 0)],
+    ['连亏停机', g.guards_off === true ? '不设' : Number.isFinite(g.consecutive_loss_pause) ? int(g.consecutive_loss_pause) + ' 笔停一天' : NA],
   ].map(function (it) { return '<span class="g">' + it[0] + ' <b>' + it[1] + '</b></span>' }).join('')
   // long_only 缺失时不能默认「只做多 · 不加杠杆」—— 那是把没配置的东西当成事实在说,
   // 用户会据此判断风险敞口。同交易方向、教训类型那两处。

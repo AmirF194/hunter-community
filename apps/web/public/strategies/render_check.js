@@ -2233,7 +2233,9 @@ try {
       overview:{ pnl_abs:-12345, pnl_pct:-1.23, equity:987655, cash:900000, benchmark_symbol:'沪深300' },
       nav:{ points:[], benchmark_symbol:'沪深300' }, rules:[], holdings:{ items:[] }, watchlist:{ items:[] },
       trades:{ items:[] }, versions:[], lessons:[] }
-    var H_CNY = render(Object.assign({}, CCY_BASE, { currency:{ symbol:'¥', code:'CNY', unit:'元', market:'a' } }))
+    var H_CNY = render(Object.assign({}, CCY_BASE, { currency:{ symbol:'¥', code:'CNY', unit:'元', market:'a' },
+      guardrails:{ initial_capital:1000000, long_only:true, triggered_today:false, guards_off:true,
+                   daily_loss_halt_pct:null, consecutive_loss_pause:null } }))
     var H_USD = render(CCY_BASE)
     var H_RS_CCY = rsCard({ key:'limitup', label:'涨停后强势整理', status:'backtest', status_text:'全年回测',
       branches:[{ key:'limitup', label:'基准' }], best_branch:'limitup', currency:{ symbol:'¥' },
@@ -2247,6 +2249,7 @@ try {
     ['A 股线看板不出现 $', !/\$\d/.test(ctx.H_CNY)],
     ['没给 currency 仍是 $(美股线不变)', /-\$12,345/.test(ctx.H_USD) && !/¥/.test(ctx.H_USD)],
     ['渲染过 A 股线后再渲染美股线,符号换回 $', /\$1,000,000/.test(ctx.H_USD)],
+    ['不设护栏的线写「不设」,不是 —', /单日亏损熔断 <b>不设<\/b>/.test(ctx.H_CNY) && /连亏停机 <b>不设<\/b>/.test(ctx.H_CNY)],
     ['研究台卡片按线的货币', /-¥25/.test(ctx.H_RS_CCY) && /-\$437/.test(ctx.H_RS_USD)],
   ]
   for (const [name, ok] of checks) {

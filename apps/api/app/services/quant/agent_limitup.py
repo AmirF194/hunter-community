@@ -63,6 +63,7 @@ STOP_KEYS: tuple = ()
 MIN_BARS = 5
 ENTRY_RULE = "L-01"
 WATCH_POOL_DAYS = 1
+NO_GUARDS = True                     # 不设单日熔断 / 连亏暂停,面板护栏栏显示「不设」
 EXEC_NOTE = "纸上交易 · 日线收盘价成交 · 手续费从现金里扣(净值是扣费后的)"
 REBALANCE_SUFFIX = " · 次日收盘卖出(跌停 / 停牌顺延)"
 
