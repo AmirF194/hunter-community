@@ -19,6 +19,10 @@
        留 0.2 是给涨停价四舍五入到分的误差:3.33 元涨停 3.66,实际涨幅 9.91%。
 - L-02 没再涨停:T-2、T-1、T 三天每天涨幅都低于同一门槛
 - L-03 守住:T-2、T-1、T 三天收盘都 **高于** T-3 收盘(严格大于,用户原话「高于」)
+- L-07 5 日均线多头(2026-09-17 用户追加,v2):T 收盘 > MA5(T),且 MA5(T) > MA5(T-1)。
+       口径是用户在 AskUserQuestion 里选的「收盘 > MA5 且 MA5 向上」(没选 5>10>20 那种排列)。
+       MA5 向上等价于 T 收盘 > T-5 收盘,要 6 根日线,不够就算不出、不买。
+       v1(没有 L-07)一年结果:3003 笔、每笔净 -40 元、合计 -120,631 元,见仓内 CLAUDE.md 研究台第 9 条
 - L-04 仓位:1 万元 ÷ T 收盘价,**取整股、不按 100 股一手取整** —— 按手取整的话 100 元以上的票买不了,
        或者被抬成一手后金额远超 1 万,每笔金额不一样,总盈亏就被高价股绑架了。这是替用户做的决定,研究口径优先
 卖出:
@@ -60,7 +64,7 @@ PARAMS = {
     "watch_pool_days": 1,
 }
 STOP_KEYS: tuple = ()
-MIN_BARS = 5
+MIN_BARS = 5                         # 卖出只要 5 根;买入的 L-07 要 6 根,不够时 ma5 为 None、不买
 ENTRY_RULE = "L-01"
 WATCH_POOL_DAYS = 1
 NO_GUARDS = True                     # 不设单日熔断 / 连亏暂停,面板护栏栏显示「不设」
@@ -106,6 +110,7 @@ def rules_for(p: dict = PARAMS) -> list[dict]:
                                                    f"之前 ≥ {p['lu_st'] * 100:.1f}%")},
         {"id": "L-02", "kind": "buy", "condition": "没再涨停:之后三天(T-2、T-1、T)每天涨幅都没到同一门槛"},
         {"id": "L-03", "kind": "buy", "condition": "守住:这三天的收盘都高于涨停那天(T-3)的收盘价"},
+        {"id": "L-07", "kind": "buy", "condition": "5 日均线多头:信号当天收盘高于 5 日均线,且 5 日均线比前一天高"},
         {"id": "L-04", "kind": "risk", "condition": (f"仓位:每个信号买入 {amt} 元(按 {amt} ÷ 收盘价取整股,不按 100 股一手取整),"
                                                     f"信号当天收盘价成交;不限同时持仓,不设熔断 / 连亏暂停")},
         {"id": "L-05", "kind": "sell", "condition": (f"卖出:买入后第 {p['hold_days']} 个交易日收盘全部卖出;"
@@ -118,7 +123,7 @@ RULES = rules_for(PARAMS)            # agent_run 的复盘 / 规则手册按 RUL
 
 
 def summary(p: dict = PARAMS) -> str:
-    return (f"A 股涨停后强势整理:4 个交易日前涨停、之后三天没再涨停且收盘都高于涨停日收盘的票,"
+    return (f"A 股涨停后强势整理:4 个交易日前涨停、之后三天没再涨停且收盘都高于涨停日收盘、当天收盘站上向上的 5 日均线的票,"
             f"信号当天收盘买入 {p['amount']:,.0f} 元,第 {p['hold_days']} 个交易日收盘卖出。"
             "涨停按板块区分(主板 10% / 创业板科创板 20%;主板 ST 2025-07-07 前 5%),手续费按 A 股实际扣。")
 
@@ -128,14 +133,19 @@ def summary(p: dict = PARAMS) -> str:
 # ═══════════════════════════════════════════════════════════════
 
 def indicators(bars: list[tuple], p: dict = PARAMS, bench: dict | None = None) -> dict | None:
-    """bars = [(d, 收, 高, 低, 量)] 升序,最后一根是今天。只要最近 5 根收盘 + 今天的最低价。"""
+    """bars = [(d, 收, 高, 低, 量)] 升序,最后一根是今天。最近 5 根收盘 + 今天的最低价;有第 6 根才算 MA5 两天。"""
     if len(bars) < MIN_BARS:
         return None
     c = [b[1] for b in bars[-5:]]            # c[0]=T-4 · c[1]=T-3 · c[2]=T-2 · c[3]=T-1 · c[4]=T
     if any(x is None or x <= 0 for x in c):
         return None
+    ma5 = ma5_prev = None
+    if len(bars) >= 6 and bars[-6][1] is not None and bars[-6][1] > 0:
+        ma5 = sum(c) / 5
+        ma5_prev = (bars[-6][1] + sum(c[:4])) / 5
     return {"date": str(bars[-1][0]), "close": c[4], "low": bars[-1][3], "closes": c,
-            "chg": [c[i] / c[i - 1] - 1 for i in range(1, 5)]}      # chg[0] = T-3 涨幅 … chg[3] = T 涨幅
+            "chg": [c[i] / c[i - 1] - 1 for i in range(1, 5)],     # chg[0] = T-3 涨幅 … chg[3] = T 涨幅
+            "ma5": ma5, "ma5_prev": ma5_prev}
 
 
 def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> dict:
@@ -147,7 +157,10 @@ def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> di
     l01 = lim <= chg[0] <= cap
     l02 = all(x < lim for x in chg[1:])
     l03 = all(x > c[1] for x in c[2:])
-    return {"L-01": l01, "L-02": l02, "L-03": l03, "ok": l01 and l02 and l03, "limit": lim, "board": board,
+    ma5, ma5p = ind.get("ma5"), ind.get("ma5_prev")
+    l07 = ma5 is not None and ma5p is not None and c[4] > ma5 and ma5 > ma5p
+    return {"L-01": l01, "L-02": l02, "L-03": l03, "L-07": l07, "ok": l01 and l02 and l03 and l07,
+            "ma5_na": ma5 is None or ma5p is None, "limit": lim, "board": board,
             "over_cap": chg[0] > cap, "cap": cap}
 
 
@@ -166,15 +179,17 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
         return it
     f = entry_checks(ind, code, name, p)
     it["price"] = round(ind["close"], 2)
-    it["progress_pct"] = int(sum(1 for k in ("L-01", "L-02", "L-03") if f[k]) / 3 * 100)
-    it["fails"] = [k for k in ("L-01", "L-02", "L-03") if not f[k]]
+    keys = ("L-01", "L-02", "L-03", "L-07")
+    it["progress_pct"] = int(sum(1 for k in keys if f[k]) / len(keys) * 100)
+    it["fails"] = [k for k in keys if not f[k]]
     c, chg = ind["closes"], ind["chg"]
     detail = (f"{f['board']}:T-3 涨 {_pct(chg[0])},之后三天 {' / '.join(_pct(x) for x in chg[1:])},"
-              f"三天收盘 {' / '.join(f'{x:.2f}' for x in c[2:])} 对涨停日收盘 {c[1]:.2f}")
+              f"三天收盘 {' / '.join(f'{x:.2f}' for x in c[2:])} 对涨停日收盘 {c[1]:.2f}"
+              + (f";5 日均线 {ind['ma5']:.2f}(前一天 {ind['ma5_prev']:.2f})" if not f["ma5_na"] else ";5 日均线算不出(日线不足 6 根)"))
     if held:
         it["gap"] = "已持仓 · 等卖出"
     elif f["ok"]:
-        it["gap"] = "三条全满足 —— 今日收盘买入。" + detail
+        it["gap"] = "四条全满足 —— 今日收盘买入。" + detail
     else:
         why = []
         if f["over_cap"]:
@@ -185,6 +200,9 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
             why.append("L-02 之后三天里又涨停了")
         if not f["L-03"]:
             why.append("L-03 有一天收盘没高于涨停日收盘")
+        if not f["L-07"]:
+            why.append("L-07 5 日均线算不出(日线不足 6 根)" if f["ma5_na"] else
+                       ("L-07 收盘没站上 5 日均线" if c[4] <= ind["ma5"] else "L-07 5 日均线没有向上"))
         it["gap"] = "不买:" + ";".join(why) + "。" + detail
     if blocked_reason:
         it["blocked"] = True
@@ -256,7 +274,8 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     c, chg = ind["closes"], ind["chg"]
     rationale = (f"按{f['board']}判涨停(门槛 {f['limit'] * 100:.1f}%):T-3 收盘 ¥{c[1]:.2f},较前一天 {_pct(chg[0])}(L-01 涨停);"
                  f"之后三天涨幅 {' / '.join(_pct(x) for x in chg[1:])},都没到门槛(L-02);"
-                 f"三天收盘 {' / '.join(f'¥{x:.2f}' for x in c[2:])} 都高于涨停日收盘 ¥{c[1]:.2f}(L-03)。"
+                 f"三天收盘 {' / '.join(f'¥{x:.2f}' for x in c[2:])} 都高于涨停日收盘 ¥{c[1]:.2f}(L-03);"
+                 f"收盘 ¥{px:.2f} 高于 5 日均线 ¥{ind['ma5']:.2f},5 日均线较前一天 ¥{ind['ma5_prev']:.2f} 向上(L-07)。"
                  f"今日收盘 ¥{px:.2f} 买入 {size} 股 = ¥{cost:,.2f}(L-04:{p['amount']:,.0f} 元 ÷ 收盘价取整股),"
                  f"买入费用 ¥{fee:.2f}。")
     return _fill("buy", pos, size, px, ENTRY_RULE, rationale, **extra), None

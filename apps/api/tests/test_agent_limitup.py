@@ -18,8 +18,11 @@ def bars(closes, lows=None, start=date(2026, 3, 2)):
     return [(start + timedelta(days=i), c, c, lo, 1e6) for i, (c, lo) in enumerate(zip(closes, lows))]
 
 
-def ind(closes, lows=None):
-    return lu.indicators(bars(closes, lows))
+def ind(closes, lows=None, prev=None):
+    """5 根收盘 → 指标。前面补一根 T-5(默认 T-4 收盘的 0.9 倍,让 5 日均线向上),买入类用例不必每条都关心 L-07。"""
+    lows = lows or closes
+    p5 = closes[0] * 0.9 if prev is None else prev
+    return lu.indicators(bars([p5] + list(closes), [p5] + list(lows)))
 
 
 # ─── 板块门槛 ──────────────────────────────────────────────────────
@@ -70,8 +73,8 @@ def test_growth_board_12pct_day_is_not_limit_again():
 
 def test_st_main_board_before_and_after_rule_change():
     closes = [10.0, 10.5, 10.6, 10.55, 10.7]           # 涨 5%
-    old = lu.indicators(bars(closes, start=date(2025, 6, 2)))
-    new = lu.indicators(bars(closes, start=date(2026, 3, 2)))
+    old = lu.indicators(bars([9.0] + closes, start=date(2025, 6, 2)))
+    new = lu.indicators(bars([9.0] + closes, start=date(2026, 3, 2)))
     assert lu.entry_checks(old, "600001", "ST测试")["ok"]          # 2025-07-07 前 5% 算涨停
     assert not lu.entry_checks(new, "600001", "ST测试")["L-01"]    # 之后要 10%
 
@@ -109,6 +112,50 @@ def test_close_below_limit_day_rejected():
 def test_uses_limit_day_close_not_open():
     # 三天收盘都在涨停日收盘之上即可,和开盘价无关(用户没选开盘价口径)
     assert lu.entry_checks(ind([10.0, 11.0, 11.01, 11.02, 11.03]), "600001", "测试")["ok"]
+
+
+# ─── L-07 5 日均线多头(2026-09-17 用户追加:收盘 > MA5 且 MA5 向上)─────────
+
+def test_ma5_up_and_above_passes():
+    f = lu.entry_checks(ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=10.5), "600001", "测试")
+    assert f["L-07"] and f["ok"]
+
+
+def test_ma5_not_rising_rejected():
+    # T-5 收盘 11.5 > T 收盘 11.3 → MA5 比前一天低
+    i = ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=11.5)
+    assert i["ma5"] < i["ma5_prev"]
+    f = lu.entry_checks(i, "600001", "测试")
+    assert f["L-01"] and f["L-02"] and f["L-03"] and not f["L-07"] and not f["ok"]
+
+
+def test_ma5_flat_rejected():
+    # T-5 收盘 = T 收盘 → MA5 持平,不算向上
+    f = lu.entry_checks(ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=11.3), "600001", "测试")
+    assert not f["L-07"]
+
+
+def test_close_below_ma5_rejected():
+    # 涨停日后三天高位,T 收盘回落到 MA5 下面(仍高于涨停日收盘、MA5 仍向上)
+    i = ind([10.0, 12.0, 13.5, 13.6, 12.2], prev=9.0)      # 创业板:T-3 涨 20%,之后每天 < 20%
+    assert i["ma5"] > i["ma5_prev"] and 12.2 < i["ma5"]
+    f = lu.entry_checks(i, "300001", "测试")
+    assert f["L-03"] and not f["L-07"]
+
+
+def test_ma5_needs_six_bars():
+    i = lu.indicators(bars([10.0, 11.0, 11.2, 11.05, 11.3]))
+    assert i is not None and i["ma5"] is None
+    f = lu.entry_checks(i, "600001", "测试")
+    assert not f["L-07"] and f["ma5_na"] and not f["ok"]
+    it = lu.watch_item("600001", "测试", i, False, None)
+    assert "L-07" in it["fails"] and "算不出" in it["gap"]
+
+
+def test_ma5_value():
+    i = ind([10.0, 11.0, 11.2, 11.05, 11.3], prev=10.5)
+    assert i["ma5"] == pytest.approx((10.0 + 11.0 + 11.2 + 11.05 + 11.3) / 5)
+    assert i["ma5_prev"] == pytest.approx((10.5 + 10.0 + 11.0 + 11.2 + 11.05) / 5)
 
 
 def test_short_bars():
