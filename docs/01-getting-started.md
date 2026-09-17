@@ -5,7 +5,7 @@
 ## Prerequisites
 
 - Docker Engine 25+ · Docker Compose v2 (or Docker Desktop on Windows / macOS)
-- 2 CPU · 4 GB RAM · 10 GB disk (since v1.0.1 the opencode chat-engine image is **618 MB**, down from 7.5 GB; most of the remaining budget is build cache for the locally-built `api` / `web`)
+- 2 CPU · 4 GB RAM · 10 GB disk (all six services run from pre-built images since v1.1.0 — nothing is built locally)
 - Network access to `ghcr.io` (the chat engine image is pulled from there)
 - An LLM API key (any OpenAI-compatible gateway; DeepSeek is the tested default)
 
@@ -14,6 +14,13 @@
 ```bash
 git clone https://github.com/agentpit-io/hunter-community
 cd hunter-community
+docker compose up -d
+```
+
+That is the whole install since v1.1.0 — **`.env` is optional**. Copy it only when
+you want to change ports, point at your own LLM, or add a platform key:
+
+```bash
 cp .env.example .env
 ```
 
@@ -21,11 +28,19 @@ cp .env.example .env
 
 Edit `.env`:
 
-- **`JWT_SECRET`** · rotate it before you expose the instance to the
-  internet. Generate one:
+- **`JWT_SECRET`** · **leave it empty**. On first boot the API generates one and
+  stores it in the `hunter_secrets` volume; the opencode container mounts that
+  volume read-only and reads the same value (both containers must agree — the
+  API signs tokens that opencode's `hunter-auth` plugin verifies).
+  ⚠️ **Changing or losing `JWT_SECRET` means every stored key becomes
+  undecryptable and has to be entered again.** The generated one lives in a
+  Docker volume, so `docker compose down -v` destroys it. If you prefer to pin
+  your own, generate it once and never change it:
   ```bash
   openssl rand -base64 48 | tr -d '=/+' | head -c 60
   ```
+- **`HUNTER_VERSION` / `HUNTER_REGISTRY`** · which pre-built image tag to pull
+  and from where. Pin a concrete version, never `latest`.
 - `HUNTER_SINGLE_USER` · `1` (default) means **no login screen at all** — the
   frontend silently obtains a session for one built-in local account. Set it to
   `0` before letting anyone else reach this instance; with it on, any request to
@@ -33,9 +48,13 @@ Edit `.env`:
 - `REGISTRATION_MODE` · only applies when `HUNTER_SINGLE_USER=0` ·
   `open` (anyone can register · first user is admin) ·
   `invite` (needs code from admin · first user still admin) · `closed`
-- **`LLM_BASE_URL` / `LLM_DEFAULT_MODEL` / `LLM_API_KEY`** · required. If any is
-  missing, the `opencode` container refuses to start and keeps restarting. For
-  DeepSeek also set `LLM_SCHEMA_SANITIZE=1`. Per-provider templates:
+- **`LLM_BASE_URL` / `LLM_DEFAULT_MODEL` / `LLM_API_KEY`** · leave them empty and
+  all six services still come up healthy — you just cannot chat yet. There is no
+  configuration UI yet (the setup wizard ships in the next milestone), so to chat
+  today you do have to fill all three here and run `docker compose up -d` again.
+  Fill **all three or none**: a half-filled set makes the upstream return 401,
+  which gets swallowed into an empty message ("深度思考完成" with no body).
+  For DeepSeek also set `LLM_SCHEMA_SANITIZE=1`. Per-provider templates:
   [`docs/env-samples/`](./env-samples/).
 - `HUNTER_API_KEY` · optional, for the platform data pipeline. Can also be pasted
   in the UI later ("解锁全部工具", bottom-left).
@@ -47,10 +66,7 @@ Edit `.env`:
 docker compose up -d
 ```
 
-The first run builds `api` and `web` locally and pulls the opencode image
-(8–15 minutes; ~5 minutes once images are cached). Since v1.0.1 **the local build is
-the slow part** — the chat-engine image is a 153 MB download (measured 6 s from
-US-Central and 9 s from Singapore; mainland China not measured), down from 1.70 GB / 123 s.
+The first run only pulls images (~3–5 minutes); later runs take seconds.
 Six services should end up running:
 
 ```bash
@@ -104,19 +120,39 @@ server {
 }
 ```
 
+## Developing (local builds + source bind mounts)
+
+`docker-compose.yml` intentionally contains **no `build:` section and no bind
+mount of repository files** — otherwise a fresh clone (or a cloud platform) would
+silently start compiling Next.js instead of pulling. Everything that used to be
+mounted now lives in `docker-compose.dev.yml`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+With that override, `skills/`, `data/`, `user-skills/`, `apps/web/public/`,
+`scripts/llm-shim/`, `scripts/opencode/` and `scripts/opencode-mcp/` are mounted
+from the working tree again, so edits take effect without rebuilding. The images
+it builds are tagged `<name>:dev` so they cannot be mistaken for the released
+ones.
+
 ## Upgrading
 
 ```bash
-git pull
-docker compose up -d --build
+git pull                 # picks up the new HUNTER_VERSION default
+docker compose pull
+docker compose up -d
 ```
 
-Migrations are idempotent — the API applies them on boot. To reset the
-database entirely:
+Migrations are idempotent — the API applies them on boot (the image ships
+`db/migrations/` at `/opt/hunter-migrations`; the old
+`/docker-entrypoint-initdb.d` mount on postgres is gone, it only ever ran on a
+brand-new data volume). To reset the database entirely:
 
 ```bash
-docker compose down -v   # ⚠ nukes users + all state
-docker compose up -d --build
+docker compose down -v   # ⚠ nukes users + all state, including the generated JWT_SECRET
+docker compose up -d
 ```
 
 ## Common issues
@@ -128,7 +164,7 @@ docker compose up -d --build
 
 | # | 现象 | 原因 | 解决 |
 |---|---|---|---|
-| 1 | `docker compose up` 直接报错 `required variable JWT_SECRET is missing a value: 请在 .env 里设置 JWT_SECRET` | `docker-compose.yml` 强制要求 `JWT_SECRET`（api 签发 token、opencode 验签必须同一把，不允许留空） | 生成一把写进 `.env`，命令见下方 ① ；然后重新 `docker compose up -d` |
+| 1 | `docker compose up` 直接报错 `required variable JWT_SECRET is missing a value` | **v1.1.0 之前**的 `docker-compose.yml` 用 `${JWT_SECRET:?}` 强制要求这一项 | `git pull` 拿新的 `docker-compose.yml`（留空会自动生成）；想自己指定就按下方 ① 生成一把写进 `.env`，之后**不要再改**——换掉它等于已保存的 key 全部解不开 |
 | 2 | Windows 上没有 `openssl`，第 1 条的命令跑不了 | Windows 默认不带 openssl | 用下方 ① 的 PowerShell 版本 |
 | 3 | `opencode` 一直 `Restarting`，日志里有 `[gen-config] LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL 未设置` | 大模型三项少填了，`gen-config.py` 拒绝生成半残配置 | 在 `.env` 填齐 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_DEFAULT_MODEL`，再 `docker compose up -d` |
 | 4 | `llm-shim` 反复重启，日志 `[shim] LLM_BASE_URL 未设置,无法转发`；`opencode` 一直不启动 | 同上，shim 没有上游地址就退出，opencode 要等 shim 健康才会启动 | 同第 3 条 |
@@ -136,19 +172,19 @@ docker compose up -d --build
 | 6 | 每条消息都失败，日志 `Invalid JSON payload received. Unknown name "$schema"` | Gemini 只认 OpenAPI 子集的工具 schema。默认 `auto` 只在**模型名含 gemini** 时清洗，网关给模型起了别名就识别不到 | `.env` 设 `LLM_SCHEMA_SANITIZE=1` 强制清洗，再 `docker compose up -d` |
 | 7 | macOS 开着 Clash / Verge 等 TUN 模式代理，容器里调大模型或拉数据一直超时 | TUN 劫持了容器直连外网的流量 | `.env` 填 `HTTP_PROXY_UPSTREAM` 和 `HTTPS_PROXY_UPSTREAM`（指向宿主机代理，如 `http://host.docker.internal:7890`，端口以你的代理软件为准），`NO_PROXY_UPSTREAM` 保持默认，再 `docker compose up -d`（api 和发大模型请求的 llm-shim 都会走这个代理） |
 | 8 | 改了 `.env` 之后 `docker compose restart` 没有任何变化 | `restart` 只重启进程、不重读 `.env` | 改 `.env` 后一律 `docker compose up -d`（compose 会按新环境变量重建受影响的容器） |
-| 9 | 改了端口后，登录页或新闻页提示「网络错误」，浏览器请求还打到旧端口 | `NEXT_PUBLIC_API_URL` 是**构建期**写进前端产物的，改 `.env` 不会自动生效 | 同步改 `NEXT_PUBLIC_API_URL`（如 `http://localhost:8101`），然后 `docker compose up -d --build web` |
-| 10 | 端口被占，`Bind for 0.0.0.0:3100 failed: port is already allocated` | 本机已有服务占用 3100 / 8100 / 5442 / 6479 | 改 `.env` 里的 `WEB_HOST_PORT`、`API_HOST_PORT`、`POSTGRES_HOST_PORT`、`REDIS_HOST_PORT`；改了 API 端口要同时做第 9 条 |
+| 9 | 登录页或新闻页提示「网络错误」，浏览器请求打到一个奇怪的地址 | `.env` 里填了 `NEXT_PUBLIC_API_URL`，但它是**构建期**写进前端产物的，官方预构建镜像烘的是**空值**（= 同源 `/api/*`，由 web 自己的 BFF 转发给 api，无论有没有反代都通） | 把 `NEXT_PUBLIC_API_URL` 留空即可。真要填绝对地址就得自己重建 web：`docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build web` |
+| 10 | 端口被占，`Bind for 0.0.0.0:3100 failed: port is already allocated` | 本机已有服务占用 3100 / 8100 / 5442 / 6479 | 改 `.env` 里的 `WEB_HOST_PORT`、`API_HOST_PORT`、`POSTGRES_HOST_PORT`、`REDIS_HOST_PORT`。`NEXT_PUBLIC_API_URL` 留空时浏览器只打 web 那个端口，改 API 端口不影响前端 |
 | 11 | 行情、工具、SKILL、走势预测返回 403；深度分析报告全空 | 没配平台 key（`HUNTER_API_KEY`）或 key 已失效。聊天本身不受影响 | 到 [hunter.agentpit.io/dev/api-keys](https://hunter.agentpit.io/dev/api-keys) 免费申请，填进 `.env` 后 `docker compose up -d`；或在页面左下角「解锁全部工具」里粘贴，立即生效。也可以只用免费源，见 README「数据供给三选一」 |
-| 12 | 往 `skills/` 或 `user-skills/` 加了 SKILL，界面里看不到 | opencode 只在启动时扫描一次 SKILL 目录 | `docker compose restart opencode`（约 50 秒），再用 `python scripts/check_skill_sync.py` 核对 |
+| 12 | 往 `skills/` 或 `user-skills/` 加了 SKILL，界面里看不到 | 默认模式下 `skills/` 已打进镜像、不再挂载，改仓库目录对运行中的容器没有影响；opencode 也只在启动时扫描一次 | 改内置 `skills/` 要重建镜像，或用开发覆盖文件（`-f docker-compose.yml -f docker-compose.dev.yml`）把目录挂回去；改完 `docker compose restart opencode`（约 50 秒），再用 `python scripts/check_skill_sync.py` 核对 |
 | 13 | 聊一阵后提示「已达日 token 上限 500000 · 明日再试」 | 旧版 compose / 镜像的预算插件没有关闭。自部署用的是你自己的大模型额度，不该被限 | `git pull` 拿最新 `docker-compose.yml`（默认 `HUNTER_BUDGET_ENABLED=false`），再 `docker compose pull opencode && docker compose up -d` |
-| 14 | `opencode` 重启循环，日志 `EACCES: permission denied, mkdir '/home/hunter/.local/state'` | 自己改过挂载，只挂了 `.local/share/opencode`；docker 以 root 补建父目录，容器用户 1001 写不进去 | 恢复仓库里的挂载写法（整个 `/home/hunter/.local` 挂具名卷），再 `docker compose up -d opencode` |
+| 14 | `opencode` 启动即退出，日志 `[boot] ❌ 会话数据目录 /home/hunter/.local 不可写` | 卷根属主不是 1001。Docker 具名卷不会这样（空卷首次挂载会继承镜像里的属主）；K8s / 云平台的 PVC 不拷贝镜像内容，属主是平台给的 | 平台上给 opencode 的 Pod 设 `securityContext.fsGroup: 1001`，或加一个 initContainer 执行 `chown -R 1001:1001`；本地则恢复仓库里的挂载写法（整个 `/home/hunter/.local` 挂具名卷） |
 | 15 | 走 aihubmix 网关时对话一直超时；`docker compose logs llm-shim` 里是 `SSL: UNEXPECTED_EOF_WHILE_READING` | aihubmix 会拦截容器（Alpine）直连的 TLS 指纹 | 宿主机开着代理软件时，`.env` 填 `HTTPS_PROXY_UPSTREAM=http://host.docker.internal:<代理端口>`（llm-shim 与 api 共用这组变量），再 `docker compose up -d`；没有代理软件时，改用宿主机转发脚本，做法见 `docs/model-testing/results/2026-08-16_aihubmix_六家对比.md` |
 | 16 | 升级到 v1.0.1 之后打开页面「暂无对话」，但数据卷还在 | 对话引擎换成单文件二进制时，会话库的文件名会跟着 opencode 的 channel 变（源码版叫 `opencode-local.db`，编译版默认叫 `opencode.db`）。**卷、权限、路径全是对的，只是打开了一个空库** | 我们已在镜像里钉死 `OPENCODE_DB=opencode-local.db`，正常升级不会遇到。真遇到了**先别删卷**：`docker exec <opencode 容器> ls -la /home/hunter/.local/share/opencode/`，如果看到新建的空 `opencode.db` 而 `opencode-local.db` 还在，说明是这个问题；确认 `.env` 里没有覆盖 `OPENCODE_DB`，然后 `docker compose up -d opencode` |
 | 17 | `docker compose pull opencode` 报 `error from registry: denied` | 镜像是**公开**的，报 denied 通常不是没权限，而是机器上留着一份**过期的 GHCR 登录**——docker 会优先带上它，被拒之后**不会退回匿名** | `docker logout ghcr.io`，再 `docker compose pull opencode` |
 
 > ⚠️ **不要随手 `docker compose down -v`**：`-v` 会删掉所有具名卷，包括数据库和 opencode 的对话正文，删了无法恢复。
 
-**① 生成 `JWT_SECRET`**
+**① 生成 `JWT_SECRET`**（可选 —— 留空会自动生成一把存进 `hunter_secrets` 卷）
 
 ```bash
 # Linux / macOS
@@ -162,7 +198,7 @@ $b = New-Object byte[] 48
 Add-Content -Path .env -Encoding ascii -Value ("JWT_SECRET=" + [Convert]::ToBase64String($b))
 ```
 
-`.env.example` 里自带一行示例值 `JWT_SECRET=change-me-in-production-please`（公开值，不安全）。追加新值后请**把示例那一行删掉**，确保文件里只有一行 `JWT_SECRET`。
+`.env.example` 里的 `JWT_SECRET=` 是空的（v1.1.0 起）。追加新值后请确保文件里只有一行 `JWT_SECRET`——compose 用最后一行、`grep` 取第一行，两边对不上会得到莫名其妙的 401。
 
 ### More
 

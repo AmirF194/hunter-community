@@ -12,11 +12,22 @@ from openai import OpenAI
 from .prompts import THESIS_GEN_SYSTEM, build_thesis_user_prompt
 
 
-# 与 sentinel/llm_client.py 保持一致 · ONE_API_* 缺席时回退 LLM_* 三件套。
-_BASE_URL = os.getenv("ONE_API_BASE_URL") or os.getenv("LLM_BASE_URL", "http://104.197.139.51:3000/v1")
-_API_KEY  = os.getenv("ONE_API_KEY")     or os.getenv("LLM_API_KEY", "")
-_MODEL    = os.getenv("ONE_API_MODEL")   or os.getenv("LLM_DEFAULT_MODEL", "gemini-3.5-flash")
 _TIMEOUT  = 120
+
+
+def _resolve() -> tuple[str, str, str]:
+    """(base_url, api_key, model) · 与 sentinel/llm_client._resolve 同一套规则:
+    ONE_API_* 优先,否则 runtime_config(环境变量非空 → 数据库)。
+
+    **每次调用现取**(配置可能被向导改过),而且**不给任何默认值** ——
+    这里原来的默认地址是我们自己演示站的网关,开源用户没配时数据会被发过来。
+    """
+    from app.services.runtime_config import llm as _runtime_llm
+
+    cfg = _runtime_llm()
+    return ((os.getenv("ONE_API_BASE_URL") or "").strip() or cfg.base_url,
+            (os.getenv("ONE_API_KEY") or "").strip() or cfg.api_key,
+            (os.getenv("ONE_API_MODEL") or "").strip() or cfg.model)
 
 
 async def generate_thesis(stock_code: str, stock_name: str) -> dict:
@@ -28,18 +39,23 @@ async def generate_thesis(stock_code: str, stock_name: str) -> dict:
     if not stock_name.strip():
         return {"thesis": "", "llm_meta": {}, "error": "stock_name_empty"}
 
-    if not _API_KEY:
+    _base_url, _api_key, _model = _resolve()
+    if not (_base_url and _api_key and _model):
+        # 大模型尚未配置 —— 三项缺一就是没配好。不猜地址、不猜模型名。
+        logger.warning("thesis_gen: 大模型尚未配置(base_url {} · key {} · model {})",
+                       "有" if _base_url else "无", "有" if _api_key else "无",
+                       "有" if _model else "无")
         return {"thesis": "", "llm_meta": {}, "error": "no_api_key"}
 
     user_prompt = build_thesis_user_prompt(stock_name, stock_code)
-    client = OpenAI(api_key=_API_KEY, base_url=_BASE_URL, timeout=_TIMEOUT)
+    client = OpenAI(api_key=_api_key, base_url=_base_url, timeout=_TIMEOUT)
 
     t0 = time.time()
     try:
         # 直接纯文本调用，不用 response_format=json_object
         # max_tokens 3000：中文段落 800 字约需 1800-2400 token，3000 留余量防截断
         resp = client.chat.completions.create(
-            model      = _MODEL,
+            model      = _model,
             messages   = [
                 {"role": "system", "content": THESIS_GEN_SYSTEM},
                 {"role": "user",   "content": user_prompt},
@@ -56,7 +72,7 @@ async def generate_thesis(stock_code: str, stock_name: str) -> dict:
     finish_reason = resp.choices[0].finish_reason if resp.choices else "unknown"
     usage = resp.usage
     meta = {
-        "model":      _MODEL,
+        "model":      _model,
         "tokens_in":  usage.prompt_tokens if usage else 0,
         "tokens_out": usage.completion_tokens if usage else 0,
         "latency_ms": int((time.time() - t0) * 1000),

@@ -18,6 +18,10 @@ concurrency:
   group: e2e-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # 开发覆盖文件:把 build: 段与仓库 bind mount 加回来(M1 之后默认文件里没有了)
+  DEV: "-f docker-compose.yml -f docker-compose.dev.yml"
+
 jobs:
   compose:
     name: 起全栈 · 健康检查 · 对话冒烟
@@ -47,8 +51,9 @@ jobs:
             echo "LLM_PROVIDER=openai_compat"
             echo "LLM_BASE_URL=https://oneapi.hermes.agentpit.io/v1"
             echo "LLM_DEFAULT_MODEL=gemini-3.5-flash"
-            # gen-config.py 三个 LLM_* 缺一个就拒绝写配置 → opencode 起不来。
-            # 没密钥时给个占位值:服务照样健康,只是不做对话冒烟(见最后一步)。
+            # M1 起 gen-config.py 缺大模型配置也照样启动(写占位 provider,见 3.3),
+            # 所以这里给占位值只是为了让对话冒烟那一步有东西可用;
+            # 「一项都不配也能起来」由下面的「冷启动」作业单独验。
             echo "LLM_API_KEY=${SMOKE_LLM_API_KEY:-placeholder-no-smoke}"
           } >> .env
           # .env.example 默认给 opencode 开了 HTTP Basic Auth(opencode / changeme),
@@ -59,14 +64,17 @@ jobs:
           sed -i "s/^OPENCODE_PASS=.*/OPENCODE_PASS=e2e-$(openssl rand -hex 8)/" .env
           grep -c '^OPENCODE_PASS=' .env | grep -qx 1 || { echo "❌ .env 里 OPENCODE_PASS 不止一行"; exit 1; }
 
-      - name: 拉镜像(postgres / redis / opencode / llm-shim)
-        run: docker compose pull --ignore-buildable
+      # ⚠️ M1 起默认 docker-compose.yml **没有 build: 段**(四个自家服务全走预构建镜像),
+      # 所以「从源码起全栈」必须叠加开发覆盖文件,否则 `docker compose build` 无事可做、
+      # `up` 会去 GHCR 拉一个本次改动还没发布的版本 —— 测的就不是这个 PR 了。
+      - name: 拉镜像(postgres / redis)
+        run: docker compose $DEV pull --ignore-buildable
 
-      - name: 构建 api 与 web
-        run: docker compose build api web
+      - name: 构建四个自家镜像
+        run: docker compose $DEV build api web opencode llm-shim
 
       - name: 起全栈
-        run: docker compose up -d
+        run: docker compose $DEV up -d
 
       - name: 等 6 个服务健康
         run: |
@@ -76,7 +84,7 @@ jobs:
           while :; do
             bad=""
             for s in $services; do
-              cid=$(docker compose ps -q "$s" || true)
+              cid=$(docker compose $DEV ps -q "$s" || true)
               if [ -z "$cid" ]; then bad="$bad $s(无容器)"; continue; fi
               st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")
               case "$st" in healthy|running) ;; *) bad="$bad $s($st)" ;; esac
@@ -84,14 +92,14 @@ jobs:
             [ -z "$bad" ] && break
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "❌ 超时,未就绪:$bad"
-              docker compose ps
-              docker compose logs --tail=120
+              docker compose $DEV ps
+              docker compose $DEV logs --tail=120
               exit 1
             fi
             echo "等待中:$bad"
             sleep 10
           done
-          docker compose ps
+          docker compose $DEV ps
           echo "✅ 6 个服务全部就绪"
 
       - name: 查 /api/health
@@ -161,9 +169,130 @@ jobs:
 
       - name: 失败时导出日志
         if: failure()
-        run: docker compose logs --tail=300
+        run: docker compose $DEV logs --tail=300
 
       - name: 收尾
         if: always()
         # 只在一次性的 runner 上做 · 本地千万别抄这条(-v 会删数据卷)
+        run: docker compose $DEV down -v || true
+
+  cold-start:
+    name: 冷启动 · 不建 .env · 预构建镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 腾空间
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      # 这一步就是 M1 的核心承诺:`git clone` 之后**什么都不改**,直接 up 就能起来。
+      # 所以刻意不写 .env、不设任何环境变量 —— 有一个变量漏了默认值,这里就会红。
+      - name: 确认工作区没有 .env
+        run: |
+          set -eu
+          [ ! -f .env ] || { echo "❌ 仓库里不该有 .env"; exit 1; }
+          echo "✅ 没有 .env"
+
+      # 默认 compose 用的是 ${HUNTER_VERSION} 对应的 GHCR 镜像。PR 阶段那个版本
+      # 可能还没发布,所以本地把四个镜像按同一个标签构建出来顶上 ——
+      # 测的仍然是「默认 compose + 预构建镜像」这条路径(没有 build:、没有 bind mount),
+      # 只是镜像来自本地而不是 registry。
+      - name: 本地构建四个镜像并按默认标签打上
+        run: |
+          set -eu
+          VER=$(grep -oE 'HUNTER_VERSION:-[0-9a-zA-Z.\-]+' docker-compose.yml | head -1 | cut -d- -f2-)
+          echo "默认版本标签:$VER"
+          for spec in "api:apps/api/Dockerfile:." "web:apps/web/Dockerfile:apps/web" \
+                      "opencode:deploy/opencode.Dockerfile:." "llm-shim:deploy/llm-shim.Dockerfile:."; do
+            name=${spec%%:*}; rest=${spec#*:}; df=${rest%%:*}; ctx=${rest#*:}
+            echo "── 构建 $name"
+            docker build -q -f "$df" -t "ghcr.io/agentpit-io/hunter-community-$name:$VER" "$ctx"
+          done
+
+      - name: 起全栈(不建 .env)
+        run: docker compose up -d
+
+      - name: 等 6 个服务健康
+        run: |
+          set -eu
+          services="postgres redis llm-shim api web opencode"
+          deadline=$(( $(date +%s) + 600 ))
+          while :; do
+            bad=""
+            for s in $services; do
+              cid=$(docker compose ps -q "$s" || true)
+              if [ -z "$cid" ]; then bad="$bad $s(无容器)"; continue; fi
+              st=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")
+              case "$st" in healthy|running) ;; *) bad="$bad $s($st)" ;; esac
+            done
+            [ -z "$bad" ] && break
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "❌ 超时,未就绪:$bad"; docker compose ps; docker compose logs --tail=150; exit 1
+            fi
+            echo "等待中:$bad"; sleep 10
+          done
+          docker compose ps
+          echo "✅ 6 个服务全部就绪(没有 .env)"
+
+      - name: 密钥自动生成 · 重启后不变 · 日志无明文
+        run: |
+          set -eu
+          A=$(docker compose exec -T api sh -c 'cat /opt/hunter-secrets/secrets.env' | md5sum)
+          docker compose restart api
+          sleep 20
+          B=$(docker compose exec -T api sh -c 'cat /opt/hunter-secrets/secrets.env' | md5sum)
+          [ "$A" = "$B" ] || { echo "❌ 重启后密钥变了"; exit 1; }
+          echo "✅ 密钥重启后不变"
+          # 日志里不许出现密钥明文
+          VAL=$(docker compose exec -T api sh -c "sed -n 's/^JWT_SECRET=//p' /opt/hunter-secrets/secrets.env" | tr -d '\r\n')
+          [ -n "$VAL" ] || { echo "❌ 没生成 JWT_SECRET"; exit 1; }
+          if docker compose logs 2>&1 | grep -qF "$VAL"; then
+            echo "❌ 日志里出现了密钥明文"; exit 1
+          fi
+          echo "✅ 日志无密钥明文"
+
+      - name: 迁移账本齐全
+        run: |
+          set -eu
+          N=$(docker compose exec -T postgres psql -U hunter -d hunter -Atc "select count(*) from schema_migrations")
+          F=$(ls db/migrations/*.sql | wc -l)
+          echo "账本 $N 行 / 迁移文件 $F 个"
+          [ "$N" = "$F" ] || { echo "❌ 账本与文件数对不上"; exit 1; }
+
+      - name: 未配置大模型时不会回落 OpenCode Zen
+        run: |
+          set -eu
+          # gen-config 必须写出指向 llm-shim 的 provider —— 不写的话 opencode 会把
+          # 用户的问题发给内置的 OpenCode Zen(第三方免费模型)。
+          CFG=$(docker compose exec -T opencode sh -c 'cat /home/hunter/.config/opencode/opencode.jsonc')
+          echo "$CFG" | head -40
+          echo "$CFG" | grep -q 'hunter-llm' || { echo "❌ 没写 hunter-llm provider"; exit 1; }
+          echo "$CFG" | grep -q 'llm-shim' || { echo "❌ provider 没指向 llm-shim"; exit 1; }
+          echo "$CFG" | grep -qi 'opencode-zen\|zen' && { echo "❌ 配置里出现了 OpenCode Zen"; exit 1; }
+          echo "✅ provider 指向 llm-shim,没有回落 Zen"
+
+      - name: 未配置时对话返回中文提示
+        run: |
+          set -eu
+          # 从 api 容器里打 shim —— api 镜像装了 curl,shim 是裸 alpine 没有。
+          # 这条路径也正是 opencode 真实走的那条(容器网络内部)。
+          docker compose exec -T api curl -s -m 20 \
+            -X POST http://llm-shim:3999/v1/chat/completions \
+            -H 'content-type: application/json' \
+            -d '{"model":"hunter-unconfigured","messages":[{"role":"user","content":"hi"}]}' \
+            > /tmp/shim.json || true
+          cat /tmp/shim.json; echo
+          grep -q '大模型' /tmp/shim.json || { echo "❌ 没有返回中文的未配置提示"; exit 1; }
+          echo "✅ 未配置时立刻返回中文错误"
+
+      - name: 失败时导出日志
+        if: failure()
+        run: docker compose logs --tail=300
+
+      - name: 收尾
+        if: always()
         run: docker compose down -v || true

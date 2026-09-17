@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 from app.services.gm import findata_db, yahoo_hk, kpred_rules, news_src
+from app.services import runtime_config
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -80,7 +81,7 @@ async def gm_assistant_chat(body: ChatIn, request: Request):
     msgs.append({"role": "system", "content": "重要: 必须使用简体中文回答, 除股票代码/专有名词外不得输出英文段落。"})
     try:
         client = OpenAI(api_key=api_key,
-                        base_url=os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1"),
+                        base_url=runtime_config.one_api_base_url(),
                         timeout=60)
         resp = client.chat.completions.create(
             model=os.getenv("ONE_API_MODEL", "gemini-3.5-flash"),

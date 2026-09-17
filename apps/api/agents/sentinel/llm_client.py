@@ -17,35 +17,55 @@ from openai import OpenAI
 from .prompts import parse_llm_json
 
 
-# ONE_API_* 是内部 SaaS 网关的历史命名,开源版用户没有那个网关。
-# 缺 ONE_API_KEY 时回退到 .env 里统一的 LLM_* 三件套 —— chat 走通,深度分析
-# (MarketAnalyst / Sentinel / ComprehensiveJudge / FinalRiskJudge / ExitStrategy)
-# 也跟着走通,不需要用户再单独维护一套 key。
-# 注:online_analysis/llm_client.py 里已做过同样的 fallback,这里补齐 agents/ 侧。
-_BASE_URL    = os.getenv("ONE_API_BASE_URL") or os.getenv("LLM_BASE_URL", "http://104.197.139.51:3000/v1")
-_API_KEY     = os.getenv("ONE_API_KEY")     or os.getenv("LLM_API_KEY", "")
-_MODEL       = os.getenv("ONE_API_MODEL")   or os.getenv("LLM_DEFAULT_MODEL", "gemini-3.5-flash")
-# Deep Think 用 · 综合判官 + 风控裁判走此模型 · 决策质量优先于速度/成本
-# 若未配 ONE_API_DEEP_MODEL 则依次回退:LLM_DEEP_MODEL → LLM_DEFAULT_MODEL → _MODEL。
-# 开源版用户只有一个 LLM_DEFAULT_MODEL 时,深浅走同模型也能跑通;不至于因为
-# 硬写 gemini-3.1-pro-preview 而在 DeepSeek/OpenAI 网关上撞 model-not-found。
-_DEEP_MODEL  = (
-    os.getenv("ONE_API_DEEP_MODEL")
-    or os.getenv("LLM_DEEP_MODEL")
-    or os.getenv("LLM_DEFAULT_MODEL")
-    or _MODEL
-)
 # 30-45s 对推理型模型 + 长上下文经常不够(reasoning tokens 一多就到 40-60s),
 # 抬到 120s 避免 APITimeoutError 把整条辩论链吞成"暂不可用"。上游 SSE 有自己
 # 的心跳,不会因为这里等长而无限阻塞前端。
 _TIMEOUT     = 120
 
 
+def _resolve() -> tuple[str, str, str]:
+    """(base_url, api_key, model) · 每次调用现取,**不能缓存成模块级常量**。
+
+    配置可以来自数据库(初始化向导写的),而数据库里的值是运行时可变的 ——
+    写成模块级 `os.getenv(...)` 的话,向导保存完 api 进程里还是旧值,要重启容器
+    才生效。ONE_API_* 是内部 SaaS 网关的历史命名,留着不改内部部署的行为;
+    缺它时走 runtime_config(环境变量非空 → 数据库)。
+
+    ⚠️ **不给 base_url / model 任何默认值。** 原来的默认地址是我们自己演示站的
+    网关(104.197.139.51:3000),开源用户没配时数据会被发到我们的服务器上;
+    模型名猜一个 gemini-3.5-flash 也只会让配了别家网关的用户收到 404。
+    """
+    from app.services.runtime_config import llm as _runtime_llm
+
+    cfg = _runtime_llm()
+    base_url = (os.getenv("ONE_API_BASE_URL") or "").strip() or cfg.base_url
+    api_key = (os.getenv("ONE_API_KEY") or "").strip() or cfg.api_key
+    model = (os.getenv("ONE_API_MODEL") or "").strip() or cfg.model
+    return base_url, api_key, model
+
+
+def _deep_model() -> str:
+    """Deep Think 用 · 综合判官 + 风控裁判走此模型 · 决策质量优先于速度/成本。
+
+    依次回退 ONE_API_DEEP_MODEL → LLM_DEEP_MODEL → 当前生效的模型。只有一个
+    模型时深浅走同一个也能跑通;**不硬写 gemini-3.1-pro-preview**,那会在
+    DeepSeek / OpenAI 网关上撞 model-not-found。
+    """
+    return ((os.getenv("ONE_API_DEEP_MODEL") or "").strip()
+            or (os.getenv("LLM_DEEP_MODEL") or "").strip()
+            or _resolve()[2])
+
+
 def get_client() -> OpenAI | None:
-    if not _API_KEY:
-        logger.warning("agents.sentinel llm: 无可用 key · 请在 .env 里填 LLM_API_KEY(或 ONE_API_KEY)")
+    base_url, api_key, model = _resolve()
+    if not (base_url and api_key and model):
+        logger.warning("agents.sentinel llm: 大模型尚未配置(base_url {} · key {} · model {})"
+                       " · 请在 .env 里填 LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL,"
+                       "或在首页完成初始化向导",
+                       "有" if base_url else "无", "有" if api_key else "无",
+                       "有" if model else "无")
         return None
-    return OpenAI(api_key=_API_KEY, base_url=_BASE_URL, timeout=_TIMEOUT)
+    return OpenAI(api_key=api_key, base_url=base_url, timeout=_TIMEOUT)
 
 
 def llm_json_call(system: str, user: str, *,
@@ -71,7 +91,7 @@ def llm_json_call(system: str, user: str, *,
     if client is None:
         return None, {"error": "no_api_key", "tokens_in": 0, "tokens_out": 0}
 
-    use_model = model or (_DEEP_MODEL if deep else _MODEL)
+    use_model = model or (_deep_model() if deep else _resolve()[2])
     t0 = time.time()
     # 不用 response_format={"type":"json_object"} · DeepSeek V4-pro / R1 等
     # thinking-型模型开启 json 强制模式后,thinking token 仍会漏进 content,

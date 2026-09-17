@@ -47,36 +47,38 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 
 ## 🚀 Deploy in 5 minutes
 
-**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 10 GB disk (since v1.0.1 the chat-engine image is **618 MB**, down from 7.5 GB; the rest is build cache for the locally-built api / web) · 4 GB RAM · access to `ghcr.io`
+**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 10 GB disk · 4 GB RAM · access to `ghcr.io`
 
 > [!IMPORTANT]
 > **Only two things to understand before you start**
 > 1. **An LLM key (required)**: powers the chat itself. We recommend [DeepSeek](https://platform.deepseek.com/api_keys); any OpenAI-compatible gateway works (Qwen, Claude, GPT, OpenRouter, OneAPI, AIHubMix, ...).
 > 2. **Where data comes from (pick one, can wait)**: ① free open-source sources, work out of the box; ② your own MCP / data sources; ③ the platform data pipeline, [free key](https://hunter.agentpit.io/dev/api-keys). See [Data supply: pick one of three](#-data-supply-pick-one-of-three).
 
-**Time**: ~5 minutes with images already pulled; 8–15 minutes on a first run, **dominated by building `api` and `web` locally**.
-Since v1.0.1 the chat-engine image is a 153 MB download (measured: 6 s from US-Central, 9 s from Singapore; mainland China not measured) — it used to be 1.70 GB and took 123 s on the same machine.
+**Time**: since v1.1.0 all six services run from **pre-built images — nothing is built locally**. First run is ~3–5 minutes (all of it image downloads); later `up -d` takes seconds.
 
 ```bash
-# 1. Get the code
+# 1. Get the code and start (no need to touch .env first — JWT_SECRET is generated for you)
 git clone https://github.com/agentpit-io/hunter-community
 cd hunter-community
+docker compose up -d
+open http://localhost:3100
+
+# 2. Configure the LLM (**still manual today**; the setup wizard ships in the next release)
 cp .env.example .env
-
-# 2. Generate a secret (Linux / macOS; for Windows PowerShell see docs/01-getting-started.md)
-echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
-#    then delete the example line JWT_SECRET=change-me-in-production-please from .env
-
-# 3. Edit .env and fill in the three LLM settings (DeepSeek example)
+# Fill these three in .env (DeepSeek example), then run `docker compose up -d` again:
 # LLM_BASE_URL=https://api.deepseek.com/v1
 # LLM_DEFAULT_MODEL=deepseek-v4-pro
 # LLM_API_KEY=sk-xxxxx
 # LLM_SCHEMA_SANITIZE=1                 # required for DeepSeek
 # HUNTER_API_KEY=hunt_tools_xxxxx       # optional · platform data pipeline
+```
 
-# 4. Start and open the browser
-docker compose up -d
-open http://localhost:3100
+> Without the three LLM settings all six services still come up healthy — you just cannot chat yet.
+
+**Working on the code?** Stack the development override file on top. It brings back local builds and every source bind mount (edits under `apps/web/public` and `scripts/` take effect immediately):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 **Then try**:
