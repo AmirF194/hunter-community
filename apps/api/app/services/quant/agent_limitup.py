@@ -26,6 +26,14 @@
 - L-08 只做创业板 / 科创板(2026-09-17 用户追加,v3):代码 300 / 301 / 688 / 689 开头。
        依据是按板块拆 v1:主板每笔 -40 ~ -47 元且显著,双创 -20 ~ -26 元不显著 —— 这是看过结果再挑,要换时间段验证。
        开关 `growth_only`(False = v2 口径)。v2 一年:2957 笔、每笔净 -37 元、合计 -108,754 元
+- L-09 整理幅度不大(2026-09-17 用户追加,v4):T-2 ~ T 三天的最高价 − 最低价,除以 T-3 涨停日收盘,≤ 15%。
+       门槛是用户让 Claude 按数据定的:双创 533 个信号按 13~18% 逐档看,15% 每笔 -0.05%(不设 -0.22%),
+       但 14% 是 -0.45%、16% 是 -0.16% —— 15% 更像落在好点上,不是稳定规律;2025-06~09 检验段 13~18% 各档都好于不设(+1~+1.9%,只有几十笔)。
+- L-10 不许三天都缩量(v4):T-2、T-1、T 三天成交量**每天都低于**涨停日成交量的不买。
+       用户原本要「涨停日放量 或 三天缩量整理」,研究结果相反:三天每天都比涨停日缩量的 65 笔每笔 -1.50%(t -2.36),
+       上下半年和检验段都为负,是这次最一致的信号;涨停日放量(量比 ≥ 2)每笔 -0.50%,比不设还差。用户看过数据后选了本口径。
+       成交量是比值,A 股「手 / 股」单位不影响;高低价或成交量缺失 → 算不出、不买
+       v3(没有 L-09 / L-10)一年:532 笔、每笔净 -22 元、合计 -11,559 元
 - L-04 仓位:1 万元 ÷ T 收盘价,**取整股、不按 100 股一手取整** —— 按手取整的话 100 元以上的票买不了,
        或者被抬成一手后金额远超 1 万,每笔金额不一样,总盈亏就被高价股绑架了。这是替用户做的决定,研究口径优先
 卖出:
@@ -66,6 +74,8 @@ PARAMS = {
     "max_holdings": 1000, "max_pos_pct": 0.01,
     "watch_pool_days": 1,
     "growth_only": True,             # L-08 只做创业板 / 科创板(v3)
+    "amp_max": 15.0,                 # L-09 三天整理幅度上限(% of 涨停日收盘,v4);None = 不限
+    "no_all_shrink": True,           # L-10 三天成交量每天都低于涨停日 → 不买(v4)
 }
 STOP_KEYS: tuple = ()
 MIN_BARS = 5                         # 卖出只要 5 根;买入的 L-07 要 6 根,不够时 ma5 为 None、不买
@@ -122,6 +132,10 @@ def rules_for(p: dict = PARAMS) -> list[dict]:
         {"id": "L-07", "kind": "buy", "condition": "5 日均线多头:信号当天收盘高于 5 日均线,且 5 日均线比前一天高"},
         {"id": "L-08", "kind": "buy", "condition": ("只做创业板 / 科创板:代码 300 / 301 / 688 / 689 开头,主板不买" if p.get("growth_only")
                                                    else "板块不限(主板、创业板、科创板都做)")},
+        {"id": "L-09", "kind": "buy", "condition": (f"整理幅度不大:涨停后三天的最高价 − 最低价,不超过涨停日收盘的 {p['amp_max']:g}%"
+                                                   if p.get("amp_max") is not None else "整理幅度不限")},
+        {"id": "L-10", "kind": "buy", "condition": ("不许三天都缩量:涨停后三天成交量每天都低于涨停日的,不买" if p.get("no_all_shrink")
+                                                   else "量能不限")},
         {"id": "L-04", "kind": "risk", "condition": (f"仓位:每个信号买入 {amt} 元(按 {amt} ÷ 收盘价取整股,不按 100 股一手取整),"
                                                     f"信号当天收盘价成交;不限同时持仓,不设熔断 / 连亏暂停")},
         {"id": "L-05", "kind": "sell", "condition": (f"卖出:买入后第 {p['hold_days']} 个交易日收盘全部卖出;"
@@ -150,13 +164,21 @@ def indicators(bars: list[tuple], p: dict = PARAMS, bench: dict | None = None) -
     c = [b[1] for b in bars[-5:]]            # c[0]=T-4 · c[1]=T-3 · c[2]=T-2 · c[3]=T-1 · c[4]=T
     if any(x is None or x <= 0 for x in c):
         return None
+    # L-09 / L-10:涨停后三天的高低价与成交量(T-3 = bars[-4])。缺一个就 None,判定时算不出不买
+    amp = all_shrink = None
+    hs, ls = [b[2] for b in bars[-3:]], [b[3] for b in bars[-3:]]
+    if all(x is not None for x in hs + ls):
+        amp = (max(hs) - min(ls)) / c[1] * 100
+    vs, vlu = [b[4] for b in bars[-3:]], bars[-4][4]
+    if vlu is not None and vlu > 0 and all(x is not None and x == x for x in vs) and vlu == vlu:
+        all_shrink = all(x < vlu for x in vs)
     ma5 = ma5_prev = None
     if len(bars) >= 6 and bars[-6][1] is not None and bars[-6][1] > 0:
         ma5 = sum(c) / 5
         ma5_prev = (bars[-6][1] + sum(c[:4])) / 5
     return {"date": str(bars[-1][0]), "close": c[4], "low": bars[-1][3], "closes": c,
             "chg": [c[i] / c[i - 1] - 1 for i in range(1, 5)],     # chg[0] = T-3 涨幅 … chg[3] = T 涨幅
-            "ma5": ma5, "ma5_prev": ma5_prev}
+            "ma5": ma5, "ma5_prev": ma5_prev, "amp": amp, "all_shrink": all_shrink}
 
 
 def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> dict:
@@ -171,7 +193,11 @@ def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> di
     ma5, ma5p = ind.get("ma5"), ind.get("ma5_prev")
     l07 = ma5 is not None and ma5p is not None and c[4] > ma5 and ma5 > ma5p
     l08 = (not p.get("growth_only")) or is_growth(code)
-    return {"L-01": l01, "L-02": l02, "L-03": l03, "L-07": l07, "L-08": l08, "ok": l01 and l02 and l03 and l07 and l08,
+    amp, shr = ind.get("amp"), ind.get("all_shrink")
+    l09 = p.get("amp_max") is None or (amp is not None and amp <= p["amp_max"] + 1e-9)     # 1e-9:(13.8 − 12) / 12 算出 15.000000000000002
+    l10 = (not p.get("no_all_shrink")) or shr is False
+    return {"L-01": l01, "L-02": l02, "L-03": l03, "L-07": l07, "L-08": l08, "L-09": l09, "L-10": l10,
+            "ok": l01 and l02 and l03 and l07 and l08 and l09 and l10,
             "ma5_na": ma5 is None or ma5p is None, "limit": lim, "board": board,
             "over_cap": chg[0] > cap, "cap": cap}
 
@@ -191,7 +217,7 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
         return it
     f = entry_checks(ind, code, name, p)
     it["price"] = round(ind["close"], 2)
-    keys = ("L-01", "L-02", "L-03", "L-07", "L-08")
+    keys = ("L-01", "L-02", "L-03", "L-07", "L-08", "L-09", "L-10")
     it["progress_pct"] = int(sum(1 for k in keys if f[k]) / len(keys) * 100)
     it["fails"] = [k for k in keys if not f[k]]
     c, chg = ind["closes"], ind["chg"]
@@ -217,6 +243,11 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
                        ("L-07 收盘没站上 5 日均线" if c[4] <= ind["ma5"] else "L-07 5 日均线没有向上"))
         if not f["L-08"]:
             why.append("L-08 主板不做(只做创业板 / 科创板)")
+        if not f["L-09"]:
+            why.append("L-09 高低价缺失,整理幅度算不出" if ind.get("amp") is None else
+                       f"L-09 三天整理幅度 {ind['amp']:.1f}% 超过 {p['amp_max']:g}%")
+        if not f["L-10"]:
+            why.append("L-10 成交量缺失,量能算不出" if ind.get("all_shrink") is None else "L-10 三天成交量每天都低于涨停日")
         it["gap"] = "不买:" + ";".join(why) + "。" + detail
     if blocked_reason:
         it["blocked"] = True
@@ -290,7 +321,9 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
                  f"之后三天涨幅 {' / '.join(_pct(x) for x in chg[1:])},都没到门槛(L-02);"
                  f"三天收盘 {' / '.join(f'¥{x:.2f}' for x in c[2:])} 都高于涨停日收盘 ¥{c[1]:.2f}(L-03);"
                  f"收盘 ¥{px:.2f} 高于 5 日均线 ¥{ind['ma5']:.2f},5 日均线较前一天 ¥{ind['ma5_prev']:.2f} 向上(L-07)。"
-                 f"今日收盘 ¥{px:.2f} 买入 {size} 股 = ¥{cost:,.2f}(L-04:{p['amount']:,.0f} 元 ÷ 收盘价取整股),"
+                 + (f"三天整理幅度 {ind['amp']:.1f}%(L-09 ≤ {p['amp_max']:g}%)。" if ind.get("amp") is not None and p.get("amp_max") is not None else "")
+                 + ("三天里至少有一天成交量不低于涨停日(L-10)。" if ind.get("all_shrink") is False and p.get("no_all_shrink") else "")
+                 + f"今日收盘 ¥{px:.2f} 买入 {size} 股 = ¥{cost:,.2f}(L-04:{p['amount']:,.0f} 元 ÷ 收盘价取整股),"
                  f"买入费用 ¥{fee:.2f}。")
     return _fill("buy", pos, size, px, ENTRY_RULE, rationale, **extra), None
 

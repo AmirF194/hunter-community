@@ -18,7 +18,8 @@ def bars(closes, lows=None, start=date(2026, 3, 2)):
     return [(start + timedelta(days=i), c, c, lo, 1e6) for i, (c, lo) in enumerate(zip(closes, lows))]
 
 
-P2 = dict(lu.PARAMS, growth_only=False)       # v2 口径:板块不限。L-08 的用例用默认 PARAMS
+P2 = dict(lu.PARAMS, growth_only=False, amp_max=None, no_all_shrink=False)   # v2 口径。L-08 ~ L-10 的用例用默认 PARAMS
+P3 = dict(lu.PARAMS, amp_max=None, no_all_shrink=False)                      # v3 口径(只做双创,不限幅度与量能)
 
 
 def checks(p, i, code, name):
@@ -172,7 +173,7 @@ def test_ma5_value():
 def test_growth_only_board(code, ok):
     growth = code.startswith(("3", "68"))
     closes = [10.0, 12.0, 12.2, 12.1, 12.3] if growth else [10.0, 11.0, 11.2, 11.05, 11.3]
-    f = lu.entry_checks(ind(closes), code, "测试")          # 默认 PARAMS = v3
+    f = checks(P3, ind(closes), code, "测试")
     assert f["L-01"] and f["L-02"] and f["L-03"] and f["L-07"]
     assert f["L-08"] is ok and f["ok"] is ok
 
@@ -185,9 +186,9 @@ def test_growth_only_default_on_and_switch():
 
 def test_growth_only_watch_text_and_no_buy():
     i = ind([10.0, 11.0, 11.2, 11.05, 11.3])
-    it = lu.watch_item("600001", "测试", i, False, None)
-    assert it["fails"] == ["L-08"] and "主板不做" in it["gap"] and it["progress_pct"] == 80
-    r = lu.run_day("2026-03-06", [], 1_000_000.0, None, [("600001", "测试", None)], None, 0, dict(lu.PARAMS), av.GUARDS,
+    it = lu.watch_item("600001", "测试", i, False, None, p=P3)
+    assert it["fails"] == ["L-08"] and "主板不做" in it["gap"] and it["progress_pct"] == 85
+    r = lu.run_day("2026-03-06", [], 1_000_000.0, None, [("600001", "测试", None)], None, 0, dict(P3), av.GUARDS,
                    ind_of=lambda c: i)
     assert r["fills"] == []
 
@@ -195,6 +196,77 @@ def test_growth_only_watch_text_and_no_buy():
 def test_growth_only_rule_listed():
     ids = [r["id"] for r in lu.rules_for()]
     assert "L-08" in ids and "只做创业板" in {r["id"]: r["condition"] for r in lu.rules_for()}["L-08"]
+
+
+# ─── L-09 整理幅度 ≤ 15% · L-10 不许三天都缩量(2026-09-17 用户追加,v4)──────────
+
+def vbars(closes, highs, lows, vols, start=date(2026, 3, 2)):
+    return [(start + timedelta(days=i), c, h, lo, v) for i, (c, h, lo, v) in enumerate(zip(closes, highs, lows, vols))]
+
+
+# 创业板:T-5 9.0 · T-4 10.0 · T-3 12.0(+20%)· 三天 12.4 / 12.2 / 12.6
+C6 = [9.0, 10.0, 12.0, 12.4, 12.2, 12.6]
+
+
+def v4(highs3, lows3, vols4, code="300001"):
+    highs = [9.0, 10.0, 12.0] + highs3
+    lows = [9.0, 10.0, 12.0] + lows3
+    vols = [1e6, 1e6] + vols4                        # vols4 = [涨停日, T-2, T-1, T]
+    i = lu.indicators(vbars(C6, highs, lows, vols))
+    return i, lu.entry_checks(i, code, "测试")
+
+
+def test_v4_default_params():
+    assert lu.PARAMS["amp_max"] == 15.0 and lu.PARAMS["no_all_shrink"] is True
+    ids = [r["id"] for r in lu.rules_for()]
+    assert "L-09" in ids and "L-10" in ids
+
+
+def test_amp_within_passes():
+    # 最高 12.9、最低 12.0 → (12.9 − 12.0) / 12.0 = 7.5%
+    i, f = v4([12.6, 12.5, 12.9], [12.1, 12.0, 12.3], [5e6, 6e6, 4e6, 4e6])
+    assert i["amp"] == pytest.approx(7.5)
+    assert f["L-09"] and f["L-10"] and f["ok"]
+
+
+def test_amp_boundary_15_passes_and_above_rejected():
+    _, f = v4([13.8, 12.5, 12.9], [12.0, 12.0, 12.3], [5e6, 6e6, 4e6, 4e6])     # (13.8 − 12)/12 = 15%
+    assert f["L-09"]
+    i, f = v4([13.9, 12.5, 12.9], [12.0, 12.0, 12.3], [5e6, 6e6, 4e6, 4e6])     # 15.83%
+    assert not f["L-09"] and not f["ok"]
+    it = lu.watch_item("300001", "测试", i, False, None)
+    assert "L-09" in it["fails"] and "15.8%" in it["gap"]
+
+
+def test_amp_missing_high_rejected():
+    highs = [9.0, 10.0, 12.0, None, 12.5, 12.9]
+    lows = [9.0, 10.0, 12.0, 12.1, 12.0, 12.3]
+    i = lu.indicators(vbars(C6, highs, lows, [1e6, 1e6, 5e6, 6e6, 4e6, 4e6]))
+    assert i["amp"] is None
+    f = lu.entry_checks(i, "300001", "测试")
+    assert not f["L-09"] and not f["ok"]
+
+
+def test_all_three_days_shrink_rejected():
+    i, f = v4([12.6, 12.5, 12.9], [12.1, 12.0, 12.3], [5e6, 4e6, 3e6, 2e6])
+    assert i["all_shrink"] is True and not f["L-10"] and not f["ok"]
+    assert "三天成交量每天都低于涨停日" in lu.watch_item("300001", "测试", i, False, None)["gap"]
+
+
+def test_one_day_not_below_passes():
+    # 有一天和涨停日持平(不低于)→ 不算三天都缩量
+    _, f = v4([12.6, 12.5, 12.9], [12.1, 12.0, 12.3], [5e6, 4e6, 5e6, 2e6])
+    assert f["L-10"] and f["ok"]
+
+
+def test_volume_missing_rejected():
+    i, f = v4([12.6, 12.5, 12.9], [12.1, 12.0, 12.3], [5e6, 4e6, None, 2e6])
+    assert i["all_shrink"] is None and not f["L-10"]
+
+
+def test_v4_switches_off_restore_v3():
+    i, _ = v4([13.9, 12.5, 12.9], [12.0, 12.0, 12.3], [5e6, 4e6, 3e6, 2e6])
+    assert checks(P3, i, "300001", "测试")["ok"]
 
 
 def test_short_bars():
