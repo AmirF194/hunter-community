@@ -198,13 +198,14 @@ jobs:
       - name: 已迁移库上逐个文件重跑(真·幂等检查)
         run: |
           set -uo pipefail
-          # 白名单 · 每一项都必须写清楚为什么豁免
-          #   0010_daily_close_view.sql:它与 0014 定义同一个视图 daily_close,0014 多一列
-          #     adv_20d。按文件名顺序执行时 0010 在 0014 之前,永远没问题;只有「单独重跑
-          #     0010」才会撞上 CREATE OR REPLACE VIEW 不能减列。账本保证了不会重跑,
-          #     所以不修它(改历史文件会让 checksum 变,已部署的库启动时刷 WARNING)。
-          #     已知影响与两种排障手法见 docs/setup-wizard/M1-B-自动迁移.md。
-          SKIP="0010_daily_close_view.sql"
+          # 白名单 · 每一项都必须写清楚为什么豁免。
+          # **现在是空的,这是有意的** —— 0010 曾经在这里(它与 0014 定义同一个视图,
+          # 0014 多一列 adv_20d,CREATE OR REPLACE VIEW 不能减列),M1 合并时直接在
+          # 0010 开头加了 `DROP VIEW IF EXISTS daily_close;` 根治,而不是长期豁免:
+          # 中招的是「手工补跑过迁移、账本却是空的」那类库(演示站就是),
+          # 它们升级后会从头跑一遍 0010,api 直接起不来。
+          # 加白名单只会让这一步看不见这个回归。详见 docs/setup-wizard/M1-B-自动迁移.md。
+          SKIP=""
           FAIL=0
           for f in db/migrations/*.sql; do
             b=$(basename "$f")

@@ -89,9 +89,15 @@ services:
       HUNTER_LOCAL_USER_EMAIL: ${HUNTER_LOCAL_USER_EMAIL:-local@hunter.local}
       REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
       HUNTER_ADMIN_EMAILS: ${HUNTER_ADMIN_EMAILS:-}
-      # MCP 回调 /api/internal/* 的共享口令 · **必须与 opencode 容器同值**
-      # 两边都空时恰好也能对上,但那等于没有认证,所以给个默认值
-      HUNTER_INTERNAL_KEY: ${HUNTER_INTERNAL_KEY:-hunter-internal-local}
+      # MCP 回调 /api/internal/* 的共享口令 · **必须与 opencode、web 三家同值**
+      #
+      # ⚠️ 这里**不要**再给 `hunter-internal-local` 之类的兜底值。原因有两条:
+      #   1. 那是写在公开仓库里的公开字符串,等于没有认证;
+      #   2. compose 的 `${X:-默认}` 会让这个变量**永远非空**,而 boot.sh 的优先级是
+      #      「环境变量非空 → 密钥卷 → 本次生成」—— 有兜底值的话第一条永远命中,
+      #      api 自动生成的那把密钥一辈子用不上(M1 · 设计方案 3.2)。
+      # 留空时:api 首启生成并写进 hunter_secrets 卷,opencode 与 web 只读挂同一个卷读回来。
+      HUNTER_INTERNAL_KEY: ${HUNTER_INTERNAL_KEY:-}
       # ⭐ 唯一必填的 hunter-side key · 一把管所有 SaaS 功能(Kronos + 数据 + 工具 + SKILL)
       # 服务端按 key 归属计量/限流/鉴权 · 每部署自己申请一把即可(免费 · 30 秒)
       # 申请: hunter.agentpit.io/dev/api-keys
@@ -117,7 +123,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-openai_compat}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-}
       # Sub-agent 独立 env · 代码里 20+ 处硬编码 fallback = gemini-3.5-flash
       # 换基座 LLM 时必须一并透传,否则 DeepSeek/Anthropic 会 400 拒绝 gemini 模型名
       # → tool 累计重试 > 45s → MCP ReadTimeout → 前端"hermes-api call failed"。
@@ -199,9 +205,15 @@ services:
       HERMES_API_URL: http://api:8000
       # BFF 拦截用户上传图片后调 /api/internal/ocr/extract 抽文本 · 走共享 secret
       # 必须与 api 服务的 HUNTER_INTERNAL_KEY 同源 · 缺了 OCR 会 401 · image → text 兜底走"OCR 失败"分支
-      HUNTER_INTERNAL_KEY: ${HUNTER_INTERNAL_KEY:-hunter-internal-local}
+      # 留空时由入口脚本从下面那个密钥卷读回来(见 apps/web/entrypoint.sh)
+      HUNTER_INTERNAL_KEY: ${HUNTER_INTERNAL_KEY:-}
     ports:
       - "${WEB_HOST_PORT:-3100}:3000"
+    volumes:
+      # 自动生成的密钥 · **只读**。web 要和 api 用同一个 HUNTER_INTERNAL_KEY,
+      # 否则 api 自动生成随机值之后,web 还拿着空值去调 /api/internal/ocr/extract → 一律 401,
+      # 而症状只是「上传图片没反应」,401 和「api 没起来」在前端看不出区别。
+      - hunter_secrets:/opt/hunter-secrets:ro
     # 原来这里挂 ./apps/web/public:/app/public:ro(本地改 HTML/JS 立即生效)。
     # 移到 docker-compose.dev.yml —— 镜像里本来就有 public/,挂载只是开发便利。
 
@@ -252,12 +264,12 @@ services:
       # MCP subprocesses reach the api container via internal docker network
       HERMES_API_URL: http://api:8000
       # Shared secret for /api/internal/* calls
-      HUNTER_INTERNAL_KEY: ${HUNTER_INTERNAL_KEY:-hunter-internal-local}
+      HUNTER_INTERNAL_KEY: ${HUNTER_INTERNAL_KEY:-}
       # LLM · same source of truth as api container
       LLM_PROVIDER: ${LLM_PROVIDER:-openai_compat}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-gpt-4o-mini}
+      LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-}
       # 审计日志默认写 /opt/opencode-audit/,但容器以非 root 跑,在 /opt 下建不了目录。
       # **指到卷内,不要指 /tmp**:/tmp 是容器可写层,一次 recreate 就没
       # (2026-09-07 会话全丢那次,审计日志跟着一起没了 —— 而审计日志的全部意义
