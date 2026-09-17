@@ -1978,6 +1978,22 @@ try {
       MB.runResult = S.result && S.result.matched
       MB.runLeft = S.quota.scan.remaining
       MB.runToast = TOASTS.join(' | ')
+      // 自用本地部署 SCREEN_SCAN_GAP_S=0:后端 quota 回 scan_gap_s 0 → 不倒数、直接出结果
+      var gapBox = [], saveQ = S.quota
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: 0 }); gapBox.push(revealSeconds())
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: -1 }); gapBox.push(revealSeconds())
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: '0' }); gapBox.push(revealSeconds())
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: 2.5 }); gapBox.push(revealSeconds())
+      S.quota = null; gapBox.push(revealSeconds())
+      MB.gapSecs = gapBox
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: 0 })
+      REVEALED = null; S.result = null
+      NEXT = { ok: true, status: 200, data: { matched: 4, rows: [] } }
+      await runScan()
+      MB.gap0Revealed = REVEALED
+      MB.gap0Result = S.result && S.result.matched
+      MB.gap0Reveal = S.reveal
+      S.quota = saveQ
       MB.mutate = true
       S.conditions[0].expr = 'close > 20'
       await runScan()
@@ -2038,6 +2054,9 @@ try {
     const as = [
       ['单条测试带 probe:true(不扣扫描次数)', MB.probeBody && MB.probeBody.probe === true],
       ['扫描后调用等待 5 秒', MB.runRevealed === 5],
+      ['scan_gap_s:0 → 0 秒;负数 / 字符串 / 没额度 → 按 5;小数向上取整',
+        JSON.stringify(MB.gapSecs) === JSON.stringify([0, 5, 5, 3, 5])],
+      ['scan_gap_s 为 0:不调 revealAfter、直接出结果', MB.gap0Revealed === null && MB.gap0Result === 4 && !MB.gap0Reveal],
       ['等完才放结果', MB.runResult === 9],
       ['返回的剩余次数记上', MB.runLeft === 11],
       ['每用一次提示剩余', /本次扫描计 1 次,今天还剩 11 \/ 20 次/.test(MB.runToast)],

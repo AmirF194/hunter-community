@@ -12,7 +12,8 @@
   失败的扫描不该吃掉用户的次数。AI 同理:模型调用失败退回。
 - **单条测试(条件行上的「测」)不扣扫描次数**,单独计 `probe`,上限宽松(每天 300),
   返回体不带结果行、只给命中数。它和「运行扫描」共用上游快照缓存,几乎不额外打上游。
-- **两次扫描至少隔 5 秒**(`SCAN_GAP_S`)。前端每次扫描后倒数 5 秒再显示结果;
+- **两次扫描至少隔 5 秒**(`SCAN_GAP_S`,环境变量 `SCREEN_SCAN_GAP_S` 可改,自用本地部署设 0)。
+  前端每次扫描后按 `/screener/quota` 返回的 `scan_gap_s` 倒数再显示结果;
   后端这条是给绕过页面直接调接口的,不然前端的等待拦不住任何人。
 
 ## 为什么存 postgres 不存内存
@@ -27,6 +28,7 @@ api 现在是单进程,内存计数也能用,但**容器一重建计数就清零
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -43,7 +45,22 @@ TIERS: dict[str, dict[str, int]] = {
 }
 KIND_LABEL = {"ai": "AI 识别", "scan": "扫描", "probe": "单条测试", "preset": "官方示例运行"}
 
-SCAN_GAP_S = 5.0
+def _gap_from_env() -> float:
+    """两次扫描的间隔 / 结果倒数秒数。默认 5(2026-09-14 按 5000 会员保护上游定的)。
+
+    `SCREEN_SCAN_GAP_S=0` 给**自用的本地部署**(2026-09-17 用户要求本地扫描完立刻显示):
+    只有自己一个人用,等 5 秒保护不了谁。多人共用的部署别改 —— 这 5 秒是替所有人省上游。
+    只关等待,上游那层保护(90 秒取数缓存 / 同时 3 路 / 页间隔 0.15 秒,见 screen_source.fetch_rows)照旧。
+    写错(非数字 / 负数)按默认 5,不按 0 —— 宁可多等也别悄悄把保护关了。"""
+    raw = (os.getenv("SCREEN_SCAN_GAP_S") or "").strip()
+    try:
+        v = float(raw) if raw else 5.0
+    except ValueError:
+        return 5.0
+    return v if v >= 0 else 5.0
+
+
+SCAN_GAP_S = _gap_from_env()
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS screen_quota_usage (
@@ -210,7 +227,7 @@ _gap_lock = threading.Lock()
 
 
 def check_gap(user_id: str, role: str | None, now: float | None = None) -> None:
-    if tier_of(role) is None:
+    if tier_of(role) is None or SCAN_GAP_S <= 0:
         return
     now = time.monotonic() if now is None else now
     with _gap_lock:

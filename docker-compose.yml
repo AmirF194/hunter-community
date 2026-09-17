@@ -78,6 +78,9 @@ services:
       # 申请: hunter.agentpit.io/dev/api-keys
       # 留空也能跑:聊天用你自己的 LLM key,工具则在 UI 左下角「解锁全部工具」里填 key
       HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      # 魔法筛选器两次扫描的间隔 / 扫完倒数几秒再出结果。默认 5(多人共用时替所有人省上游)。
+      # 只有自己用的本地部署可设 0 = 扫完立刻显示;上游缓存 / 并发限制不受影响
+      SCREEN_SCAN_GAP_S: ${SCREEN_SCAN_GAP_S:-5}
       # 独立运行模式 · 兜底默认改成空 · .env 里显式清空即真清空 · 不再默默指回平台
       HUNTER_UPSTREAM_URL: ${HUNTER_UPSTREAM_URL:-}
       # P4 · pluggable providers

@@ -1188,7 +1188,7 @@ function vResult() {
   if (S.reveal) {
     return '<div class="panel" style="margin-top:14px"><div class="p-bd sc-reveal">' +
       '<b id="sc-reveal-n">' + S.reveal + '</b><span>扫描已完成,结果稍后显示。' +
-      '每次扫描后等 ' + REVEAL_S + ' 秒再出结果 —— 数据源是免费通道,会员多了要一起省着用。</span></div></div>'
+      '每次扫描后等 ' + revealSeconds() + ' 秒再出结果 —— 数据源是免费通道,会员多了要一起省着用。</span></div></div>'
   }
   if (!S.result) return ''
   const r = S.result
@@ -1702,6 +1702,12 @@ function applyParams(text) {
 // 真正的拦截在接口层 —— 这里藏按钮拦不住任何人。
 const QUOTA_API = '/api/quant/screener/quota'
 const REVEAL_S = 5
+// 实际倒数几秒以后端 /screener/quota 的 scan_gap_s 为准(env SCREEN_SCAN_GAP_S,自用本地部署设 0 = 扫完立刻显示)。
+// 额度还没拉到 / 字段缺失 / 写错一律按 5 —— 宁可多等,别悄悄把等待关掉。
+function revealSeconds() {
+  const v = S.quota && S.quota.scan_gap_s
+  return (typeof v === 'number' && Number.isFinite(v) && v >= 0) ? Math.ceil(v) : REVEAL_S
+}
 const LOGIN_BACK = '/strategies/screener.html'
 const LOGIN_MSG = '魔法筛选器是会员功能,登录或注册后即可使用。'
 
@@ -2049,8 +2055,9 @@ async function runScan() {
   const d = r.data
   if (d && d.quota) { setQuota(d.quota); toastQuota(d.quota, '本次扫描计 1 次') }
   else if (d && d.official_preset) toast('官方示例「' + d.official_preset.name + '」原样运行,不计扫描次数')
-  // 每次扫描后等 5 秒再显示结果(2026-09-14 用户定 · 按 5000 会员保护上游)
-  await revealAfter(REVEAL_S)
+  // 每次扫描后等 5 秒再显示结果(2026-09-14 用户定 · 按 5000 会员保护上游;秒数见 revealSeconds)
+  const wait = revealSeconds()
+  if (wait > 0) await revealAfter(wait)
   // 倒数的这几秒里条件 / 市场 / 回溯日被改过,这张表就不是当前条件的结果了 —— 不能拿来骗人
   if (buildScript() !== script || S.market !== market || (S.asOf || null) !== asOf) {
     S.result = null
