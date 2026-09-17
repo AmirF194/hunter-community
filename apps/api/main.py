@@ -417,6 +417,12 @@ app.include_router(internal_cap_router.router, prefix="/api")
 from app.routers import internal_uzi as internal_uzi_router
 app.include_router(internal_uzi_router.router, prefix="/api")
 
+# ── 用户 SKILL 导出 · 供 opencode 的 `skills.urls` 拉取(M1 子任务 D)──
+# 云平台上 api 与 opencode 不能共用一个卷,用户装的 SKILL 模型看不到;
+# 改由 opencode 原生的 URL 拉取解决,见 routers/internal_skills.py 开头
+from app.routers import internal_skills as internal_skills_router
+app.include_router(internal_skills_router.router, prefix="/api")
+
 # ── 用户画像与记忆体 + admin 用户洞察后台 ──
 # ── 平台 key 门控 · 开源版解锁全部工具与 SKILL ──
 from app.routers import hunter_unlock as hunter_unlock_router
