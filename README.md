@@ -81,6 +81,29 @@ cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
+### 从 v1.0.x 升级
+
+```bash
+git pull
+docker compose pull && docker compose up -d
+bash scripts/migrate-volumes.sh          # ⚠️ 只有老用户需要,见下
+```
+
+> [!WARNING]
+> **装过 SKILL / 导入过数据包的老用户必须跑一次 `scripts/migrate-volumes.sh`。**
+> v1.0.x 把 `./user-skills` 和 `./data-packages` 两个仓库目录直接挂给 api;
+> v1.1.0 起改成 api 自己的具名卷 —— 云平台上没有仓库目录,挂不了。
+> 直接升级的话新卷是空的,**你装过的 SKILL 会从界面上消失**。
+> 文件一个都没丢(还在 `user-skills/` 下),这个脚本就是把它们搬进新卷;
+> 幂等,目标非空时不覆盖。api 启动日志里也会提示。
+
+其余几处变化不需要你做什么:
+- `JWT_SECRET` 留空不再拒绝启动 —— 首次启动自动生成并写进 `hunter_secrets` 卷。
+  **已经在 `.env` 里填了的不要动**:换掉它会让已保存的 key 全部解不开、登录全部失效。
+- 数据库迁移改由 api 启动时执行(原来挂给 postgres 的 initdb 目录只在建卷那次跑,
+  所以老部署一直缺表缺列)。升级后第一次启动会把没跑过的迁移补齐,日志里逐个列出来。
+- 用户 SKILL 不再靠 api 与 opencode 共享目录,改由 opencode 按 URL 向 api 拉取。
+
 **打开后试试**:
 - 问「601899 现在多少钱」—— 返回富卡片(实时价 · 52 周分位 · AI 短评)
 - 打开顶部「策略中心」—— 全市场扫描筛选器与小鹿研究台

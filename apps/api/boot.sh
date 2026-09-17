@@ -183,5 +183,21 @@ echo "[boot] 密钥就位 · JWT_SECRET 来源=$_jwt_src 长度=${#JWT_SECRET}" 
 # 缺表的实例「看着是健康的、一点就 500」比直接起不来难排查得多。
 python -m app.migrate
 
+# ── ②b 升级提示:用户 SKILL 卷是空的 ───────────────────────────
+# v1.0.x 把 ./user-skills 和 ./data-packages 直接 bind mount 给 api;v1.1.0 起改成
+# api 自己的具名卷(云平台上没有仓库目录,挂不了)。直接升级的话新卷是空的,
+# 用户装过的 SKILL 会从界面上消失 —— 文件一个都没丢,只是容器看不到了。
+#
+# 这里检测不到宿主机上那个老目录(它已经不挂进来了),所以只能提示,不能自动搬。
+# 但**空卷**这个信号本身足够准:全新安装也是空的,那时这句提示无害;
+# 老用户看到它就知道该去跑那个脚本了。比让他自己发现「SKILL 不见了」强得多。
+USER_SKILLS_DIR="${HUNTER_USER_SKILLS_DIR:-/opt/hunter-user-skills}"
+if [ -d "$USER_SKILLS_DIR" ] && [ -z "$(ls -A "$USER_SKILLS_DIR" 2>/dev/null)" ]; then
+    echo "[boot] 提示:用户 SKILL 目录 $USER_SKILLS_DIR 是空的。"
+    echo "[boot]   全新安装可忽略这句。**如果你是从 v1.0.x 升级、之前在界面里装过 SKILL**,"
+    echo "[boot]   它们还在部署目录的 user-skills/ 下,只是 v1.1.0 起改用具名卷了。"
+    echo "[boot]   在部署目录执行一次:bash scripts/migrate-volumes.sh"
+fi
+
 # ── ③ 启动 ────────────────────────────────────────────────────
 exec uvicorn main:app --host 0.0.0.0 --port 8000
