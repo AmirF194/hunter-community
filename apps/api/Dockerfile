@@ -7,6 +7,12 @@
 # 现在:builder 装进 venv,运行层只拷 venv。运行层保留 tesseract(OCR 要的是
 # 二进制本身,不是编译器)与 curl(HEALTHCHECK)。
 # P1 skeleton · minimal boot supported via HUNTER_MINIMAL_BOOT=1
+#
+# ⚠️ 构建上下文是**仓库根**,不是 apps/api:
+#     docker build -f apps/api/Dockerfile -t hunter-community-api .
+# 因为镜像要自带 skills/ 、data/ 、db/migrations/ —— 它们在 apps/api 外面,
+# 而 Dockerfile 不允许 COPY 上下文之外的路径。
+# 生效的忽略文件因此是**仓库根的 .dockerignore**(apps/api/.dockerignore 不再生效)。
 
 # ─── builder ────────────────────────────────────────────────
 FROM python:3.11-slim AS builder
@@ -28,7 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY requirements.txt ./
+COPY apps/api/requirements.txt ./
 RUN pip install -r requirements.txt
 
 # ─── runtime ────────────────────────────────────────────────
@@ -55,12 +61,30 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 
-# 排除项见 apps/api/.dockerignore(tests / __pycache__ / *.pyc 等不进镜像)
-COPY . /app
+# 排除项见**仓库根**的 .dockerignore(apps/api/tests 、__pycache__ 、*.pyc 等不进镜像)
+COPY apps/api /app
+
+# ── 原来靠 bind mount 送进容器的三份数据,现在打进镜像 ──────────
+# 打进镜像而不是挂载,是为了让「没有仓库目录」的云平台也能跑起来。
+# 代价是换推荐位 / 换内置 SKILL 要重建镜像 —— 本地开发仍可用
+# docker-compose.dev.yml 把这三处挂回去,改完立即生效。
+#
+# 内置 SKILL(原 ./skills:/opt/hunter-skills:ro)· api **永远不该改它们**,
+# 「恢复默认永远改不坏」这条靠的就是内置层只读。用户 SKILL 走具名卷
+# hunter_user_skills:/opt/hunter-user-skills。
+COPY skills /opt/hunter-skills
+# 随代码分发的静态数据(原 ./data:/opt/hunter-data:ro)· 推荐 SKILL 清单、股票名称基线表等
+COPY data /opt/hunter-data
+# 迁移 SQL(原来挂给 postgres 当 initdb,只在数据卷第一次初始化时执行 ——
+# 已有部署永远跑不到)。现在改由 api 启动时执行(boot.sh → app.migrate,子任务 B)。
+# ⚠️ 路径 /opt/hunter-migrations 是迁移执行器写死读的位置,**不要改名**。
+COPY db/migrations /opt/hunter-migrations
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 入口换成 boot.sh:密钥就位 → 数据库迁移 → 起 uvicorn(见 apps/api/boot.sh)。
+# 直接 CMD uvicorn 的话,迁移永远不会跑,表现是「服务看着健康、一点就 500」。
+CMD ["/app/boot.sh"]
