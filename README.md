@@ -47,36 +47,38 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 ## 🚀 5 分钟跑起来
 
-**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 10 GB(v1.0.1 起对话引擎镜像 **618 MB**,此前是 7.5 GB;余量主要给本地构建 api / web 的缓存)· 内存 4 GB · 能访问 `ghcr.io`
+**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 10 GB · 内存 4 GB · 能访问 `ghcr.io`
 
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
 > 1. **大模型 key(必需)**:驱动对话本身。推荐 [DeepSeek](https://platform.deepseek.com/api_keys),也支持任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)。
 > 2. **数据从哪来(三选一,可以先不管)**:① 免费开源源,开箱即用;② 接你自己的 MCP / 数据源;③ 平台数据管道,[免费申请 key](https://hunter.agentpit.io/dev/api-keys)。详见 [数据供给三选一](#-数据供给三选一)。
 
-**耗时**:镜像已拉取约 5 分钟;首次约 8–15 分钟,**大头是本地构建 `api` 与 `web`**。
-对话引擎镜像自 v1.0.1 起只要下 153 MB(实测:美国节点 6 秒、新加坡节点 9 秒;国内未测),已经不再是瓶颈 —— 此前它是 1.70 GB、同一台机器实测 123 秒。
+**耗时**:自 v1.1.0 起六个服务**全部走预构建镜像,不再本地构建** —— 首次约 3–5 分钟(全在下镜像),之后 `up -d` 几十秒。
 
 ```bash
-# 1. 拉代码
+# 1. 拉代码并启动(不需要先改 .env,JWT_SECRET 会自动生成)
 git clone https://github.com/agentpit-io/hunter-community
 cd hunter-community
+docker compose up -d
+open http://localhost:3100
+
+# 2. 配大模型(**现在还得手动填**,图形化向导在下一个版本交付)
 cp .env.example .env
-
-# 2. 生成密钥(Linux / macOS;Windows PowerShell 写法见 docs/01-getting-started.md)
-echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
-#    然后删掉 .env 里原有的示例行 JWT_SECRET=change-me-in-production-please
-
-# 3. 编辑 .env,填大模型三项(以 DeepSeek 为例)
+# 在 .env 里填这三项(以 DeepSeek 为例),然后再 `docker compose up -d` 一次:
 # LLM_BASE_URL=https://api.deepseek.com/v1
 # LLM_DEFAULT_MODEL=deepseek-v4-pro
 # LLM_API_KEY=sk-xxxxx
 # LLM_SCHEMA_SANITIZE=1                 # DeepSeek 必开
 # HUNTER_API_KEY=hunt_tools_xxxxx       # 可选 · 平台数据管道
+```
 
-# 4. 启动,打开浏览器
-docker compose up -d
-open http://localhost:3100
+> 不填大模型三项时六个服务照样健康,只是不能对话。
+
+**要改代码的开发者**叠加开发覆盖文件 —— 它带回本地构建与全部源码挂载(改 `apps/web/public` 下的静态文件、`scripts/` 下的 MCP 与插件都立即生效):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 **打开后试试**:

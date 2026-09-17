@@ -11,6 +11,23 @@
 #   · sed 改 .opencode/opencode.jsonc 的 MCP timeout —— 镜像源头已是 180000
 set -e
 
+# ── 会话数据目录可写自检(R0 预研结论第四节)────────────────────────
+# 会话正文(opencode-local.db)与审计日志都写在 /home/hunter/.local 下。
+# 这个目录不可写时,opencode 的插件会在 mkdir 处崩掉 —— 容器进入重启循环,
+# 日志里只有一句 `EACCES: permission denied, mkdir ...`,看不出是卷属主的问题。
+# 与其等它崩,不如在这里拦下并说清原因。
+#
+# Docker 具名卷不会出这个问题:空卷首次挂载会把镜像里该路径的内容与属主
+# (1001:1001)拷进卷。K8s / 云平台的 PVC 不拷贝,卷根属主是平台给的(实测
+# 1000:1003 或 0:0),容器以 1001 跑就写不进去。
+if [ ! -w /home/hunter/.local ]; then
+    owner=$(stat -c '%u:%g' /home/hunter/.local 2>/dev/null || echo '未知')
+    echo "[boot] ❌ 会话数据目录 /home/hunter/.local 不可写(当前属主 ${owner},容器以 uid 1001 运行)。" >&2
+    echo "[boot]    Docker 具名卷不会出这个问题;K8s / 云平台的 PVC 需要把卷属主设成 1001" >&2
+    echo "[boot]    (securityContext.fsGroup: 1001)或加一个 initContainer 执行 chown。" >&2
+    exit 1
+fi
+
 python3 /opt/hunter-boot/gen-config.py
 
 # 新镜像(1.18.12-slim.1 起)是单文件二进制,旧镜像只有 bun + 源码。两种都要能起来:
