@@ -1034,6 +1034,9 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
                 if hit_ids:
                     screen_learned.record_hits(hit_ids)
             except ScreenError as kw_err:
+                # 只写了字段、没写怎么比:阈值得用户自己定,不给 AI 按钮(AI 补的数字就是编的)
+                if isinstance(kw_err, screen_kw.MissingComparison):
+                    raise
                 if not allow_ai:
                     # 不抛普通 ScreenError —— 路由要据此告诉前端"可以试试 AI"
                     raise NeedsAI(str(kw_err)) from kw_err
@@ -1399,6 +1402,16 @@ def preset(key: str) -> dict | None:
     return None
 
 
+def listable_fields(market_key: str) -> list[str]:
+    """「可用字段」列表里给用户看、给用户点的字段 —— **每一个都必须能原样写进脚本**。
+
+    原来只排 `|`(多周期)和 `[`,带 `-` `+` / 数字开头的 27 个名字照样列出,点进生成框必定报不认识
+    (2026-09-17 探针实测,见 screen_dsl.is_writable_name)。界面上的字段个数也按这个数,不写死。
+    """
+    meta = get_meta(market_key)
+    return sorted(n for n in meta.names if screen_dsl.is_writable_name(n))
+
+
 def field_search(market_key: str, q: str, limit: int = 50) -> list[dict]:
     """字段搜索 —— 前端「可用字段」用。3777 个字段不可能列全,只能搜。
 
@@ -1411,8 +1424,7 @@ def field_search(market_key: str, q: str, limit: int = 50) -> list[dict]:
     """
     meta = get_meta(market_key)
     q = (q or "").strip().lower()
-    base = sorted(n for n in meta.names
-                  if isinstance(n, str) and "|" not in n and "[" not in n)
+    base = listable_fields(market_key)
     labels = {n: screen_dsl.field_label_cn(n) for n in base}
 
     def pack(names):

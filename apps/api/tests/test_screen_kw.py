@@ -62,6 +62,9 @@ vcp_pivot_dist vcp_base_days vcp_low_vol_ratio up_days_20d down_days_20d ud_vol_
 high_5d low_5d high_21d low_21d high_63d low_63d""".split())
 FIELDS |= {f"SMA{n}" for n in SMA} | {f"EMA{n}" for n in EMA} | {f"RSI{n}" for n in RSI}
 FIELDS |= {f"average_volume_{n}d_calc" for n in (10, 30, 60, 90)}
+# 2026-09-17 · 中文名识别用到的真实字段(中文名由 screen_dsl.field_label_cn 生成,不在这里写死)
+FIELDS |= set("""Candle.3BlackCrows BB.basis_50 cash_dividend_coverage_ratio_ttm gap
+Low.All all_time_low""".split())
 
 
 SHOULD_MATCH = [
@@ -382,6 +385,39 @@ SHOULD_REJECT += [
 ]
 
 
+# ── 2026-09-17 · 「可用字段」里点出来的字段,生成时报「没看懂」 ─────────────────
+# 用户:点字段插进生成框、点生成,说不认识 —— 自己的产品不认识自己的库。全量探针(美股 3809 个字段名)按写法类别查出三类:
+#   1. 只写字段名、没写怎么比(列表里 1096 个字段全中):报错必须点明「缺比较」,且不给 AI(阈值 AI 补就是编)
+#   2. 列表显示的中文名打进来认不出(576 个里 380 个):中文名收进词汇,同名多字段 / 两字短名单独收紧
+#   3. 带 - + 或数字开头的字段名列出来却写不进脚本(27 个):从列表里拿掉(screen_source.listable_fields,不在本文件测)
+SHOULD_MATCH += [
+    ("K线·三只乌鸦大于0", "Candle.3BlackCrows > 0"),
+    ("布林带中轨(50)大于100", "BB.basis_50 > 100"),            # 名字里的 50 不能当阈值
+    ("现金股息保障倍数(TTM)大于2", "cash_dividend_coverage_ratio_ttm > 2"),   # 名字里的「倍数」不是倍数句型
+    ("跳空大于1", "gap > 1"),                                # 两字短名:句首 + 紧跟比较词才认
+    ("Candle.3BlackCrows > 0", "Candle.3BlackCrows > 0"),
+]
+SHOULD_REJECT += [
+    "向上跳空大于1",                    # 两字短名不在句首:可能是复合词的一部分
+    "跳空率大于1",                      # 两字短名后面没紧跟比较词
+    "历史最低大于0",                    # Low.All 和 all_time_low 同名,拿不准指哪个
+    "现金股息保障倍数(TTM)大于收盘价的2倍",   # 字段名以外出现倍数,照样拒绝
+]
+SHOULD_MATCH += [
+    # 双边比较(09-14 第 5 轮支持)配中文名:名字里的 50 不能被数成第三个数把区间拆坏
+    ("布林带中轨(50)大于10小于20", "BB.basis_50 > 10 and BB.basis_50 < 20"),
+]
+# 只写了字段名 / 中文名、没有比较 → 必须是 MissingComparison(路由据此不给 AI 按钮),报错里点名字段
+SHOULD_MISS_CMP = [
+    ("MACD.hist", "MACD.hist"),
+    ("macd.hist", "MACD.hist"),                # 大小写不敏感,报错给规范写法
+    ("close", "close"),
+    ("K线·三只乌鸦", "Candle.3BlackCrows"),
+    ("跳空", "gap"),
+    ("市盈率", "price_earnings_ttm"),
+]
+
+
 def _run(sd, kw) -> list[str]:
     has = lambda n: n in FIELDS                          # noqa: E731
     fails: list[str] = []
@@ -400,6 +436,15 @@ def _run(sd, kw) -> list[str]:
             fails.append(f"应拒绝  {text!r}\n        却产出 {got}   ← 静默错误")
         except sd.ScreenError:
             pass
+    for text, fld in SHOULD_MISS_CMP:
+        try:
+            r = kw.translate(text, has, SMA, EMA, RSI, names=FIELDS)
+            fails.append(f"应报缺比较  {text!r}\n        却产出 {r['script']}")
+        except kw.MissingComparison as e:
+            if fld not in str(e):
+                fails.append(f"应报缺比较  {text!r}\n        报错里没点名字段 {fld}:{e}")
+        except sd.ScreenError as e:
+            fails.append(f"应报缺比较  {text!r}\n        报的却是普通错误(会给 AI 按钮):{e}")
     return fails
 
 
@@ -412,7 +457,7 @@ def test_screen_kw():
 if __name__ == "__main__":
     sd, kw = _load()
     fails = _run(sd, kw)
-    total = len(SHOULD_MATCH) + len(SHOULD_REJECT)
+    total = len(SHOULD_MATCH) + len(SHOULD_REJECT) + len(SHOULD_MISS_CMP)
     print(f"应识别 {len(SHOULD_MATCH)} 条 · 应拒绝 {len(SHOULD_REJECT)} 条 · 共 {total}")
     if fails:
         print(f"FAIL {len(fails)} 条:")

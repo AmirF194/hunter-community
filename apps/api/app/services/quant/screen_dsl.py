@@ -85,6 +85,19 @@ _TOKEN_RE = re.compile(r"""
   | (?P<op><=|>=|==|!=|<>|&&|\|\||[<>+\-*/(),;=\[\]!.])
 """, re.VERBOSE)
 
+# 字段名能不能**原样写进脚本** —— 和上面 ident 分组同一个口径,改一处必须改另一处。
+#
+# 2026-09-17 用户:从「可用字段」点进生成框的字段,生成时却说不认识。全量探针(美股 3809 个字段名)实测:
+# 带 `|`(多周期,2656 个)、带 `[`(26 个)的原本就不进列表;但 27 个带 `-` `+` 或数字开头的
+# (ADX+DI_14、daily-bar.time、24h_vol_to_market_cap …)照样列出来,点进去词法阶段就断成几段,
+# 怎么写都用不了。**列表里出现的,必须写得进脚本** —— screen_source.field_search 按它过滤。
+_WRITABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+
+
+def is_writable_name(name: str) -> bool:
+    return isinstance(name, str) and bool(_WRITABLE_NAME_RE.fullmatch(name)) and "|" not in name
+
+
 # input / rec / declare / if / then / else 是 ThinkScript 的语句与表达式关键字(2026-09-15)。
 # `rec` 就是显式的递归 def;`declare lower;` 这类研究用的声明整句跳过;
 # yes / no 是 ThinkScript 的布尔字面量(input showX = yes;);crosses / within 是它的中缀运算

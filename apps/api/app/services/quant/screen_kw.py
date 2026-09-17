@@ -210,6 +210,78 @@ _SHADOW: dict[str, tuple[str, ...]] = {
 }
 
 
+_LABEL_CACHE: dict[tuple[int, int], tuple] = {}
+
+
+def _label_aliases(names, has_field) -> tuple[list[tuple[str, str]], list[tuple[str, str]], dict[str, list[str]]]:
+    """字段全集 → (长名 [(中文名小写, 字段名)] 按长度倒序, 两字短名 同结构, 同名多字段 {中文名: [字段…]})。
+
+    收紧规则,都是为了不引入「静默理解错」:
+      · **同名多字段不收**(历史最低 = Low.All 和 all_time_low):拿不准指哪个,宁可认不出,
+        但报错里点名是哪几个字段(见 translate),用户改写字段名即可
+      · **两字短名只在句首、且紧跟比较词时才认**(「跳空大于0」):两个字的词会从别的复合词里被截出来,
+        放到句中任意位置就是 _SHADOW 那段的前科
+      · **不和词表重名**:词表是逐条测过的说法,同名以词表为准
+    只收能写进脚本的字段名(screen_dsl.is_writable_name),和「可用字段」列表同一口径。
+    names 在一次部署里是同一个集合对象,按 (id, 长度) 缓存,标签拼装只算一次。
+    """
+    if not names:
+        return [], [], {}
+    key = (id(names), len(names))
+    hit = _LABEL_CACHE.get(key)
+    if hit is not None:
+        return hit
+    from app.services.quant.screen_dsl import field_label_cn, is_writable_name
+    words = {w.lower() for w in _FIELD_WORDS}
+    owners: dict[str, set[str]] = {}
+    for n in names:
+        if not is_writable_name(n) or not has_field(n):
+            continue
+        lab = field_label_cn(n)
+        if not lab or lab.isascii():
+            continue
+        k = lab.strip().lower()
+        if len(k) < 2 or k in words:
+            continue
+        owners.setdefault(k, set()).add(n)
+    uniq = [(k, next(iter(v))) for k, v in owners.items() if len(v) == 1]
+    long_ = sorted((kv for kv in uniq if len(kv[0]) >= 3), key=lambda kv: -len(kv[0]))
+    short = [kv for kv in uniq if len(kv[0]) < 3]
+    amb = {k: sorted(v) for k, v in owners.items() if len(v) > 1}
+    if len(_LABEL_CACHE) > 8:
+        _LABEL_CACHE.clear()
+    _LABEL_CACHE[key] = (long_, short, amb)
+    return long_, short, amb
+
+
+def _bare_field(clause: str, vocab: "_Vocab") -> tuple[str, str | None] | None:
+    """整句只有一个字段名 / 中文名、没有比较 → (字段名, 中文名);否则 None。
+
+    2026-09-17 用户:在「可用字段」里点了 MACD.hist,生成框里就这一个词,点生成报「本地识别没看懂」——
+    像是自己的产品不认识自己的字段。其实字段认得,缺的是「怎么比」。报错必须说到点子上,
+    而且**不给 AI 按钮**:阈值只能用户自己定,AI 补一个数字就是在编数字。
+    """
+    t = clause.strip()
+    if not t:
+        return None
+    from app.services.quant.screen_dsl import field_label_cn
+    c = vocab.canon(t)
+    if c:
+        return c, field_label_cn(c)
+    low = t.lower()
+    for w, fld in _FIELD_WORDS.items():
+        if w.lower() == low and vocab.has_field(fld):
+            return fld, t
+    for lab, fld in vocab.labels + vocab.short_labels:
+        if lab == low:
+            return fld, t
+    return None
+
+
+class MissingComparison(ScreenError):
+    """认出了字段,但没写比较 —— 路由按普通 400 报给用户,不走「可以试 AI」。"""
+
+
 class _Vocab:
     """把可用周期带进来 —— 能不能用 SMA37 由扫描源说了算,不在这里硬编码。"""
 
@@ -221,6 +293,7 @@ class _Vocab:
         # 字段原名不分大小写:用户写 perf.y、RS_LINE_UP_DAYS 也要认。
         # 扫描源的名字大小写混用(Perf.Y / RSI / rs_rating),没有全集就只能精确匹配。
         self._lc = {n.lower(): n for n in names} if names else None
+        self.labels, self.short_labels, self.ambiguous = _label_aliases(names, has_field)
 
     def canon(self, tok: str) -> str | None:
         """字段原名 → 规范写法;不是可用字段返回 None。"""
@@ -288,6 +361,19 @@ class _Vocab:
         # ── 字段原名(2026-09-11)────────────────────────────────
         # 词表只收了常用说法,而用户能直接写的字段有 3777 个。写原名的一律直接认 ——
         # 这是最没有歧义的写法,认不出来反而说不过去。
+        # ── 字段中文名(2026-09-17)──────────────────────────────
+        # 「可用字段」列表里显示的是中文名(K线·三只乌鸦、布林带中轨(50)…),用户照着打进来却认不出 ——
+        # 探针实测列表里 380 个中文名写成「中文名大于0」全部报「没看懂」。列表上看得到的名字必须认得。
+        # 只收唯一、至少 3 个字、且不和词表重名的(见 _label_aliases);标签里的数字不会被当阈值:
+        # 通用规则从字段**结尾之后**才找数字。
+        for lab, fld in self.labels:
+            i = low.find(lab)
+            if i >= 0:
+                out.append((i, -len(lab), fld, text[i:i + len(lab)], ""))
+        for lab, fld in self.short_labels:
+            if low.startswith(lab) and _STARTS_CMP_RE.match(low, len(lab)):
+                out.append((0, -len(lab), fld, text[:len(lab)], ""))
+
         # 同时记下**不认识**的标识符:落在它内部的候选全部作废。
         # 「rs_score」「close_price」「ema20_slope」都不是字段,里面的 rs / close / ema20
         # 不能拿出来猜 —— 那正是本模块最要避免的「静默理解错」。
@@ -607,7 +693,10 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
     #   「收盘价大于20日均线的1.05倍」 → close > SMA20       (1.05 倍被静默丢掉)
     #   「市盈率大于10小于20」         → pe > 10             (上限被静默丢掉)
     # 用户看到的是一个看起来很正常的条件,完全不会意识到少了东西。
-    if re.search(r"\d\s*倍|倍数|百分之", t):
+    # 只看字段名**之外**的文字:「利息保障倍数(TTM)大于3」里的倍数是字段中文名的一部分,不是倍数句型
+    # (2026-09-17 探针:8 个带「倍数」的中文名因此一律认不出)。字段名以外出现倍数照样拒绝。
+    outside = "".join(" " if any(a <= i < b for a, b, _f, _w in fs) else ch for i, ch in enumerate(t))
+    if re.search(r"\d\s*倍|倍数|百分之", outside):
         return None
     # 区间 / 双边比较骨架完全对得上才认(见 _range_expr);对不上继续往下走,由下面两条拒绝
     rng = _range_expr(t, fs)
@@ -723,6 +812,7 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
 # 前一句必须以「比较词 + 数字」结尾:「RS线连涨超过50天」「收盘价大于50日均线」这类不拼(天数 / 两字段,「小于20」不知道比谁)。
 _CMP_WORDS = "|".join(re.escape(w) for w, _op in _OP_WORDS)
 _CMP_NUM = r"\s*-?\d+(?:\.\d+)?\s*(?:万亿|亿|万|[kmb]|%)?\s*元?"
+_STARTS_CMP_RE = re.compile(rf"\s*(?:{_CMP_WORDS}|[<>]=?|==|!=)", re.I)   # 两字短名后面必须紧跟比较
 _BARE_CMP_RE = re.compile(rf"(?:{_CMP_WORDS}){_CMP_NUM}", re.I)
 _ENDS_CMP_RE = re.compile(rf"(?:{_CMP_WORDS}){_CMP_NUM}$", re.I)
 
@@ -793,6 +883,22 @@ def translate(text: str, has_field, sma: list[int], ema: list[int],
     matched = [(c, e, m) for c, e, m in rows if e is not None]
 
     if unmatched:
+        bare = [(u, _bare_field(u, vocab)) for u in unmatched]
+        bare = [(u, b) for u, b in bare if b]
+        if bare:
+            u, (fld, lab) = bare[0]
+            shown = fld if lab in (None, fld) else f"{fld}({lab})"
+            raise MissingComparison(
+                f"「{u}」是字段 {shown},但还没写怎么比 —— 在后面接比较词和数字,"
+                f"例如「{fld} > 0」或「{lab or fld}大于0」(数字换成你要的阈值)。"
+                + (f" 另外还有 {len(unmatched) - 1} 句没看懂。" if len(unmatched) > 1 else ""))
+        amb = sorted({(lab, tuple(fl)) for u in unmatched for lab, fl in vocab.ambiguous.items()
+                      if lab in u.lower()}, key=lambda x: -len(x[0]))
+        if amb:
+            lab, fl = amb[0]
+            raise ScreenError(
+                f"「{lab}」同时是 {' / '.join(fl)} 这几个字段的中文名,本地拿不准指哪个 ——"
+                f" 请直接写字段名,例如「{fl[0]} > 0」。")
         raise ScreenError(
             "本地识别没看懂这几句:" + " / ".join(f"「{u}」" for u in unmatched[:4])
             + (f" 等 {len(unmatched)} 处" if len(unmatched) > 4 else ""))

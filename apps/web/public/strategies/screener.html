@@ -1323,7 +1323,7 @@ function vHelp() {
     '<code>ExpAverage(close, N)</code> · ' +
     '<code>Highest(high, N)</code> / <code>Lowest(low, N)</code>' +
     '(<b>N 只能接近 5/21/63/126/252</b>)· <code>RSI()</code> 默认 14 周期<br>' +
-    '<b>字段</b>　也可以直接写字段名,共 3777 个,下面能搜。<br>' +
+    '<b>字段</b>　也可以直接写字段名或它的中文名,下面能搜。<br>' +
     '<b>ThinkScript 时间序列写法</b>(2026-09-15 起支持,按自家全市场日线逐根算)　' +
     '<code>input n = 5;</code> 参数 · <code>close[1]</code> 前一根 · ' +
     '<code>if 条件 then 值 else 值</code> · 递归 <code>def s = if 阳线 then s[1] + 1 else 0;</code> · ' +
@@ -1333,10 +1333,10 @@ function vHelp() {
     '用了这些写法就不受上面均量 / 窗口周期的限制,任意 N 都行(最长 400 根)。<br>' +
     '<span style="color:var(--soft)">周期映射不上会直接报错并告诉你可用值 —— ' +
     '不会拿相近的周期顶替(那等于把 90 天当 100 天用)。</span></div></details>' +
-    '<details class="sc-fold" id="sc-fd-fold"><summary>可用字段(3777 个 · 搜索)</summary>' +
+    '<details class="sc-fold" id="sc-fd-fold"><summary>可用字段(搜索)</summary>' +
     '<div class="sc-fd"><input id="sc-fd-q" placeholder="搜字段名,如 pe / margin / volume / RSI" /></div>' +
     '<div class="sc-fl" id="sc-fd-list"><span class="sc-na">输入关键词开始搜索</span></div>' +
-    '<div class="sc-note">点一下把字段名插进上面的生成框光标处。</div></details>'
+    '<div class="sc-note">点一下把字段名插进上面的生成框光标处,再接着写比较,例如 <code>MACD.hist &gt; 0</code> 或「MACD柱大于0」—— 只有字段名不是条件。</div></details>'
 }
 
 // ═══ 渲染 ═════════════════════════════════════════════════════════
