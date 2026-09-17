@@ -146,7 +146,8 @@ def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> di
     l01 = lim <= chg[0] <= cap
     l02 = all(x < lim for x in chg[1:])
     l03 = all(x > c[1] for x in c[2:])
-    return {"L-01": l01, "L-02": l02, "L-03": l03, "ok": l01 and l02 and l03, "limit": lim, "board": board}
+    return {"L-01": l01, "L-02": l02, "L-03": l03, "ok": l01 and l02 and l03, "limit": lim, "board": board,
+            "over_cap": chg[0] > cap, "cap": cap}
 
 
 def _pct(x: float) -> str:
@@ -175,7 +176,9 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
         it["gap"] = "三条全满足 —— 今日收盘买入。" + detail
     else:
         why = []
-        if not f["L-01"]:
+        if f["over_cap"]:
+            why.append(f"L-01 T-3 涨幅超过 {f['cap'] * 100:.1f}%,不是涨停(新股上市头几天没有涨跌幅限制,或日线有误)")
+        elif not f["L-01"]:
             why.append(f"L-01 T-3 涨幅没到 {f['limit'] * 100:.1f}%(按{f['board']})")
         if not f["L-02"]:
             why.append("L-02 之后三天里又涨停了")
