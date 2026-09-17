@@ -428,6 +428,10 @@ The list is maintained by the [All Contributors](https://allcontributors.org) bo
 
 Built something on HunterCode or maintaining a fork? Tell us in [Discussions](https://github.com/agentpit-io/hunter-community/discussions) and we'll list it here.
 
+### 💝 Thanks for sharing
+
+- Community: [LINUX DO](https://linux.do/) — Chinese developer community
+
 ---
 
 ## 💬 Community & support

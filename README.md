@@ -427,6 +427,10 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
 
 你基于 HunterCode 做了二次开发或 fork?欢迎在 [讨论区](https://github.com/agentpit-io/hunter-community/discussions) 告诉我们,我们会加到这里。
 
+### 💝 感谢推荐分享
+
+- 社区:[LINUX DO](https://linux.do/) —— 中文开发者社区
+
 ---
 
 ## 💬 社区与支持
