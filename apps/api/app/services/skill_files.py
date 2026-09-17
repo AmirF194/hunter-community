@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -655,3 +656,249 @@ def save_raw(name: str, content: str, origin: str = "") -> Path:
     load_all(force=True)          # 让本进程立刻看到;opencode 那边另外 refresh
     logger.info("[skill_files] 导入用户 SKILL {} ({} 行)", d, len(text.splitlines()))
     return d / "SKILL.md"
+
+
+# ══════════════════════════════════════════════════════════════
+# 导出(给 opencode 的 `skills.urls` 拉取用)· M1 子任务 D
+#
+# **为什么需要**:云平台上 api 和 opencode 不能共用一个卷,
+# 用户在界面里装的 SKILL 写进 api 的 `USER_SKILLS_DIR`,opencode 看不到。
+# R0 实测(`docs/setup-wizard/R0-预研结论.md` §2)发现 opencode **原生**
+# 支持从 URL 拉 SKILL(`skill/discovery.ts` 的 `Discovery.pull`),
+# 于是不需要写同步插件,也不需要把文件塞进数据库 ——
+# api 把 `USER_SKILLS_DIR` 原样导出成一个静态清单,opencode 自己来拉。
+#
+# 下面这几个函数是那个导出接口(`app/routers/internal_skills.py`)的数据源。
+# 放在这里而不是路由里,是因为「怎么算一个用户 SKILL」的规则
+# (哪些文件算、哪些跳过、目录名怎么才合法)本来就属于这个模块,
+# 路由只该负责 HTTP 那一层。
+#
+# ⚠️ **一律直接读磁盘,不走 `_cache`**。`_cache` 是给 UI 列表用的,
+# 只存解析后的字段(不存文件字节),而且它的失效时机由写入路径控制。
+# 导出接口要的是「此刻磁盘上到底是什么」—— 缓存晚一拍,
+# 表现就是用户刚存完、模型拉到的还是上一版,正是这次要根除的那类 bug。
+# ══════════════════════════════════════════════════════════════
+
+# 单个文件上限。超过就跳过并 warning ——
+# opencode 会把拉到的文件写进容器内的 `~/.cache/opencode/skills/`,
+# 那是容器可写层/卷,有人往 user-skills 里丢个几百 MB 的 csv,
+# 撑爆的是 opencode 那一侧的磁盘,而 api 这边毫无感知。
+# 5 MB 远大于 `MAX_ASSET_BYTES`(256 KB,走我们自己安装路径的上限),
+# 这里放宽是因为**手动放进目录的文件不受那条路径管**,
+# 这一层是最后的兜底,不该顺手把正常文件也截掉。
+EXPORT_MAX_FILE_BYTES = 5 * 1024 * 1024
+
+# 单个 SKILL 的文件数上限。理由同上;100 是安装路径的上限
+# (`MAX_ASSETS_COUNT`),这里放到 200 给手动放的留余量。
+EXPORT_MAX_FILES = 200
+
+# 一律不导出的目录/文件名
+_EXPORT_SKIP_DIRS = {"__pycache__", ".git", ".github", "node_modules", ".venv"}
+
+# 导出用的目录名校验。比 `validate_name()` 宽:后者是**我们自己新建**
+# SKILL 时的约束(只认小写下划线),而 user-skills 下还可能有用户
+# 手动放进去的目录,名字里带连字符、大写、点都很常见 ——
+# 用 validate_name 去筛会把它们从导出清单里悄悄抹掉,
+# 表现是「界面上有、模型看不到」,和这次要修的 bug 一模一样。
+#
+# 但也不能不筛:这个名字会成为 URL 的一段,并被拼进文件路径。
+# 所以只放行「字母数字开头 + 字母数字点横线下划线」,
+# `.` / `..` / 隐藏目录 / 带斜杠的一律进不来。
+_EXPORT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def user_skill_dir(name: str) -> Path | None:
+    """把导出接口收到的 `name` 解析成 `USER_SKILLS_DIR` 下**可导出**的 SKILL 目录。
+
+    非法名字、不存在、不是目录、是符号链接、解析后不在用户目录里、
+    或者**目录里没有 `SKILL.md`** —— 一律返回 None,由调用方转成 404。
+
+    **为什么 resolve 之后还要比对父目录**:只检查字符串里有没有 `..`
+    挡不住符号链接(`user-skills/evil -> /etc`)。resolve() 之后
+    `d.parent == 用户目录` 才能保证它确实是用户目录的直接子目录。
+
+    **为什么「没有 SKILL.md」也要在这里挡**:没有 SKILL.md 的目录不进
+    导出清单(opencode 会跳过这种条目),但如果这里放行,它底下的文件
+    仍然能被逐个下走 —— 就成了「清单里没有、却下得到」。user-skills 下
+    可能躺着安装失败留下的半截目录、用户手动拷进来的杂物,
+    那些不该是一个对外可读的文件服务。单测 `test_skill_without_skill_md_is_skipped`
+    盯的就是这一条(它第一版跑出来正是 200)。
+    """
+    if not _EXPORT_NAME_RE.match(name or ""):
+        return None
+    root = USER_SKILLS_DIR
+    try:
+        if (root / name).is_symlink():          # 目录本身是软链 → 不导出
+            return None
+        rroot = root.resolve()
+        d = (root / name).resolve()
+    except OSError:
+        return None
+    if d.parent != rroot or not d.is_dir():
+        return None
+    f = d / "SKILL.md"
+    if not f.is_file() or f.is_symlink():
+        return None
+    return d
+
+
+def list_user_skill_names() -> list[str]:
+    """用户目录下所有**可导出**的 SKILL 目录名(有 SKILL.md 的才算)。
+
+    没有 `SKILL.md` 的目录**必须**排除:opencode 的 `Discovery.pull`
+    会把 files 里不含 SKILL.md 的条目直接跳过并打 warning
+    (实测源码 `skill/discovery.ts`),留在清单里只会污染它的日志。
+    """
+    root = USER_SKILLS_DIR
+    if not root.is_dir():
+        return []
+    out = []
+    try:
+        entries = sorted(p.name for p in root.iterdir())
+    except OSError as e:
+        logger.warning("[skill_files] 导出:读用户目录失败 {}", e)
+        return []
+    for name in entries:
+        if name in _EXPORT_SKIP_DIRS or name.startswith("."):
+            continue
+        # user_skill_dir 已经包含了「有 SKILL.md」这一条,不在这里重复判断
+        if user_skill_dir(name) is not None:
+            out.append(name)
+    return out
+
+
+def _export_walk(root: Path) -> list[str]:
+    """SKILL 目录下该导出的相对路径(posix 写法),排序后返回。
+
+    跳过:隐藏文件与隐藏目录、`__pycache__` 这类、符号链接、超大文件。
+    符号链接一概不跟 —— 它可能指到容器里任何地方(`.env`、私钥),
+    而这个接口的内容会被原样喂给大模型。
+    """
+    rels: list[str] = []
+    skipped_big = 0
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        # 就地裁剪 —— os.walk 会照着改后的列表往下走
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in _EXPORT_SKIP_DIRS
+            and not d.startswith(".")
+            and not os.path.islink(os.path.join(dirpath, d))
+        )
+        for fn in sorted(filenames):
+            if fn.startswith(".") or fn in _EXPORT_SKIP_DIRS:
+                continue
+            full = Path(dirpath) / fn
+            if full.is_symlink() or not full.is_file():
+                continue
+            try:
+                if full.stat().st_size > EXPORT_MAX_FILE_BYTES:
+                    skipped_big += 1
+                    logger.warning("[skill_files] 导出:跳过过大的文件 {}/{} ({} B > {} B)",
+                                   root.name, full.relative_to(root).as_posix(),
+                                   full.stat().st_size, EXPORT_MAX_FILE_BYTES)
+                    continue
+            except OSError:
+                continue
+            rels.append(full.relative_to(root).as_posix())
+            if len(rels) >= EXPORT_MAX_FILES:
+                logger.warning("[skill_files] 导出:{} 文件数超过 {},其余跳过",
+                               root.name, EXPORT_MAX_FILES)
+                return sorted(rels)
+    if skipped_big:
+        logger.warning("[skill_files] 导出:{} 有 {} 个文件因超限未导出", root.name, skipped_big)
+    return sorted(rels)
+
+
+def iter_user_skill_files(name: str) -> list[tuple[str, bytes]]:
+    """一个用户 SKILL 的全部可导出文件 —— `[(相对路径, 内容字节), ...]`,按路径排序。
+
+    没有 `SKILL.md` 就返回空列表(该 SKILL 不该出现在导出清单里)。
+    二进制文件原样返回字节,不做任何编码转换。
+    """
+    d = user_skill_dir(name)
+    if d is None:
+        return []
+    rels = _export_walk(d)
+    if "SKILL.md" not in rels:
+        return []
+    out: list[tuple[str, bytes]] = []
+    for rel in rels:
+        try:
+            out.append((rel, (d / rel).read_bytes()))
+        except OSError as e:
+            logger.warning("[skill_files] 导出:读失败 {}/{}: {}", name, rel, e)
+    return out
+
+
+def user_skill_version(files: list[tuple[str, bytes]]) -> str:
+    """一个 SKILL 的版本号 = 它全部文件内容的 sha256。
+
+    opencode 拿 `version` 判断要不要重下(`Discovery.pull`:version 不变
+    只补缺失文件,变了才走 staging 目录 + 原子 rename 换版)。
+    所以这个值必须满足两条:**内容不变则不变**(否则每次 refresh 都全量重下),
+    **内容变了必变**(否则模型永远读旧的)。
+
+    把「路径 + 长度 + 内容」一起 hash,而不是只 hash 内容拼接 ——
+    否则 `a.md="xy" b.md=""` 和 `a.md="x" b.md="y"` 会撞成同一个版本,
+    改名/挪文件也不会触发换版。
+    """
+    h = hashlib.sha256()
+    for rel, data in sorted(files):
+        raw = rel.encode("utf-8")
+        h.update(len(raw).to_bytes(8, "big"))
+        h.update(raw)
+        h.update(len(data).to_bytes(8, "big"))
+        h.update(data)
+    return h.hexdigest()
+
+
+def resolve_user_skill_file(name: str, rel: str) -> Path | None:
+    """把 `(name, 相对路径)` 解析成磁盘上的真实文件。非法/越界一律返回 None。
+
+    **这是整个导出接口唯一的路径穿越防线**,`rel` 直接来自 URL:
+      · `..` 回退、绝对路径、Windows 盘符 → resolve 之后不在 SKILL 目录内 → None
+      · 符号链接指到目录外(`refs/leak -> /opt/.env`)→ 同上,resolve 会跟穿
+      · 隐藏文件、`__pycache__` → 本来就不在导出清单里,这里也一并挡掉,
+        免得「清单里没有但能下到」
+    """
+    d = user_skill_dir(name)
+    if d is None or not rel:
+        return None
+    parts = [p for p in rel.split("/") if p]
+    if not parts or any(p in (".", "..") or p.startswith(".") or p in _EXPORT_SKIP_DIRS
+                        for p in parts):
+        return None
+    try:
+        f = (d / rel).resolve()
+        f.relative_to(d)                       # 不在目录内 → 抛 ValueError
+    except (OSError, ValueError):
+        return None
+    if not f.is_file():
+        return None
+    try:
+        if f.stat().st_size > EXPORT_MAX_FILE_BYTES:
+            return None
+    except OSError:
+        return None
+    return f
+
+
+def export_index() -> list[dict]:
+    """导出清单 —— `[{"name", "files", "version"}, ...]`,直接喂给 opencode 的 index.json。
+
+    只导出**用户 SKILL**(`USER_SKILLS_DIR`)。内置 SKILL(`SKILLS_DIR`)
+    **不导出**:它们已经随镜像打进 opencode 的
+    `/opt/opencode-workspace/.opencode/skills/`,再导一份会让同一个 SKILL
+    在模型那里出现两次(一次本地、一次 URL 缓存),而且两份还可能不同版本。
+    """
+    out = []
+    for name in list_user_skill_names():
+        files = iter_user_skill_files(name)
+        if not files:                          # 没 SKILL.md / 读不出来
+            continue
+        out.append({
+            "name": name,
+            "files": [rel for rel, _ in files],
+            "version": user_skill_version(files),
+        })
+    return out
