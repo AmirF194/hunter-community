@@ -219,6 +219,26 @@ def _after_write() -> dict:
 
     **不许假装成功**:文件写好了但 opencode 没重扫,表现是"侧栏有了、
     模型说没有",用户完全无从判断。旧镜像上刷新端点是 404,那时要明说需要重启。
+
+    ## 这一次 refresh 到底做了什么(M1 之后)
+
+    以前 api 和 opencode bind mount **同一个** `user-skills/` 宿主目录,
+    refresh 只是让 opencode 把那个目录重扫一遍。云平台上两个服务不能共用卷,
+    所以 M1 改成:opencode 配 `skills.urls` 指向 api 的导出接口
+    (`GET /api/internal/skills/{内部口令}/index.json`,见
+    `app/routers/internal_skills.py`),**这次 refresh 会顺带把清单重拉一遍**
+    —— opencode 的 `Skill.refresh` 会重跑整个发现流程,URL 拉取也在里面。
+
+    所以调用顺序有一条硬性要求:**文件必须先真的落盘,再调这个函数**。
+    反过来(先 refresh 后写盘)拉到的是上一版,而且不会有任何报错。
+    目前所有调用点都满足:`skill_files.save()` / `save_raw()` / `delete()`
+    都是同步写完才返回。
+
+    删除同样靠它生效:opencode 的 `Discovery.pull` **只返回本次清单里的目录**,
+    删掉的 SKILL 下次 refresh 就不会再被扫到(残留在它缓存盘上的目录不参与扫描)。
+
+    刷新失败时给的仍然是「重启 opencode」——URL 拉取在 opencode 启动时
+    也会跑一遍,所以那条退路依然成立(文案见 `opencode_admin.restart_hint()`)。
     """
     r = opencode_admin.refresh_skills()
     if r.get("ok"):
