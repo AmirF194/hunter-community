@@ -318,17 +318,25 @@ def test_并发_两个进程同时跑不重复执行(temp_db):
 
 
 @pytestmark_db
-def test_手工补跑过的库_0010_会失败_并给出可照做的建议(temp_db):
-    """回归测试 · 已知不可重复执行的迁移：0010 与 0014 定义同一个视图，0014 多一列。
+def test_手工补跑过的库_0010_可重复执行(temp_db):
+    """回归测试 · 守住 0010 的可重复执行性。
 
-    真实场景：有人按 0013/0014 文件头写的「apply(用户手动)」手工补跑过，之后升级到
-    带账本的版本，migrate 从 0001 重跑 → 0010 撞上 CREATE OR REPLACE VIEW 不能减列。
-    这条测试固定住两件事：① 失败时报得清楚 ② 两种排障手法都真的管用。
+    真实场景:有人按 0013/0014 文件头写的「apply(用户手动)」手工补跑过迁移,
+    之后升级到带账本的版本 —— 账本是空的,migrate 会从 0001 重跑一遍。
+    0010 与 0014 定义同一个视图 daily_close,0014 多一列 adv_20d,而
+    `CREATE OR REPLACE VIEW` **不许减列**,所以重跑 0010 会报
+    `cannot drop columns from view`,api 直接起不来。
+    **演示站 fin-r1 正是这种库。**
+
+    M1 合并时在 0010 开头加了 `DROP VIEW IF EXISTS daily_close;` 根治
+    (当时 schema_migrations 刚引入、世上还没有任何库记录过它的 checksum,
+    改的代价为零)。这条测试守住那句 DROP 不被人顺手删掉 ——
+    删掉之后本地空库测试全绿,只有老库升级时才炸。
     """
     import subprocess as sp
 
     migrations_dir = migrate.resolve_migrations_dir()
-    # 造现场：init_db + 手工跑过 0010、0014，但没有账本
+    # 造现场:init_db + 手工跑过 0010、0014,但没有账本
     sp.run([sys.executable, "-c",
             "import asyncio;from app.services.database import init_db;asyncio.run(init_db())"],
            cwd=str(API_DIR), env=_env(temp_db), capture_output=True, text=True, timeout=300, check=True)
@@ -339,19 +347,39 @@ def test_手工补跑过的库_0010_会失败_并给出可照做的建议(temp_d
         with conn.cursor() as cur:
             cur.execute((migrations_dir / name).read_text(encoding="utf-8"))
     conn.close()
+    # 现在库里是 0014 那个 9 列的视图
+    cols = _query(temp_db, "SELECT count(*) FROM information_schema.columns "
+                           "WHERE table_name='daily_close'")[0][0]
+    assert cols == 9, f"造现场失败:daily_close 应有 9 列,实际 {cols}"
 
-    # ① 直接升级会失败，且提示要能照做
+    # ① 升级必须成功(修复前这里会以 `cannot drop columns from view` 失败)
     proc = _run_migrate(temp_db, check=False)
-    assert proc.returncode != 0
+    assert proc.returncode == 0, (proc.stdout + proc.stderr)[-2000:]
     out = proc.stdout + proc.stderr
-    assert "0010_daily_close_view.sql 执行失败" in out
-    assert "cannot drop columns from view" in out
-    assert "DROP VIEW IF EXISTS" in out and migrate.ENV_SKIP in out
+    assert "cannot drop columns from view" not in out
 
-    # ② 排障手法 b：跳过 → 成功
-    proc = _run_migrate(temp_db, **{migrate.ENV_SKIP: "0010_daily_close_view.sql"})
-    assert "按 HUNTER_MIGRATIONS_SKIP 跳过" in proc.stdout
+    # ② 账本齐全,而且 0014 的 adv_20d 还在(0010 重跑之后 0014 又跑了一遍)
     assert _query(temp_db, "SELECT count(*) FROM schema_migrations")[0][0] == len(_all_migration_names())
+    assert _query(temp_db, "SELECT count(*) FROM information_schema.columns "
+                           "WHERE table_name='daily_close' AND column_name='adv_20d'")[0][0] == 1
+
+
+@pytestmark_db
+def test_0010_文件本身带着那句_DROP(temp_db):
+    """不连库也能守住的一条:0010 的源文件里必须有 DROP VIEW。
+
+    上面那条要真库才跑得到;这条是纯文本检查,任何环境都会红,
+    删掉那句 DROP 时第一时间就能看见。
+    """
+    txt = (migrate.resolve_migrations_dir() / "0010_daily_close_view.sql").read_text(encoding="utf-8")
+    assert "DROP VIEW IF EXISTS daily_close" in txt, (
+        "0010 必须先 DROP 再建视图 —— 0014 用 CREATE OR REPLACE 给同一个视图加了一列,"
+        "而 OR REPLACE 不许减列,老库升级重跑 0010 会直接失败。"
+    )
+    assert "CASCADE" not in txt.upper().split("DROP VIEW IF EXISTS DAILY_CLOSE")[1][:40], (
+        "不要给这句 DROP 加 CASCADE —— 目前没有任何 SQL 对象依赖 daily_close,"
+        "将来真有依赖时应该大声失败,而不是静默把依赖一起删掉。"
+    )
 
 
 @pytestmark_db
