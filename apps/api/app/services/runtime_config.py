@@ -272,3 +272,30 @@ def set_str(k: str, v: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# ONE_API_* 的上游地址(M1 合并时补)
+# ─────────────────────────────────────────────────────────────────────
+def one_api_base_url() -> str:
+    """`ONE_API_BASE_URL` 非空时用它,否则回落到当前生效的大模型地址。
+
+    **为什么要有这个函数**:仓库里有 10 处(attribution / signal_monitor ×2 /
+    online_analysis.thesis_gen / research_assistant ×2 / gm 的 guardian·research·
+    assistant·recap)把 `ONE_API_BASE_URL` 的默认值写成了我们自己演示站的网关 IP。
+    M1 已经把 `LLM_BASE_URL` 那 8 处硬编码删掉了 —— 开源用户没配地址时,他的数据
+    不该被发到我们的服务器上。这 10 处是同一类问题,只修一半反而更糟:同一个部署里
+    一部分功能老老实实报「未配置」,另一部分照样往我们这儿发。
+
+    `ONE_API_*` 是内部部署用的一组独立变量(网关 / key / 模型名各一个),
+    **优先级保持不变**:填了就用填的。只是「没填」时的落点从「我们的网关」
+    改成「这个部署自己配的大模型地址」——对已经配了 ONE_API_BASE_URL 的部署
+    逐字节无变化,对没配的部署从「偷偷发给我们」变成「用你自己的网关或如实报未配置」。
+
+    注意这些调用点都还会读 `ONE_API_KEY`,为空时自己就跳过了,所以这里回落到
+    空字符串是安全的(不会拿着别人的地址发无 key 请求)。
+    """
+    v = (os.getenv("ONE_API_BASE_URL") or "").strip()
+    if v:
+        return v.rstrip("/")
+    return llm().base_url

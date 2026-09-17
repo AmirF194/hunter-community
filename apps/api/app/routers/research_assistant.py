@@ -19,6 +19,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from app.services.database import get_conn
+from app.services import runtime_config
 
 router = APIRouter()
 
@@ -194,7 +195,7 @@ def _call_llm(messages: list[dict], model: str, max_tokens: int = 1200,
     api_key = os.getenv("ONE_API_KEY", "")
     if not api_key:
         raise HTTPException(500, "LLM 未配置（ONE_API_KEY 缺失）")
-    base_url = os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+    base_url = runtime_config.one_api_base_url()
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=LLM_TIMEOUT_SEC)
 
     def _do(m: str, mt: int) -> str:
@@ -228,7 +229,7 @@ def _call_llm_plain(messages: list[dict], model: str, max_tokens: int = 800) -> 
     api_key = os.getenv("ONE_API_KEY", "")
     if not api_key:
         raise HTTPException(500, "LLM 未配置")
-    base_url = os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+    base_url = runtime_config.one_api_base_url()
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=LLM_TIMEOUT_SEC)
     resp = client.chat.completions.create(
         model=model, messages=messages, temperature=0.2, max_tokens=max_tokens,
