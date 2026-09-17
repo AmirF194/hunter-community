@@ -19,6 +19,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.services import opencode_admin, skill_files, skill_install
 from app.services.database import get_conn
@@ -214,7 +215,7 @@ def _slugify(display: str, given: str | None) -> str:
     return s or f"skill_{int(time.time())}"
 
 
-def _after_write() -> dict:
+async def _after_write() -> dict:
     """写完文件之后让 opencode 重扫,并把结果如实带给前端。
 
     **不许假装成功**:文件写好了但 opencode 没重扫,表现是"侧栏有了、
@@ -239,8 +240,30 @@ def _after_write() -> dict:
 
     刷新失败时给的仍然是「重启 opencode」——URL 拉取在 opencode 启动时
     也会跑一遍,所以那条退路依然成立(文案见 `opencode_admin.restart_hint()`)。
+
+    ## ⚠️ 为什么必须丢进线程池(2026-09-17 端到端实测踩到)
+
+    `opencode_admin.refresh_skills()` 用的是**同步** httpx。放在 `async def`
+    里直接调,它会把 uvicorn 的事件循环整个堵住(镜像入口是单 worker)。
+    以前无所谓 —— opencode 重扫的是共享目录,不用回头找 api。
+
+    改成 URL 拉取之后这条调用**变成了闭环**:
+        api 发 POST /skill/refresh ──► opencode
+        opencode 回头 GET /api/internal/skills/.../index.json ──► api(被堵住)
+    于是 opencode 拉不到清单、api 等到 30 秒超时,最后返回
+    「连不上 opencode(ReadTimeout)· 需要 docker compose restart opencode」。
+    **文件其实写好了、opencode 其实也活着**,纯粹是自己把自己锁死。
+
+    实测日志(临时 api + 预发栈 opencode):
+        17:08:27.498 refresh 请求失败: timed out        ← 阻塞 30 秒后放弃
+        17:08:27.502 [internal.skills] 导出清单 · 2 个   ← 事件循环一空立刻就服务了
+
+    `run_in_threadpool` 把阻塞调用挪出事件循环,循环就能在等待期间回应
+    opencode 的回拉。改完实测 0.2 秒返回 `synced: true`。
+
+    > 任何将来新增的「调 opencode 再等它回调 api」的同步调用都有同一个坑。
     """
-    r = opencode_admin.refresh_skills()
+    r = await run_in_threadpool(opencode_admin.refresh_skills)
     if r.get("ok"):
         return {"synced": True, "skill_count": r.get("count")}
     return {"synced": False, "needs_restart": True,
@@ -275,7 +298,7 @@ async def create_skill(body: SkillIn, request: Request):
         }, body.body or "")
     except skill_files.SkillWriteError as e:
         raise HTTPException(400, str(e))
-    return {"ok": True, "key": slug, **_after_write()}
+    return {"ok": True, "key": slug, **await _after_write()}
 
 
 class SkillPatch(BaseModel):
@@ -358,7 +381,7 @@ async def update_skill(key: str, body: SkillPatch, request: Request):
             skill_files.save(merged, new_body)
         except skill_files.SkillWriteError as e:
             raise HTTPException(400, str(e))
-        return {"ok": True, **_after_write()}
+        return {"ok": True, **await _after_write()}
 
     c = get_conn(); cur = c.cursor()
     if key.startswith("custom:"):
@@ -423,7 +446,7 @@ async def delete_skill(key: str, request: Request):
         raise HTTPException(400, "内置能力不能删除,可在管理里关闭")
     if not skill_files.delete(key):
         raise HTTPException(404, "能力不存在")
-    return {"ok": True, **_after_write()}
+    return {"ok": True, **await _after_write()}
 
 
 @router.post("/chat/skills/reset")
@@ -484,7 +507,7 @@ async def install_from_repo(body: InstallIn, request: Request):
         installed = skill_install.install(body.repo, body.paths)
     except skill_install.InstallError as e:
         raise HTTPException(400, str(e))
-    return {"ok": True, "installed": installed, **_after_write()}
+    return {"ok": True, "installed": installed, **await _after_write()}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -628,7 +651,7 @@ async def commit_staged(body: StagedCommitIn, request: Request):
         raise HTTPException(400, str(e))
     # _after_write() 会调 opencode 的 /skill/refresh(我们自己加的端点)——
     # 不刷的话文件写好了但模型看不到,而"已保存"的提示会让用户以为能用了
-    return {"ok": True, **res, **_after_write()}
+    return {"ok": True, **res, **await _after_write()}
 
 
 @router.post("/chat/skills/staged/discard")
