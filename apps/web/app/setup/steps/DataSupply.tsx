@@ -51,11 +51,21 @@ export default function DataSupply({
       </div>
 
       <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <Option on={choice === 'free'} onClick={() => setChoice('free')} title="免费开源数据源"
-                tag={<Tag tone="ok">不用填任何东西</Tag>}>
-          A 股行情、K 线、财务走 AKShare / 腾讯等公开源,装好就能用。
+        {/* ⚠️ 这一项**不写任何配置**,选它等于「先不配数据源」。文案必须说实话:
+            后端的 DATA_SOURCE_PROVIDER 留空时默认走 hunter 网关(那是有意的 ——
+            宁可如实报 hunter_key_required,也不悄悄回落到容器里经常连不通的 AKShare),
+            所以这里没有 key 时**实时行情会明确报错**,而 K 线 / 财务 / 新闻 /
+            研报 / 龙虎榜 / 十大股东 / 治理这些照常能取,深度分析实测能跑完。
+            M4 实测:原文案写「装好就能用」,用户选完第一条对话就顶出一张红色
+            「无法拉取 行情 · hunter_key_required」,与承诺矛盾。 */}
+        <Option on={choice === 'free'} onClick={() => setChoice('free')} title="先不配数据源"
+                tag={<Tag tone="plain">不用填任何东西</Tag>}>
+          现在就能用的:K 线、财务、新闻、研报、龙虎榜、十大股东、治理 —— 深度分析跑得完。
           <div style={{ marginTop: 4, color: HUNTER.INK_F }}>
-            局限:容器直连这些站点在部分网络环境下不稳定;港美股与部分高级数据覆盖不全。
+            现在还不能用的:<b>实时行情</b>会明确提示「未配置 Hunter Key」,不会编一个价格给你。
+            随时可以回到这一步补上面那把免费 key;想完全自给自足,
+            也可以在「数据源与 MCP」页把数据源换成 AKShare 等公开源
+            (免 key,但容器直连这些站点在部分网络环境下不稳定,且港美股覆盖不全)。
           </div>
         </Option>
 

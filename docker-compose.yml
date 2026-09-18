@@ -60,7 +60,7 @@ services:
   api:
     # HUNTER_VERSION / HUNTER_REGISTRY 见 .env.example。**钉具体版本,别用 latest** ——
     # 浮动标签意味着某次 pull 会无声换掉运行的代码,排查时连「什么时候变的」都查不出来。
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-api:${HUNTER_VERSION:-1.1.0-rc2}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-api:${HUNTER_VERSION:-1.1.0}
     <<: *restart
     depends_on:
       postgres:
@@ -68,6 +68,9 @@ services:
       redis:
         condition: service_healthy
     environment:
+      # 监听地址。默认 0.0.0.0;Railway 的老环境私有网络是 IPv6-only,那里设 `::`。
+      # 见 docs/deploy/railway.md
+      HUNTER_BIND_HOST: "${HUNTER_BIND_HOST:-0.0.0.0}"
       # P1 · skip heavy startup schedulers so a fresh clone boots healthy
       HUNTER_MINIMAL_BOOT: "${HUNTER_MINIMAL_BOOT:-1}"
       DATABASE_URL: postgresql://${POSTGRES_USER:-hunter}:${POSTGRES_PASSWORD:-hunter}@postgres:5432/${POSTGRES_DB:-hunter}
@@ -206,11 +209,14 @@ services:
       - "${API_HOST_PORT:-8100}:8000"
 
   web:
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-web:${HUNTER_VERSION:-1.1.0-rc2}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-web:${HUNTER_VERSION:-1.1.0}
     <<: *restart
     depends_on:
       - api
     environment:
+      # Next.js standalone 用 HOSTNAME 定监听地址(镜像里默认 0.0.0.0)。
+      # Railway 老环境设 `::`,见 docs/deploy/railway.md
+      HOSTNAME: "${HUNTER_BIND_HOST:-0.0.0.0}"
       NODE_ENV: production
       # ── chat 依赖 · web 的 BFF 要反代到 opencode 容器 ──────────────────
       # 这几个都必须传给 web(不只是 opencode)，否则 /chat 起不来：
@@ -247,9 +253,12 @@ services:
     # 原来是裸 python:3.12-alpine + 挂 ./scripts/llm-shim。现在源码打进镜像
     # (deploy/llm-shim.Dockerfile),command 与 healthcheck 也在镜像里,
     # 这样不写 compose 的平台(K8s / 云平台表单)拿到的是同一套行为。
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-llm-shim:${HUNTER_VERSION:-1.1.0-rc2}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-llm-shim:${HUNTER_VERSION:-1.1.0}
     <<: *restart
     environment:
+      # 监听地址。默认 0.0.0.0;Railway 的老环境私有网络是 IPv6-only,那里设 `::`。
+      # 见 docs/deploy/railway.md
+      HUNTER_BIND_HOST: "${HUNTER_BIND_HOST:-0.0.0.0}"
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       # 大模型请求是从这个容器发出去的,代理必须配在这里,只配给 api 没用。
       # 宿主机开了 TUN 代理,或网关按 TLS 指纹拦容器直连(aihubmix 实测:
@@ -266,7 +275,7 @@ services:
     # 所以这个服务不再需要任何 bind mount。
     #
     # 换源(自建 registry / 国内镜像)改 HUNTER_REGISTRY,见 .env.example。
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-opencode:${HUNTER_VERSION:-1.1.0-rc2}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-opencode:${HUNTER_VERSION:-1.1.0}
     <<: *restart
     depends_on:
       api:
@@ -274,6 +283,12 @@ services:
       llm-shim:
         condition: service_healthy
     environment:
+      # api 还没起来时最多等多久再放弃拉配置(秒)。本地有 depends_on,api 一定先健康,
+      # 这个预算一秒都用不上;云平台大多不编排启动顺序,那里靠它。见 scripts/opencode/gen-config.py
+      HUNTER_CONFIG_WAIT: "${HUNTER_CONFIG_WAIT:-90}"
+      # 监听地址。默认 0.0.0.0;Railway 的老环境私有网络是 IPv6-only,那里设 `::`。
+      # 见 docs/deploy/railway.md
+      HUNTER_BIND_HOST: "${HUNTER_BIND_HOST:-0.0.0.0}"
       # Basic auth kept OFF by default · hunter-auth plugin is the real gate.
       # Set both env vars to non-empty to add belt-and-suspenders auth (nginx
       # would then need to inject Basic + JWT would move to a custom header).

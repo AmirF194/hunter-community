@@ -46,6 +46,8 @@ from schema_clean import clean, clean_tools, ensure_object_schema  # noqa: F401
 # 由 opencode 的 provider 通过 `X-Hunter-Upstream` 请求头逐次带过来。
 UPSTREAM = (os.environ.get("LLM_BASE_URL") or "").strip().rstrip("/")
 LISTEN_PORT = int(os.environ.get("SHIM_PORT", "3999"))
+# 监听地址默认 0.0.0.0;Railway 老环境私有网络 IPv6-only,那里设 HUNTER_BIND_HOST=::
+LISTEN_HOST = os.environ.get("HUNTER_BIND_HOST") or "0.0.0.0"
 # 我们对外假装成 /v1,收到的 /v1/xxx 会被转成 上游 + /xxx
 LISTEN_PREFIX = "/v1"
 # opencode 送来的上游地址走这个头(gen-config.py / opencode_admin.apply_llm 写的)
@@ -526,10 +528,22 @@ if __name__ == "__main__":
     # provider 通过 X-Hunter-Upstream 头逐次带过来;一项都没配时 shim 也要活着 ——
     # 它正是那句「大模型尚未配置」的出口。退出的话 compose 的健康检查过不去,
     # opencode 因为 depends_on 根本起不来,用户连首页都打不开。
-    print(f"[shim] listening 0.0.0.0:{LISTEN_PORT}{LISTEN_PREFIX} -> "
+    print(f"[shim] listening {LISTEN_HOST}:{LISTEN_PORT}{LISTEN_PREFIX} -> "
           f"{UPSTREAM or '(环境变量未配上游 · 等请求头 ' + UPSTREAM_HEADER + ')'}",
           flush=True)
     if ALLOW_PRIVATE:
         print("[shim] ⚠ LLM_SHIM_ALLOW_PRIVATE=1 · 已放行内网/回环上游地址。"
               "内部服务名与链路本地(云元数据)地址仍然拒绝。", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler).serve_forever()
+    Server = ThreadingHTTPServer
+    if ":" in LISTEN_HOST:              # IPv6 字面量(如 ::):换 AF_INET6 并关掉 v6only,一个 socket 同时收 v4/v6
+        class Server(ThreadingHTTPServer):      # noqa: F811
+            address_family = socket.AF_INET6
+
+            def server_bind(self):
+                try:
+                    self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                except OSError:
+                    pass                        # 内核不让改就只收 IPv6,总比起不来强
+                super().server_bind()
+
+    Server((LISTEN_HOST, LISTEN_PORT), Handler).serve_forever()

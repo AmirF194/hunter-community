@@ -45,6 +45,34 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 ---
 
+## ☁️ 一键部署到云平台
+
+不想自己管服务器的，可以直接部署到下面这些平台，部署完打开域名走一遍首启向导就能用。
+
+| 平台 | 适合谁 | 说明 |
+|---|---|---|
+| [Zeabur](docs/deploy/zeabur.md) | 国内外都能用，能力最全 | 模板自动生成密钥、绑域名、挂卷 |
+| [Sealos](docs/deploy/sealos.md) | 国内用户 | K8s 模板，postgres / redis 走 KubeBlocks |
+| [Railway](docs/deploy/railway.md) | 海外用户 | 控制台里手工搭 6 个服务的逐条清单 + 生成模板的步骤 |
+| [1Panel](docs/deploy/1panel.md) | 自有服务器 + 国产面板 | 应用包，表单里填端口和口令即可 |
+| [Coolify / Dokploy](docs/deploy/coolify-dokploy.md) | 自有服务器 + 自托管 PaaS | **两份可以整段粘贴的 compose** |
+
+> ℹ️ **这一版还没有「一键部署」按钮。** 我们没有这些平台的账号，一次真实部署都没做过，
+> 更没有上架到任何一家的模板市场 —— 所以不放按钮，只给文档。
+> 每份模板都做过**等价验证**：把模板机械翻译成 compose（同镜像、同环境变量、
+> 用平台自己的方式生成的随机密钥、同卷、同依赖），在本机从空卷跑完
+> 「六服务健康 → 走完向导 → 真实对话 → 深度分析 → 重启数据不丢」。
+> 各篇文档里都写明了「哪些验过、哪些没验过、平台上要自己核对什么」。
+> 有账号的朋友帮忙实测一次，欢迎来
+> [Issues](https://github.com/agentpit-io/hunter-community/issues) 说结果 —— 验过就加按钮。
+
+**公网部署必看**：这些平台上的实例一创建就在公网上。模板都默认
+关掉了单用户免登录（`HUNTER_SINGLE_USER=0`）并生成了一道初始化口令
+`HUNTER_SETUP_TOKEN`，向导第 0 步要填它 —— 不然谁先打开谁就能把大模型配成他自己的。
+口令在平台的环境变量面板里看。
+
+---
+
 ## 🚀 5 分钟跑起来
 
 **准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 10 GB · 内存 4 GB(实测峰值约 1.3 GB) · 能访问 `ghcr.io`
@@ -503,13 +531,16 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
 - [x] **v0.2** · opencode 对话引擎、插件与 MCP、一把 key 通用、GitHub 一键装 SKILL
 - [x] **v1.0.0**(2026-09-13)· 全市场扫描筛选器、小鹿智能体研究台、量化因子与回测按市场隔离、SKILL 导入附属文档与中文说明、kronos / truesource MCP 发布、会话数据落具名卷 —— [完整更新日志](./CHANGELOG.md)
 - [x] **v1.0.1**(2026-09-17)· 对话引擎镜像 **7.56 GB → 618 MB**(下载量 1.70 GB → 153 MB)、api 镜像 1.32 GB → 909 MB、入口脚本固化、每日部署冒烟 CI、文档与社区基建 —— [瘦身过程与实测](./docs/image-slim/)
-- [ ] **v1.1.0** · 免改配置文件开箱即用 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/2)
+- [x] **v1.1.0**(2026-09-18)· 免改配置文件开箱即用 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/2)
   - [x] 六个服务全部预构建镜像 + amd64/arm64 双架构(`v1.1.0-rc1`)
   - [x] 数据库迁移改为 api 启动时自动执行;`JWT_SECRET` 等密钥首次启动自动生成
   - [x] 大模型配置可存库(不再只能写 `.env`),改配置热生效、无需重启容器
-  - [x] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)(`v1.1.0-rc2`)
-  - [ ] 一键部署模板(Zeabur / Sealos / Railway / 1Panel)
+  - [x] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)
+  - [x] 五个平台的部署方案(Zeabur / Sealos / Railway / 1Panel / Coolify·Dokploy)
+        —— 模板与文档就绪并做过等价验证,但**都还没在真实平台上跑过、也都没上架**,
+        所以本版不放部署按钮,见 [一键部署到云平台](#-一键部署到云平台)
   - 进度与实测数据:[`docs/setup-wizard/`](./docs/setup-wizard/)
+- [ ] **下一步** · 拿到平台账号后逐个实测并上架(那时才加按钮)、国内镜像源、arm64 真机验证
 
 想要什么功能?到 [讨论区想法分区](https://github.com/agentpit-io/hunter-community/discussions/categories/ideas) 投票。
 

@@ -41,9 +41,12 @@ python3 /opt/hunter-boot/gen-config.py
 # 本脚本现在是 COPY 进包装镜像的(M1 · 见 deploy/opencode.Dockerfile),但基础镜像的
 # 版本由 OPENCODE_TAG 决定,用户把它钉回旧标签是常态 —— 那时没有 opencode 二进制,
 # 由镜像里的 bun 垫片兜住。(开发时仍可用 docker-compose.dev.yml 把本目录挂回去。)
+# 监听地址:默认 0.0.0.0。Railway 老环境的私有网络是 IPv6-only,那里要设 HUNTER_BIND_HOST=::
+BIND_HOST="${HUNTER_BIND_HOST:-0.0.0.0}"
+
 if command -v opencode >/dev/null 2>&1; then
-    exec opencode serve --hostname 0.0.0.0 --port 3901
+    exec opencode serve --hostname "$BIND_HOST" --port 3901
 fi
 
 echo "[boot] 镜像里没有 opencode 二进制(旧镜像),回落到源码启动" >&2
-exec bun run packages/opencode/src/index.ts serve --hostname 0.0.0.0 --port 3901
+exec bun run packages/opencode/src/index.ts serve --hostname "$BIND_HOST" --port 3901

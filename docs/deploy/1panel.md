@@ -16,7 +16,7 @@
 ```bash
 # 1. 准备目录（面板一般在 /opt/1panel/apps 下）
 mkdir -p ~/hunter-community && cd ~/hunter-community
-cp -r <仓库>/deploy/1panel/hunter-community/1.1.0-rc2/* .
+cp -r <仓库>/deploy/1panel/hunter-community/1.1.0/* .
 
 # 2. 填 .env（表单里那几项，手工装就自己写）
 cat > .env <<'EOF'

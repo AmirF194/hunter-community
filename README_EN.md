@@ -45,6 +45,41 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 
 ---
 
+## ☁️ One-click deploy to a cloud platform
+
+If you would rather not run a server yourself, deploy to one of these and finish the
+first-run wizard in the browser.
+
+| Platform | Who it fits | Notes |
+|---|---|---|
+| [Zeabur](docs/deploy/zeabur.md) | Works inside and outside China; most capable | Template generates the secrets, binds the domain, attaches volumes |
+| [Sealos](docs/deploy/sealos.md) | Users in China | Kubernetes template; postgres / redis via KubeBlocks |
+| [Railway](docs/deploy/railway.md) | Users outside China | Step-by-step list for building the 6 services in the console, plus how to generate and publish the template |
+| [1Panel](docs/deploy/1panel.md) | Your own server + a Chinese control panel | App package; fill in a port and a token |
+| [Coolify / Dokploy](docs/deploy/coolify-dokploy.md) | Your own server + a self-hosted PaaS | **Two compose files you can paste as-is** |
+
+> ℹ️ **There are no deploy buttons in this release.** We do not have accounts on any of
+> these platforms, have never run a real deployment on them, and have not listed the
+> templates in any marketplace — so: docs only, no buttons.
+> Every template was **equivalence-verified**: mechanically translated into a compose
+> file (same images, same environment variables, random secrets generated the way that
+> platform generates them, same volumes, same dependencies) and run locally from empty
+> volumes through "six services healthy → finish the wizard → a real conversation →
+> a deep-dive analysis → restart without losing data".
+> Each doc states plainly what was verified, what was not, and what you must check
+> yourself on the platform. If you have an account and try one, please tell us in
+> [Issues](https://github.com/agentpit-io/hunter-community/issues) — once a template is
+> verified on the real platform, the button goes in.
+
+**Read this before exposing an instance to the internet**: these platforms put your
+instance on a public address the moment it is created. Every template therefore turns
+off single-user passwordless mode (`HUNTER_SINGLE_USER=0`) and generates a setup token
+`HUNTER_SETUP_TOKEN`, which step 0 of the wizard asks for — otherwise whoever opens the
+page first gets to point your instance at their own model. The token is visible in the
+platform's environment-variable panel.
+
+---
+
 ## 🚀 Deploy in 5 minutes
 
 **You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 10 GB disk · 4 GB RAM (measured peak ~1.3 GB) · access to `ghcr.io`
@@ -486,13 +521,17 @@ Built something on HunterCode or maintaining a fork? Tell us in [Discussions](ht
 - [x] **v0.2** · opencode chat engine, plugins and MCP, one key for everything, GitHub SKILL install
 - [x] **v1.0.0** (2026-09-13) · Market-wide screener, research desk agent, quant factors and backtests isolated per market, SKILL import with attached docs and Chinese descriptions, kronos / truesource MCPs published, chat sessions on named volumes — [full changelog](./CHANGELOG.md)
 - [x] **v1.0.1** (2026-09-17) · Chat-engine image **7.56 GB → 618 MB** (download 1.70 GB → 153 MB), api image 1.32 GB → 909 MB, entrypoint hardening, daily deploy smoke CI, docs and community groundwork — [how and measurements](./docs/image-slim/)
-- [ ] **v1.1.0** · Works out of the box with no config file editing — [milestone](https://github.com/agentpit-io/hunter-community/milestone/2)
+- [x] **v1.1.0** (2026-09-18) · Works out of the box with no config file editing — [milestone](https://github.com/agentpit-io/hunter-community/milestone/2)
   - [x] All six services from pre-built images, amd64 + arm64 (`v1.1.0-rc1`)
   - [x] Database migrations run automatically on api start; `JWT_SECRET` and friends generated on first boot
   - [x] LLM settings can live in the database (no longer `.env`-only) and apply live without restarting containers
-  - [x] Graphical first-run wizard (pick a model → paste the key and test it on the spot → start chatting) (`v1.1.0-rc2`)
-  - [ ] One-click deploy templates (Zeabur / Sealos / Railway / 1Panel)
+  - [x] Graphical first-run wizard (pick a model → paste the key and test it on the spot → start chatting)
+  - [x] Deployment for five platforms (Zeabur / Sealos / Railway / 1Panel / Coolify·Dokploy)
+        — templates and docs are ready and equivalence-verified, but **none has been run
+        on the real platform and none is listed in a marketplace**, so this release ships
+        no deploy buttons. See [One-click deploy](#-one-click-deploy-to-a-cloud-platform)
   - Progress and measurements: [`docs/setup-wizard/`](./docs/setup-wizard/)
+- [ ] **Next** · Verify and list each platform once we have accounts (buttons go in then), China mirrors, arm64 on real hardware
 
 Want a feature? Vote in [Discussions Ideas](https://github.com/agentpit-io/hunter-community/discussions/categories/ideas).
 

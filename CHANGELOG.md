@@ -3,7 +3,7 @@
 All notable changes to HunterCode · Community Edition follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-09-18
 
 ### ✨ 新增 · Added
 - **浏览器里的首启向导**(`/setup`)· 五步配完就能对话,**全程不用改任何文件**:
@@ -38,6 +38,22 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`docker-compose.dev.yml`** · 开发者用:带回本地构建与全部源码挂载。
   `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`
 
+- **五个平台的部署方案**(`deploy/` 与 `docs/deploy/`):Zeabur 模板、Sealos 模板(K8s)、
+  1Panel 应用包、Railway 手工搭建清单、Coolify / Dokploy 两份可直接粘贴的 compose。
+  ⚠️ **都还没在真实平台上跑过、也都没上架**(我们没有这些平台的账号),所以本版
+  **不放任何部署按钮**,只给文档;每篇文档都写明了哪些验过、哪些没验过。
+  Deployment recipes for five platforms — verified by equivalence, **not yet on the real
+  platforms and not listed anywhere**, so no deploy buttons in this release.
+- **`deploy/tools/template-to-compose.py`** · 把各平台模板**机械翻译**成等价 compose
+  (同镜像、同环境变量、**用平台自己的方式生成的随机密钥**、同卷、同依赖、同 init 规则),
+  在本机从空卷跑完整流程。没有平台账号也能验模板本身 —— 人不能在中间改。
+- **`deploy/tools/validate-templates.py`** · 58 项静态校验:Zeabur 官方 JSON Schema、
+  Sealos 的 K8s 资源过 `kubeconform -strict`、1Panel 过官方 `validate_app_package.py`,
+  外加这一轮真踩到过的规则(PGDATA 必须是挂载点的子目录、非 root 镜像挂卷必须
+  `RAILWAY_RUN_UID=0`、api 的卷不能遮住镜像自带的静态数据目录……)。
+- **`HUNTER_BIND_HOST`** · 监听地址可配,默认 `0.0.0.0` 不变。Railway 2025-10-16 之前
+  创建的环境私有网络是 IPv6-only,那里设 `::`。
+
 ### 🐛 修复 · Fixed
 - **`db/migrations/` 里有 7 个迁移文件一直在静默失败**。它们 ALTER 的目标表(`stocks` / `klines` /
   `backtest_result`)是 api 启动时 `init_db()` 建的,而 postgres 的 initdb 在 api 第一次启动**之前**就跑,
@@ -69,6 +85,31 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shim 连不上上游,前端表现为对话一直转圈。现在 llm-shim 与 api 共用这组变量,留空时行为不变。
   The LLM proxy variables are now passed to the llm-shim container as well, which is where model requests are sent from.
 
+- **云部署时向导五步全绿、发消息却永远没有回复,日志里一条报错都没有**。api 也需要知道
+  llm-shim 在哪(向导保存后由 api 把 provider 的 `baseURL` 推给 opencode,推的是
+  **api 容器里**的 `LLM_SHIM_URL`),不设就回落到硬编码的 `http://llm-shim:3999/v1` ——
+  服务名不叫 `llm-shim` 的部署全中。
+- **重新部署之后,向导里配好的模型又变回「尚未配置」**。opencode 启动时向 api 要配置
+  只重试 3 次、总共等 3 秒,而云平台大多不编排启动顺序(六个服务同时起),api 要跑完
+  数据库迁移才监听。改成按预算退避重试(`HUNTER_CONFIG_WAIT`,默认 90 秒),
+  且**只对连不上重试** —— api 一回话就立刻按它说的办,全新安装一秒都不多等。
+- **合规声明弹窗盖住首启向导**。弹窗本来就排除了 `/setup`,但路径是在**挂载时**判的;
+  全新用户落在 `/`、由首页在客户端跳到 `/setup`,2.5 秒后回调才跑完 —— 那时人已经在
+  向导里了,而它是全屏遮罩,把「下一步」整个挡住。改成落地时再判一次。
+- **向导第 4 步「免费开源数据源」承诺了它做不到的事**:那一项不写任何配置,而后端
+  未配置时默认走 hunter 网关(有意为之:宁可如实报「未配置 Hunter Key」,也不悄悄
+  回落到容器里经常连不通的 AKShare),于是用户选完第一条对话就顶出红色的
+  「无法拉取 行情」。改成如实说明现在能用什么、不能用什么。
+- **首次启动生成的密钥被说成「还没落进 hunter_secrets 卷」**,其实紧接着就写回去了。
+- **冷启后头几十秒,向导第 1 步必现一条黄色 `ReadTimeout`**(opencode 还在加载插件,
+  扫一遍 SKILL 要十几秒;热起来只要 16~80 毫秒)。超时放宽到 10 秒,文案也改成人话。
+- **`boot.sh` 在云部署上误报「密钥重启后会变」**:密钥来自环境变量时这句一个字都不成立。
+- **向导第 1 步把环境变量来的密钥报成「首启自动生成(hunter_secrets 卷)」**:判据恒为真。
+- `scripts/migrate-volumes.sh`:支持 `--project`(用 `docker compose -p` 起的栈本来
+  认不出项目名,会报「卷还不存在」把人带偏);卷找不到时列出疑似卷名;收尾提示里那条
+  直接 `curl` opencode `/skill/refresh` 的命令在开了 `OPENCODE_PASS` 的部署上是 401、
+  还被 `curl -s` 吞掉,改成重启 api 与 opencode。
+
 ### 🔧 变更 · Changed
 - `docker-compose.yml` **默认只用预构建镜像**,不再有 `build:` 段。版本由 `HUNTER_VERSION` 控制
   (默认 `1.1.0-rc1`),镜像源由 `HUNTER_REGISTRY` 控制。要本地构建请叠加 `docker-compose.dev.yml`。
@@ -86,6 +127,7 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 git pull
 docker compose pull && docker compose up -d
 bash scripts/migrate-volumes.sh     # 装过 SKILL / 导入过数据包的老用户必须跑
+                                    # 用 `docker compose -p <名>` 起的栈:加 --project <名>
 ```
 
 `JWT_SECRET` 已经填在 `.env` 里的**不要动** —— 它派生了加密已存 key 的 AES 密钥。
