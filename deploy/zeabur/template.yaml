@@ -177,7 +177,7 @@ spec:
       template: PREBUILT_V2
       spec:
         source:
-          image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0
         ports:
           - id: http
             port: 3999
@@ -219,7 +219,7 @@ spec:
         - llm-shim
       spec:
         source:
-          image: ghcr.io/agentpit-io/hunter-community-api:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-api:1.1.0
         ports:
           - id: http
             port: 8000
@@ -323,7 +323,7 @@ spec:
         - llm-shim
       spec:
         source:
-          image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0
         ports:
           - id: http
             port: 3901
@@ -392,7 +392,7 @@ spec:
         - opencode
       spec:
         source:
-          image: ghcr.io/agentpit-io/hunter-community-web:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-web:1.1.0
         ports:
           - id: web
             port: 3000

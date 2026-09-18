@@ -294,7 +294,7 @@ kind: Deployment
 metadata:
   name: ${{ defaults.app_name }}-llm-shim
   annotations:
-    originImageName: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0-rc2
+    originImageName: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0
     deploy.cloud.sealos.io/minReplicas: '1'
     deploy.cloud.sealos.io/maxReplicas: '1'
   labels:
@@ -314,7 +314,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: ${{ defaults.app_name }}-llm-shim
-          image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0
           env:
             # 大模型地址由首启向导写进数据库后热生效，这里留空即可
             - name: LLM_BASE_URL
@@ -369,7 +369,7 @@ kind: StatefulSet
 metadata:
   name: ${{ defaults.app_name }}-api
   annotations:
-    originImageName: ghcr.io/agentpit-io/hunter-community-api:1.1.0-rc2
+    originImageName: ghcr.io/agentpit-io/hunter-community-api:1.1.0
     deploy.cloud.sealos.io/minReplicas: '1'
     deploy.cloud.sealos.io/maxReplicas: '1'
   labels:
@@ -392,7 +392,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: ${{ defaults.app_name }}-api
-          image: ghcr.io/agentpit-io/hunter-community-api:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-api:1.1.0
           env:
             # ── postgres 连接 · 凭据来自 KubeBlocks 生成的 Secret ──────
             # $(VAR) 是 K8s 的 env 互引用，只能引用**同一个列表里靠前**的项，
@@ -573,7 +573,7 @@ kind: StatefulSet
 metadata:
   name: ${{ defaults.app_name }}-opencode
   annotations:
-    originImageName: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0-rc2
+    originImageName: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0
     deploy.cloud.sealos.io/minReplicas: '1'
     deploy.cloud.sealos.io/maxReplicas: '1'
   labels:
@@ -599,7 +599,7 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: ${{ defaults.app_name }}-opencode
-          image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0
           env:
             - name: JWT_SECRET
               value: ${{ defaults.jwt_secret }}
@@ -684,7 +684,7 @@ kind: Deployment
 metadata:
   name: ${{ defaults.app_name }}
   annotations:
-    originImageName: ghcr.io/agentpit-io/hunter-community-web:1.1.0-rc2
+    originImageName: ghcr.io/agentpit-io/hunter-community-web:1.1.0
     deploy.cloud.sealos.io/minReplicas: '1'
     deploy.cloud.sealos.io/maxReplicas: '1'
   labels:
@@ -704,7 +704,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: ${{ defaults.app_name }}
-          image: ghcr.io/agentpit-io/hunter-community-web:1.1.0-rc2
+          image: ghcr.io/agentpit-io/hunter-community-web:1.1.0
           env:
             - name: NODE_ENV
               value: production
