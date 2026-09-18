@@ -52,7 +52,15 @@ async function handle(req: Request, segs: string[]): Promise<Response> {
   //    所以 api 侧的门禁不靠它决定安全性 —— 设了 HUNTER_SETUP_TOKEN 就一律要
   //    口令,不管来源看起来是什么。详见 apps/api/app/services/setup_guard.py 的
   //    模块文档。这里转发它,是为了让"本机开箱即用"和第 1 步的环境自检能工作。
-  const fwd = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip')
+  // ⚠️ **X-Real-IP 优先于 X-Forwarded-For**,这不是随手排的顺序:
+  //   · nginx 的 `proxy_set_header X-Real-IP $remote_addr` 是**覆盖**写 ——
+  //     客户端自己带的会被丢掉,所以有反代时这个头是可信的;
+  //   · 而 `X-Forwarded-For $proxy_add_x_forwarded_for` 是**追加**写 ——
+  //     客户端带的 `127.0.0.1` 会原样留在最左边。
+  // 演示站实测(2026-09-18):只看 XFF 最左边的话,公网访问者加一个
+  // `X-Forwarded-For: 127.0.0.1` 就会被判成本机。
+  const real = req.headers.get('x-real-ip')
+  const fwd = real || req.headers.get('x-forwarded-for')
   if (fwd) headers.set('X-Hunter-Forwarded-For', fwd)
 
   const init: RequestInit = { method: req.method, headers, cache: 'no-store' }

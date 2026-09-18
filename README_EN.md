@@ -90,8 +90,10 @@ All screenshots: [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wiz
 > [!IMPORTANT]
 > **If this instance is reachable from the public internet, set `HUNTER_SETUP_TOKEN` in `.env` first**
 > (any random string — `openssl rand -base64 24`), then `docker compose up -d`.
-> Without it, whoever opens the page first gets to configure the LLM. With it, the wizard
-> asks for that token up front and locks for 15 minutes after 5 wrong tries.
+> Without it, whoever opens the page first gets to configure the LLM — the wizard decides
+> "is this local?" from HTTP forwarding headers, and on a bare `docker compose` (no nginx or
+> other reverse proxy in front) a visitor can forge those. With the token set, the wizard asks
+> for it up front and locks for 15 minutes after 5 wrong tries.
 > Not needed for a machine only you can reach.
 
 **The old way (hard-coding it in `.env`) still works and takes priority**: an instance with

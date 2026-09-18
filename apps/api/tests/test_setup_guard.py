@@ -73,14 +73,26 @@ def test_forwarded_ignored_when_peer_is_public():
     assert (s.ip, s.kind, s.via) == ("8.8.8.8", "public", "peer")
 
 
-def test_forwarded_chain_takes_leftmost():
+def test_forwarded_chain_takes_rightmost():
+    """链里只有最右边那个是"离我们最近的那一跳亲手写的",左边的可以是客户端伪造的。"""
     r = FakeReq(headers={"X-Hunter-Forwarded-For": "8.8.8.8, 10.0.0.1, 172.18.0.1"})
-    assert g.source_of(r).ip == "8.8.8.8"
+    assert g.source_of(r).ip == "172.18.0.1"
+
+
+def test_client_cannot_forge_localhost_behind_appending_proxy():
+    """演示站实测的那次:客户端带 `X-Forwarded-For: 127.0.0.1`,nginx 的
+    $proxy_add_x_forwarded_for 把真实公网 IP 追加在后面。必须判成公网。"""
+    r = FakeReq(headers={"X-Hunter-Forwarded-For": "127.0.0.1, 8.8.8.8"})
+    s = g.source_of(r)
+    assert (s.ip, s.kind) == ("8.8.8.8", "public")
+    assert not s.is_trusted_zone
 
 
 def test_forwarded_strips_port():
     assert g._first_forwarded("8.8.8.8:51515") == "8.8.8.8"
     assert g._first_forwarded("[2001:db8::1]:443") == "2001:db8::1"
+    assert g._first_forwarded("") == ""
+    assert g._first_forwarded("  ,  ") == ""
 
 
 def test_unknown_source_is_not_trusted():

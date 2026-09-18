@@ -13,9 +13,12 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   最后一步**不重启任何容器**热生效。设置页 →「大模型」→「重新运行初始化向导」可随时换模型。
   A first-run wizard in the browser: env self-check → pick a model → paste the key and test it
   on the spot → data supply → done, applied live without restarting anything.
-- **`HUNTER_SETUP_TOKEN`** · 公网实例的初始化口令。**设了就一律要**(不管来源看起来是不是本机 ——
-  来源取自 HTTP 转发头,那是访问者可以伪造的);没设且来源判为公网时**拒绝进入向导**并说明怎么做。
-  连错 5 次锁 15 分钟,通过后签发 30 分钟的初始化会话。
+- **`HUNTER_SETUP_TOKEN`** · 公网实例的初始化口令。**设了就一律要**(不管来源看起来是不是本机);
+  没设且来源判为公网时**拒绝进入向导**并说明怎么做。连错 5 次锁 15 分钟,
+  通过后签发 30 分钟的初始化会话。
+  来源判断:优先看反代覆盖写的 `X-Real-IP`,退而取 `X-Forwarded-For` **最右边**那一项
+  (`$proxy_add_x_forwarded_for` 是追加写,最左边是客户端自己带的)。有反代时这个判断可信;
+  裸 compose 没有反代时仍可被伪造 —— 所以暴露在公网就必须设口令,向导第 1 步会对此告警。
 - **`data/llm-presets.json`** · 四个预设(DeepSeek v4 pro / Qwen 3.8 Max / Claude Sonnet 5 /
   Gemini 3.5 Flash)+ 自定义。卡片上的工具调用命中率与耗时**全部抄自 `docs/model-testing/`**
   的实测结果并标注实测日期,对不上的字段留空。
