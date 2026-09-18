@@ -81,7 +81,8 @@ LINES: dict = {
     # 2026-09-17 用户:第一条 A 股研究线。对照组是美股 VCP,市场、货币、基准都不同,
     # 「回撤不超过对照组 1.5 倍」「同段收益不输对照组」比不出意义 → compare_to = None,只按每笔净损益判
     "limitup": {
-        "label": "涨停后强势整理", "branches": ["limitup"], "best": "limitup",
+        # limitup_yin(2026-09-18):同一条线新开的「涨停 + 三根阴线 · 主板」方向;研究台判定仍按 best = limitup
+        "label": "涨停后强势整理", "branches": ["limitup", "limitup_yin"], "best": "limitup",
         "status": "backtest", "created_at": "2026-09-17", "market": "a",
         "hypothesis": "A 股涨停后三天没再涨停、收盘都守在涨停日收盘之上,说明资金没有撤,第四天收盘买入、次日收盘卖出能赚到延续",
         "rules_draft": ("进:4 个交易日前涨停(主板 10% / 创业板科创板 20%;主板 ST 2025-07-07 前 5%)· 之后三天每天都没涨停 · 三天收盘都高于涨停日收盘"

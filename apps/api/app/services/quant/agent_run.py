@@ -275,6 +275,10 @@ class Ctx:
         from app.services.quant import screen_asof
         # 一个 Ctx 只装一个市场的日线(2026-09-17 A 股线起)。run_date 只跑这个市场的方向
         self.market = market
+        # 引擎声明 WITH_OPEN(涨停三阴线要判阴线)→ 这个市场的日线元组带第 6 个元素开盘价。
+        # 其余引擎只按下标读前 5 个,带不带都一样
+        self.with_open = any(getattr(e, "WITH_OPEN", False) and getattr(e, "MARKET", MARKET) == market
+                             for e in ao.ENGINES.values())
         self.rows, self.perf = _snapshot(market)
         self.snap = {r["_code"]: r for r in self.rows}
         self.sectors = {c: r.get("sector") for c, r in self.snap.items()}      # 方向 A 的「同板块 ≤2」用
@@ -303,7 +307,7 @@ class Ctx:
 
     def bars_of(self, code, upto: date | None = None):
         from app.services.quant import screen_asof
-        return screen_asof.bars_upto(self.store, code, upto or self.store["last"])
+        return screen_asof.bars_upto(self.store, code, upto or self.store["last"], self.with_open)
 
     def load_screens(self, cur):
         cur.execute("SELECT trade_date, items FROM agent_watch ORDER BY trade_date")
@@ -991,6 +995,8 @@ _V1 = {
                 "当天收盘站上 5 日均线且 5 日均线向上(v2 加),"
                 "信号当天收盘买 1 万元、次日收盘卖(跌停 / 停牌顺延),A 股手续费从现金里扣",
                 "用户 2026-09-17 给的规则;立项时问清四个口径:守住 = 收盘高于涨停日收盘、涨停按板块、每个信号独立买 1 万、手续费按 A 股实际扣"),
+    "limitup_yin": ("涨停 + 三根阴线(A 股主板)—— 4 个交易日前涨停,之后连续三天阴线(收盘 < 开盘),信号当天收盘买 1 万元、次日收盘卖",
+                    "用户 2026-09-18 在涨停后强势整理线上新开的迭代方向;只做主板,买卖、手续费、仓位口径与原方向相同"),
 }
 
 
@@ -1232,7 +1238,8 @@ def _strategy_block(universe_size, st: dict, branch: str = "base") -> dict:
     p = st["params"]
     eng = ao.engine_of(branch)
     names = {"vcp": STRATEGY_NAME, "vcp3": "VCP 三段式(方向 C)", "vcp4": "VCP · SEPA 优化(方向 A)",
-             "donchian": "唐奇安通道突破", "breakout": "突破买入(Patrick Walker 风格)", "limitup": "涨停后强势整理(A 股)"}
+             "donchian": "唐奇安通道突破", "breakout": "突破买入(Patrick Walker 风格)", "limitup": "涨停后强势整理(A 股)",
+             "limitup_yin": "涨停 + 三根阴线(A 股主板)"}
     days_ = _pool_days(ao.BRANCHES[branch]["engine"])
     span = "当天筛选结果" if days_ <= 1 else f"近 {days_} 天并集"
     return {"name": names.get(ao.BRANCHES[branch]["engine"], STRATEGY_NAME), "version": f"v{st['version']}",

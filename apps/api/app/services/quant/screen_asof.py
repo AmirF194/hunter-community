@@ -418,24 +418,29 @@ def history_range(market_key: str) -> dict:
             "bars": len(ds)}
 
 
-def _tuples(dates, arr, k: int) -> list[tuple]:
+def _tuples(dates, arr, k: int, with_open: bool = False) -> list[tuple]:
+    """with_open=True 时多给第 6 个元素 = 开盘价(缺失 None)。默认 5 元组,老消费方不变(2026-09-17 涨停三阴线要用)。"""
     out = []
     for i in range(k):
         r = arr[i]
-        out.append((dates[i], float(r[0]),
-                    None if r[1] != r[1] else float(r[1]),
-                    None if r[2] != r[2] else float(r[2]),
-                    None if r[3] != r[3] else float(r[3])))
+        t = (dates[i], float(r[0]),
+             None if r[1] != r[1] else float(r[1]),
+             None if r[2] != r[2] else float(r[2]),
+             None if r[3] != r[3] else float(r[3]))
+        if with_open:
+            o = r[4] if len(r) > 4 else float("nan")
+            t = t + (None if o != o else float(o),)
+        out.append(t)
     return out
 
 
-def bars_upto(store: dict, code: str, as_of: date) -> list[tuple]:
+def bars_upto(store: dict, code: str, as_of: date, with_open: bool = False) -> list[tuple]:
     """缓存里的一只票截到 as_of 的日线 → [(日期, 收, 高, 低, 量)];没有这只票 → []。"""
     item = store["codes"].get(code)
     if not item:
         return []
     dates, arr = item
-    return _tuples(dates, arr, bisect_right(dates, as_of))
+    return _tuples(dates, arr, bisect_right(dates, as_of), with_open)
 
 
 def build_rows(market_key: str, as_of: date, fields: list[str],
