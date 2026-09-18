@@ -3,7 +3,8 @@
 
 为什么要有这个脚本
 ────────────────────────────────────────────────────────────────────────
-M3 这一轮没有 Zeabur / Sealos / 1Panel 的账号，没法在真实平台上点一次部署。
+我们没有任何一个平台的账号（M3 是 Zeabur / Sealos / 1Panel，M4 又加了 Railway /
+Coolify / Dokploy），没法在真实平台上点一次部署。
 但模板里真正会出错的东西 —— 镜像标签、环境变量名、密钥怎么生成、谁和谁必须
 同值、卷挂在哪、依赖顺序 —— 和平台本身关系不大。所以这里把模板**机械地**
 翻译成 compose：同样的镜像、同样的环境变量、**用平台自己的方式生成的随机密钥**、
@@ -12,17 +13,28 @@ M3 这一轮没有 Zeabur / Sealos / 1Panel 的账号，没法在真实平台上
 翻译是机械的 = 人不能在中间「顺手改一下」。脚本读模板、写 compose，
 测试跑的就是模板本身的语义。
 
+**加新平台时先问一句:这个平台的卷是什么语义。** M4 最值钱的两个发现都来自这里 ——
+Docker 具名卷会把镜像里该路径的内容拷进空卷、根目录没有 lost+found、`depends_on`
+还能编排启动顺序;这三条云平台上一条都不成立。Railway 的翻译因此**刻意模拟**了
+「空卷 + ext4 的 lost+found + 没有启动顺序」,才把两个必炸的配置炸出来。
+拿本机 Docker 的语义当基准一定会漏。
+
 不能覆盖到的（老实写在这里，成果文档里也会列）：
-  · 平台控制台的表单渲染、域名绑定、计费、镜像拉取加速
+  · 平台控制台的表单渲染、域名绑定、计费、镜像拉取加速、反代的 SSE 超时
   · Zeabur 的 ${PASSWORD} 到底是不是「每服务一个」（按官方文档实现）
   · Sealos 的 KubeBlocks Cluster → 这里换成等价的官方镜像跑
   · K8s 的 Ingress 注解、HPA、亲和性
+  · Railway 的引用变量能不能引用到 secret() 生成的值（按官方文档实现）
+  · Coolify 的 magic 变量字符集、Dokploy 的 Isolated Deployments 开关
 
 用法
 ────────────────────────────────────────────────────────────────────────
-    python3 deploy/tools/template-to-compose.py zeabur --out /tmp/t/zeabur
-    python3 deploy/tools/template-to-compose.py sealos --out /tmp/t/sealos
-    python3 deploy/tools/template-to-compose.py 1panel --out /tmp/t/1panel
+    python3 deploy/tools/template-to-compose.py zeabur  --out /tmp/t/zeabur
+    python3 deploy/tools/template-to-compose.py sealos  --out /tmp/t/sealos
+    python3 deploy/tools/template-to-compose.py 1panel  --out /tmp/t/1panel
+    python3 deploy/tools/template-to-compose.py railway --out /tmp/t/railway
+    python3 deploy/tools/template-to-compose.py coolify --out /tmp/t/coolify
+    python3 deploy/tools/template-to-compose.py dokploy --out /tmp/t/dokploy
 
 每次生成一份新的随机密钥（和平台上每次部署一样）。加 --seed 可复现。
 生成物：<out>/docker-compose.yml 和 <out>/SECRETS.txt（打码后的密钥来源说明）。
