@@ -213,6 +213,62 @@ def 次新股_早于上市日的锚点跳过():
     assert out == s and fixed == 0
 
 
+def _head_jump(ratio, vol_after, n=300, at=40):
+    """第 at 天(早于 1 年锚点)跳变 ratio 倍,之前量 1e6、之后量 vol_after;之后价格不动,锚点全对得上。"""
+    s = [(D0 + timedelta(days=i), 100.0 * (1 if i >= at else 1 / ratio)) for i in range(n)]
+    vols = {d: (1e6 if i < at else vol_after) for i, (d, _) in enumerate(s)}
+    return s, vols, _anchors(s, **{"Perf.W": 0, "Perf.1M": 0, "Perf.3M": 0, "Perf.6M": 0, "Perf.Y": 0})
+
+
+@case
+def 港股截头_真暴涨量放大_不截():
+    s, vols, a = _head_jump(2.5, 3e6)                  # 翻 2.5 倍、量也放大 3 倍 —— 真涨
+    out, fixed = rh.repair_splits(s, a, vols=vols)
+    assert fixed == 0 and out == s, len(out)
+
+
+@case
+def 港股截头_像合股量反向同倍_照截():
+    s, vols, a = _head_jump(20.0, 1e6 / 20)            # 20 合 1:价 ×20、量 ÷20
+    out, _ = rh.repair_splits(s, a, vols=vols)
+    assert out[0][0] == D0 + timedelta(days=40), out[0]
+
+
+@case
+def 港股截头_前后量不够_宁可截():
+    s, vols, a = _head_jump(2.5, 3e6, at=5)            # 跳变前只有 4 天量
+    out, _ = rh.repair_splits(s, a, vols=vols)
+    assert out[0][0] == D0 + timedelta(days=5), out[0]
+
+
+@case
+def 港股截头_合股后量塌得比价格倍数还狠_照截():
+    s, vols, a = _head_jump(4.0, 1e6 / 40)             # 4 合 1,量却缩到 1/40(仙股合股后常见)
+    out, _ = rh.repair_splits(s, a, vols=vols)
+    assert out[0][0] == D0 + timedelta(days=40), out[0]
+
+
+@case
+def 港股截头_单日5倍以上_放量也截():
+    s, vols, a = _head_jump(6.0, 3e6)
+    out, _ = rh.repair_splits(s, a, vols=vols)
+    assert out[0][0] == D0 + timedelta(days=40), out[0]
+
+
+@case
+def 港股截头_真暴跌缩量_不截():
+    s, vols, a = _head_jump(0.5, 1e6)                  # 腰斩但量不变 —— 不是拆股(拆股量会翻倍)
+    out, fixed = rh.repair_splits(s, a, vols=vols)
+    assert fixed == 0 and out == s
+
+
+@case
+def 美股A股不传量_真暴涨照旧截():
+    s, _vols, a = _head_jump(2.5, 3e6)                 # 不传 vols = 原来的行为,已有研究线的回测依赖它
+    out, _ = rh.repair_splits(s, a)
+    assert out[0][0] == D0 + timedelta(days=40), out[0]
+
+
 # ── tx_symbol ─────────────────────────────────────────────────
 
 @case

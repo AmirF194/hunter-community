@@ -295,7 +295,9 @@ def _load_store(market_key: str, perf: dict) -> dict:
         p = perf.get(code)
         series = [(d, c) for d, c, _h, _l, _v, _o in full]
         if p is not None:
-            series, _n = rh.repair_splits(series, rh.perf_anchors(series[-1][0], p))
+            series, _n = rh.repair_splits(series, rh.perf_anchors(series[-1][0], p),
+                                          vols=({d: v for d, _c, _h, _l, v, _o in full}
+                                                if market_key == "hk" else None))   # 港股截头只截像合股的跳变
             if series is None:
                 return                       # 对不上又修不好 —— 这只票不给数(和每晚任务同一口径)
         raw = {d: (c, h, lo, v) for d, c, h, lo, v, _o in full}
