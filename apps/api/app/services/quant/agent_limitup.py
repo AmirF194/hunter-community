@@ -76,6 +76,8 @@ PARAMS = {
     "growth_only": True,             # L-08 只做创业板 / 科创板(v3)
     "amp_max": 15.0,                 # L-09 三天整理幅度上限(% of 涨停日收盘,v4);None = 不限
     "no_all_shrink": True,           # L-10 三天成交量每天都低于涨停日 → 不买(v4)
+    # 买入口径:hold = 涨停后强势整理(L-01 ~ L-10);yin = 涨停 + 三根阴线(Y-01 ~ Y-03,agent_limitup_yin 用)
+    "mode": "hold",
 }
 STOP_KEYS: tuple = ()
 MIN_BARS = 5                         # 卖出只要 5 根;买入的 L-07 要 6 根,不够时 ma5 为 None、不买
@@ -121,7 +123,29 @@ def is_growth(code: str) -> bool:
     return str(code).startswith(("300", "301", "688", "689"))
 
 
+def is_main(code: str) -> bool:
+    """沪深主板:60 / 00 开头(600 / 601 / 603 / 605 · 000 / 001 / 002 / 003)。双创、北交所都不算。"""
+    return str(code).startswith(("60", "00"))
+
+
+def _rules_yin(p: dict) -> list[dict]:
+    amt = f"{p['amount']:,.0f}"
+    return [
+        {"id": "Y-01", "kind": "buy", "condition": (f"涨停:4 个交易日前(T-3)收盘较前一天涨幅达到涨停 —— 主板 ≥ {p['lu_main'] * 100:.1f}%;"
+                                                   f"主板 ST {p['st_10pct_from']} 起同主板,之前 ≥ {p['lu_st'] * 100:.1f}%")},
+        {"id": "Y-02", "kind": "buy", "condition": "三根阴线:之后三天(T-2、T-1、T)每天收盘都低于当天开盘价;开盘价缺失算不出、不买"},
+        {"id": "Y-03", "kind": "buy", "condition": "只做主板:代码 60 / 00 开头,创业板、科创板、北交所不买"},
+        {"id": "L-04", "kind": "risk", "condition": (f"仓位:每个信号买入 {amt} 元(按 {amt} ÷ 收盘价取整股,不按 100 股一手取整),"
+                                                    f"信号当天收盘价成交;不限同时持仓,不设熔断 / 连亏暂停")},
+        {"id": "L-05", "kind": "sell", "condition": (f"卖出:买入后第 {p['hold_days']} 个交易日收盘全部卖出(收益率按那天收盘价算);"
+                                                    "那天收盘跌停(收盘 = 最低且跌幅到跌停)或停牌卖不出,顺延到下一个交易日收盘")},
+        {"id": "L-06", "kind": "risk", "condition": "手续费:佣金万 2.5(最低 5 元)+ 过户费 0.001% 买卖各一次,卖出另收印花税 0.05%;从现金里扣"},
+    ]
+
+
 def rules_for(p: dict = PARAMS) -> list[dict]:
+    if p.get("mode") == "yin":
+        return _rules_yin(p)
     amt = f"{p['amount']:,.0f}"
     return [
         {"id": "L-01", "kind": "buy", "condition": (f"涨停:4 个交易日前(T-3)收盘较前一天涨幅达到涨停 —— 主板 ≥ {p['lu_main'] * 100:.1f}%、"
@@ -148,6 +172,9 @@ RULES = rules_for(PARAMS)            # agent_run 的复盘 / 规则手册按 RUL
 
 
 def summary(p: dict = PARAMS) -> str:
+    if p.get("mode") == "yin":
+        return (f"A 股主板涨停 + 三根阴线:4 个交易日前涨停、之后连续三天收盘都低于开盘的票,信号当天收盘买入 {p['amount']:,.0f} 元,"
+                f"第 {p['hold_days']} 个交易日收盘卖出。只做主板,手续费按 A 股实际扣。")
     return ((f"只做创业板 / 科创板。" if p.get("growth_only") else "") + f"A 股涨停后强势整理:4 个交易日前涨停、之后三天没再涨停且收盘都高于涨停日收盘、当天收盘站上向上的 5 日均线的票,"
             f"信号当天收盘买入 {p['amount']:,.0f} 元,第 {p['hold_days']} 个交易日收盘卖出。"
             "涨停按板块区分(主板 10% / 创业板科创板 20%;主板 ST 2025-07-07 前 5%),手续费按 A 股实际扣。")
@@ -172,13 +199,20 @@ def indicators(bars: list[tuple], p: dict = PARAMS, bench: dict | None = None) -
     vs, vlu = [b[4] for b in bars[-3:]], bars[-4][4]
     if vlu is not None and vlu > 0 and all(x is not None and x == x for x in vs) and vlu == vlu:
         all_shrink = all(x < vlu for x in vs)
+    # Y-02:涨停后三天是不是都收阴(收盘 < 开盘)。只有带开盘价的日线元组(第 6 个元素)才算得出
+    yin3 = None
+    if all(len(b) > 5 for b in bars[-3:]):
+        os_ = [b[5] for b in bars[-3:]]
+        if all(o is not None and o > 0 for o in os_):
+            yin3 = all(b[1] < b[5] for b in bars[-3:])
     ma5 = ma5_prev = None
     if len(bars) >= 6 and bars[-6][1] is not None and bars[-6][1] > 0:
         ma5 = sum(c) / 5
         ma5_prev = (bars[-6][1] + sum(c[:4])) / 5
     return {"date": str(bars[-1][0]), "close": c[4], "low": bars[-1][3], "closes": c,
             "chg": [c[i] / c[i - 1] - 1 for i in range(1, 5)],     # chg[0] = T-3 涨幅 … chg[3] = T 涨幅
-            "ma5": ma5, "ma5_prev": ma5_prev, "amp": amp, "all_shrink": all_shrink}
+            "ma5": ma5, "ma5_prev": ma5_prev, "amp": amp, "all_shrink": all_shrink, "yin3": yin3,
+            "opens": [b[5] for b in bars[-3:]] if all(len(b) > 5 for b in bars[-3:]) else None}
 
 
 def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> dict:
@@ -188,6 +222,11 @@ def entry_checks(ind: dict, code: str, name: str | None, p: dict = PARAMS) -> di
     # 前一根收盘改错,造出假涨停(600508 原始 9.43 → 8.86 跌 6%,修正后 7.42 → 8.86「涨 19.4%」被买入)
     cap = lim + p["lu_cap_slack"] + 0.002
     l01 = lim <= chg[0] <= cap
+    if p.get("mode") == "yin":
+        y02 = ind.get("yin3") is True
+        y03 = is_main(code)
+        return {"Y-01": l01, "Y-02": y02, "Y-03": y03, "ok": l01 and y02 and y03,
+                "yin_na": ind.get("yin3") is None, "limit": lim, "board": board, "over_cap": chg[0] > cap, "cap": cap}
     l02 = all(x < lim for x in chg[1:])
     l03 = all(x > c[1] for x in c[2:])
     ma5, ma5p = ind.get("ma5"), ind.get("ma5_prev")
@@ -217,6 +256,8 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
         return it
     f = entry_checks(ind, code, name, p)
     it["price"] = round(ind["close"], 2)
+    if p.get("mode") == "yin":
+        return _watch_yin(it, ind, f, held, blocked_reason)
     keys = ("L-01", "L-02", "L-03", "L-07", "L-08", "L-09", "L-10")
     it["progress_pct"] = int(sum(1 for k in keys if f[k]) / len(keys) * 100)
     it["fails"] = [k for k in keys if not f[k]]
@@ -248,6 +289,41 @@ def watch_item(code, name, ind, held, blocked_reason, score=None, p: dict = PARA
                        f"L-09 三天整理幅度 {ind['amp']:.1f}% 超过 {p['amp_max']:g}%")
         if not f["L-10"]:
             why.append("L-10 成交量缺失,量能算不出" if ind.get("all_shrink") is None else "L-10 三天成交量每天都低于涨停日")
+        it["gap"] = "不买:" + ";".join(why) + "。" + detail
+    if blocked_reason:
+        it["blocked"] = True
+        it["blocked_reason"] = blocked_reason
+    return it
+
+
+def _yin_detail(ind: dict, f: dict) -> str:
+    c, chg, os_ = ind["closes"], ind["chg"], ind.get("opens")
+    days = ""
+    if os_:
+        days = " / ".join(("开 —" if o is None else f"开 {o:.2f}") + f" 收 {x:.2f}" for o, x in zip(os_, c[2:]))
+    return f"{f['board']}:T-3 涨 {_pct(chg[0])};之后三天 " + (days or "没有开盘价")
+
+
+def _watch_yin(it: dict, ind: dict, f: dict, held, blocked_reason) -> dict:
+    keys = ("Y-01", "Y-02", "Y-03")
+    it["rule_id"] = "Y-01"
+    it["progress_pct"] = int(sum(1 for k in keys if f[k]) / len(keys) * 100)
+    it["fails"] = [k for k in keys if not f[k]]
+    detail = _yin_detail(ind, f)
+    if held:
+        it["gap"] = "已持仓 · 等卖出"
+    elif f["ok"]:
+        it["gap"] = "买入条件全满足 —— 今日收盘买入。" + detail
+    else:
+        why = []
+        if f["over_cap"]:
+            why.append(f"Y-01 T-3 涨幅超过 {f['cap'] * 100:.1f}%,不是涨停(新股上市头几天没有涨跌幅限制,或日线有误)")
+        elif not f["Y-01"]:
+            why.append(f"Y-01 T-3 涨幅没到 {f['limit'] * 100:.1f}%(按{f['board']})")
+        if not f["Y-02"]:
+            why.append("Y-02 开盘价缺失,阴线算不出" if f["yin_na"] else "Y-02 三天里有一天不是阴线")
+        if not f["Y-03"]:
+            why.append("Y-03 不是主板(只做主板)")
         it["gap"] = "不买:" + ";".join(why) + "。" + detail
     if blocked_reason:
         it["blocked"] = True
@@ -317,6 +393,14 @@ def try_entry(code, name, ind, state: dict, p: dict = PARAMS, want_text: bool = 
     if not want_text:
         return _fill("buy", pos, size, px, ENTRY_RULE, "", **extra), None
     c, chg = ind["closes"], ind["chg"]
+    if p.get("mode") == "yin":
+        rationale = (f"按{f['board']}判涨停(门槛 {f['limit'] * 100:.1f}%):T-3 收盘 ¥{c[1]:.2f},较前一天 {_pct(chg[0])}(Y-01 涨停);"
+                     f"之后三天都是阴线(Y-02):" + " / ".join(f"开 ¥{o:.2f} 收 ¥{x:.2f}" for o, x in zip(ind["opens"], c[2:]))
+                     + f";主板(Y-03)。今日收盘 ¥{px:.2f} 买入 {size} 股 = ¥{cost:,.2f}(L-04:{p['amount']:,.0f} 元 ÷ 收盘价取整股),"
+                     f"买入费用 ¥{fee:.2f}。")
+        fill = _fill("buy", pos, size, px, ENTRY_RULE, rationale, **extra)
+        fill["rule_name"] = "涨停三阴买入"
+        return fill, None
     rationale = (f"按{f['board']}判涨停(门槛 {f['limit'] * 100:.1f}%):T-3 收盘 ¥{c[1]:.2f},较前一天 {_pct(chg[0])}(L-01 涨停);"
                  f"之后三天涨幅 {' / '.join(_pct(x) for x in chg[1:])},都没到门槛(L-02);"
                  f"三天收盘 {' / '.join(f'¥{x:.2f}' for x in c[2:])} 都高于涨停日收盘 ¥{c[1]:.2f}(L-03);"

@@ -47,7 +47,9 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 ## 🚀 5 分钟跑起来
 
-**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 10 GB · 内存 4 GB · 能访问 `ghcr.io`
+**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 10 GB · 内存 4 GB(实测峰值约 1.3 GB) · 能访问 `ghcr.io`
+
+六个服务的镜像都同时提供 **amd64 与 arm64**,Apple Silicon 与 arm 云主机原生运行,不用模拟。
 
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
@@ -499,8 +501,14 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
 - [x] **v0.1** · 自部署骨架、本地账号认证、可插拔数据 / 大模型 / 预测层
 - [x] **v0.2** · opencode 对话引擎、插件与 MCP、一把 key 通用、GitHub 一键装 SKILL
 - [x] **v1.0.0**(2026-09-13)· 全市场扫描筛选器、小鹿智能体研究台、量化因子与回测按市场隔离、SKILL 导入附属文档与中文说明、kronos / truesource MCP 发布、会话数据落具名卷 —— [完整更新日志](./CHANGELOG.md)
-- [ ] **v1.0.1** · 文档与社区基建 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/1)
-- [ ] **v1.1.0** · 首启向导(免改 `.env`)、多架构镜像、每日部署冒烟测试 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/2)
+- [x] **v1.0.1**(2026-09-17)· 对话引擎镜像 **7.56 GB → 618 MB**(下载量 1.70 GB → 153 MB)、api 镜像 1.32 GB → 909 MB、入口脚本固化、每日部署冒烟 CI、文档与社区基建 —— [瘦身过程与实测](./docs/image-slim/)
+- [ ] **v1.1.0** · 免改配置文件开箱即用 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/2)
+  - [x] 六个服务全部预构建镜像 + amd64/arm64 双架构(`v1.1.0-rc1`)
+  - [x] 数据库迁移改为 api 启动时自动执行;`JWT_SECRET` 等密钥首次启动自动生成
+  - [x] 大模型配置可存库(不再只能写 `.env`),改配置热生效、无需重启容器
+  - [ ] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)
+  - [ ] 一键部署模板(Zeabur / Sealos / Railway / 1Panel)
+  - 进度与实测数据:[`docs/setup-wizard/`](./docs/setup-wizard/)
 
 想要什么功能?到 [讨论区想法分区](https://github.com/agentpit-io/hunter-community/discussions/categories/ideas) 投票。
 

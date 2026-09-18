@@ -11,8 +11,22 @@
   封存不是停机 —— 停了就只剩一条旧曲线,新策略没法在同一段新行情里和它比。
 - **回测关**(backtest → paper):方向追到最新交易日后判一次:每笔完整周期平均净损益(已扣手续费)> 0,
   且最大回撤不超过对照组的 1.5 倍;没过 → 淘汰,数据全部保留。
-- **30 笔判定**(paper):完整周期满 30 笔后,平均净损益 < 0,或同一段日期的收益不如对照组 → 淘汰;
+- **30 笔判定**:**只数规则冻结之后的新交易**(见下),满 30 笔后平均净损益 < 0,或同一段日期的收益不如对照组 → 淘汰;
   否则判定通过(晋级不自动做,是用户的决定)。不满 30 笔一律「等」—— VCP 这轮就是在 10 笔上下反复换参数吃的亏。
+
+## 研究台只分「运行中 / 封存」两列(2026-09-18 用户定)
+
+原来四列:立项 → 全年回测 → 纸上跑 → 封存。用户:「纸上跑和全年回测没太大差别,立项也没有存在必要」——
+两者跑的是同一个引擎、同一份日线,每晚任务本来就让回测中的线往前跑新交易日,30 笔判定也数的是全段交易,
+两列只是名字不同。**状态值不迁移**(idea / backtest / paper 照旧存),只是显示合成「运行中」(STATUS_TEXT);
+表单提交、还没引擎的线显示「待写引擎」,也在运行中那列。淘汰的线继续不上看板。
+
+真正要区分的是**规则冻结之后的新数据**:全年回测是在已知历史上跑的,规则是看着这段历史定、调出来的(VCP 在同一年上改了三四版);
+冻结后每天新增的交易,写规则时没人见过,才是检验。所以每条线记 `frozen_at`(最后一次改买卖规则的时间)与
+`frozen_through`(那一刻数据已经到哪个交易日),研究台把结果拆成冻结前 / 冻结后,30 笔判定只数 entry_date > frozen_through 的完整交易。
+**以后改任何一条研究线的买卖规则,必须同时把这两个值改成改动那一刻**(提交时间 + 当时该市场日线的最新交易日:
+美股每天上海 06:30 入库、A 股 / 港股 17:30 入库,见 fin-r1 crontab);只改文案、缓存、另开方向不算改规则。
+没写冻结日的线(以后的新线),过回测关那天自动以回测最后一天为冻结日。
 
 「期望值」用**每笔完整周期的平均净损益(美元,已扣手续费)**判正负。方案里写的是 0R;
 R 需要每笔的初始风险,成交表里没有这一列,美元口径是现在能如实算出来的那个。
@@ -32,11 +46,13 @@ from datetime import date, datetime, timezone
 from app.services.quant import agent_opt as ao
 
 STATUS_ORDER = ["idea", "backtest", "paper", "archived", "killed"]
-STATUS_TEXT = {"idea": "立项", "backtest": "全年回测", "paper": "纸上跑", "archived": "封存", "killed": "淘汰"}
+# 显示名(研究台两列 + 看板提示条 + 对照表):立项 / 全年回测 / 纸上跑 合成「运行中」,状态值本身不变(见文件头)
+STATUS_TEXT = {"idea": "待写引擎", "backtest": "运行中", "paper": "运行中", "archived": "封存", "killed": "淘汰"}
+COLUMNS = [["running", "运行中", "规则固定 · 冻结后的新交易满 30 笔才下结论"], ["archived", "封存", "冻结优化 · 仍在跑,当对照组"]]
 KILL_MIN_CYCLES = 30
 GATE_DD_MULT = 1.5
 KILL_TEXT = (f"回测追到最新交易日时:每笔平均净损益(已扣费)≤ 0 或最大回撤超过对照组 {GATE_DD_MULT:g} 倍 → 淘汰;"
-             f"纸上跑满 {KILL_MIN_CYCLES} 笔完整交易后:每笔平均净损益 < 0,或同一段日期收益不如对照组 → 淘汰")
+             f"规则冻结后的新交易满 {KILL_MIN_CYCLES} 笔:每笔平均净损益 < 0,或同一段日期收益不如对照组 → 淘汰")
 COMPARE_DEFAULT = ("vcp", "c")
 
 LINES: dict = {
@@ -77,11 +93,16 @@ LINES: dict = {
         # 用户的研究对象:回测关只给参考、不自动淘汰(2026-09-13 被自动淘汰后用户要求恢复)
         "auto_kill": False,
         "kill_text": "用户研究线:回测关与 30 笔判定照常计算,只作参考结论,不自动淘汰;是否淘汰由用户决定",
+        # 规则冻结(2026-09-18 定):最后一次改买卖规则是 v14 财报风控(提交 fdb49d3,上海 09-15 13:25);
+        # 之后 ecc2be5 只改文案、f310e37 / a66cd0a 是缓存提速、765440f 另开三年方向 —— 都不算改规则。
+        # 那一刻美股日线到 09-14(每天上海 06:30 入库),所以 09-15 起的交易才是写规则时没见过的
+        "frozen_at": "2026-09-15 13:25", "frozen_through": "2026-09-14", "frozen_note": "v14 财报风控",
     },
     # 2026-09-17 用户:第一条 A 股研究线。对照组是美股 VCP,市场、货币、基准都不同,
     # 「回撤不超过对照组 1.5 倍」「同段收益不输对照组」比不出意义 → compare_to = None,只按每笔净损益判
     "limitup": {
-        "label": "涨停后强势整理", "branches": ["limitup"], "best": "limitup",
+        # limitup_yin(2026-09-18):同一条线新开的「涨停 + 三根阴线 · 主板」方向;研究台判定仍按 best = limitup
+        "label": "涨停后强势整理", "branches": ["limitup", "limitup_yin"], "best": "limitup",
         "status": "backtest", "created_at": "2026-09-17", "market": "a",
         "hypothesis": "A 股涨停后三天没再涨停、收盘都守在涨停日收盘之上,说明资金没有撤,第四天收盘买入、次日收盘卖出能赚到延续",
         "rules_draft": ("进:4 个交易日前涨停(主板 10% / 创业板科创板 20%;主板 ST 2025-07-07 前 5%)· 之后三天每天都没涨停 · 三天收盘都高于涨停日收盘"
@@ -90,6 +111,9 @@ LINES: dict = {
         "compare_to": None,
         "auto_kill": False,
         "kill_text": "用户研究线:回测关与 30 笔判定照常计算,只作参考结论,不自动淘汰;是否淘汰由用户决定",
+        # 规则冻结:v4 整理幅度 ≤ 15% + 不许三天都缩量(提交 0a880f4,上海 09-17 23:50);09-18 的 eb6e8fe 是另开「三阴 · 主板」方向,
+        # 老方向默认口径不变,不算改规则。那一刻 A 股日线到 09-17(每天上海 17:30 入库),09-18 起才是新数据
+        "frozen_at": "2026-09-17 23:50", "frozen_through": "2026-09-17", "frozen_note": "v4 整理幅度 + 缩量",
     },
 }
 
@@ -173,6 +197,31 @@ def branch_metrics(cur, branch: str) -> dict | None:
         "expectancy_net": round(net / cycles, 2) if cycles else None,
         "fee_total": round(sum(r["fee"] for r in rounds), 2),
         "currency": ao.currency(branch),
+        "_rounds": rounds,
+    }
+
+
+def split_after(m: dict | None, frozen_through) -> dict | None:
+    """冻结后的新数据:entry_date 晚于 frozen_through 的完整交易 + 从 frozen_through 那天收盘起的净值。
+
+    → {frozen_through, days, cycles, expectancy_net, win_rate, net, pnl_pct, first, last, equity}(形状对得上 judge 的 m)。
+    没有冻结日 / 没跑过 → None。
+    """
+    if not m or not frozen_through:
+        return None
+    ft = frozen_through if isinstance(frozen_through, date) else date.fromisoformat(str(frozen_through)[:10])
+    rounds = [r for r in (m.get("_rounds") or []) if str(r.get("entry_date") or "") > str(ft)]
+    days = sorted(d for d in m["equity"] if d >= ft)
+    cycles = len(rounds)
+    net = sum(r["pnl_abs"] for r in rounds)
+    wins = sum(1 for r in rounds if r["pnl_abs"] > 0)
+    return {
+        "frozen_through": str(ft), "days": max(len(days) - 1, 0), "cycles": cycles,
+        "expectancy_net": round(net / cycles, 2) if cycles else None,
+        "win_rate": round(wins / cycles * 100, 1) if cycles else None,
+        "net": round(net, 2),
+        "pnl_pct": round(window_return(m, days[0], days[-1]), 2) if len(days) >= 2 else None,
+        "first": days[0] if days else ft, "last": m["last"], "equity": {d: m["equity"][d] for d in days},
     }
 
 
@@ -208,19 +257,19 @@ def judge(stage: str, m: dict | None, cmp_: dict | None, caught_up: bool = True,
             return {"decision": "kill", "text": (f"全年回测:最大回撤 {m['max_dd_pct']:.2f}% 超过对照组 {cmp_['max_dd_pct']:.2f}% 的 "
                                                  f"{GATE_DD_MULT:g} 倍 —— 没过回测关,淘汰")}
         return {"decision": "pass", "text": (f"全年回测过关:{m['cycles']} 笔完整交易,每笔平均净损益 {exp_:+,.0f} {unit}(已扣费),"
-                                             f"最大回撤 {m['max_dd_pct']:.2f}% —— 进入纸上跑,满 {KILL_MIN_CYCLES} 笔再判")}
+                                             f"最大回撤 {m['max_dd_pct']:.2f}%")}
     if stage == "paper":
         if m["cycles"] < KILL_MIN_CYCLES:
-            return {"decision": "wait", "text": f"已走完 {m['cycles']}/{KILL_MIN_CYCLES} 笔完整交易,不满 {KILL_MIN_CYCLES} 笔不下结论"}
+            return {"decision": "wait", "text": f"规则冻结后已走完 {m['cycles']}/{KILL_MIN_CYCLES} 笔完整交易,不满 {KILL_MIN_CYCLES} 笔不下结论"}
         if exp_ is not None and exp_ < 0:
-            return {"decision": "kill", "text": f"满 {m['cycles']} 笔:每笔平均净损益 {exp_:+,.0f} {unit}(已扣费)< 0 —— 淘汰"}
+            return {"decision": "kill", "text": f"规则冻结后满 {m['cycles']} 笔:每笔平均净损益 {exp_:+,.0f} {unit}(已扣费)< 0 —— 淘汰"}
         if cmp_ is not None:
             start, end = max(m["first"], cmp_["first"]), min(m["last"], cmp_["last"])
             r1, r2 = window_return(m, start, end), window_return(cmp_, start, end)
             if r1 is not None and r2 is not None and r1 < r2:
-                return {"decision": "kill", "text": (f"满 {m['cycles']} 笔:{start} → {end} 收益 {r1:+.2f}%,"
+                return {"decision": "kill", "text": (f"规则冻结后满 {m['cycles']} 笔:{start} → {end} 收益 {r1:+.2f}%,"
                                                      f"不如对照组同段 {r2:+.2f}% —— 淘汰")}
-        return {"decision": "pass", "text": f"满 {m['cycles']} 笔判定通过:每笔平均净损益 {exp_:+,.0f} {unit}(已扣费),同段收益不输对照组 —— 可以开优化器或晋级主线"}
+        return {"decision": "pass", "text": f"规则冻结后满 {m['cycles']} 笔判定通过:每笔平均净损益 {exp_:+,.0f} {unit}(已扣费),同段收益不输对照组 —— 可以开优化器或晋级主线"}
     return {"decision": "wait", "text": STATUS_TEXT.get(stage, stage)}
 
 
@@ -243,8 +292,48 @@ def _event(ln: dict, text: str) -> list:
     return ev[-30:]
 
 
+def decide(ln: dict, m: dict | None, cmp_: dict | None, caught_up: bool, unit: str = "美元") -> tuple[dict, dict]:
+    """一条运行中的线今天的判定 → (verdict, 要落库的补丁)。纯函数(tests/test_agent_research.py 直接测)。
+
+    1. 回测关:全段追到最新交易日才判;没过 → 淘汰(用户研究线只给参考)。
+    2. 过了回测关:只看**规则冻结之后**的新交易 —— 不满 30 笔等;满了按 judge("paper") 判。
+       没写冻结日的线,过关那天以回测最后一天为冻结日并落库(之后才算新数据)。
+    """
+    st = ln.get("status")
+    patch: dict = {}
+    gate = judge("backtest", m, cmp_, caught_up=caught_up, unit=unit)
+    ft = ln.get("frozen_through")
+    if gate["decision"] == "pass" and not ft and m:
+        ft = str(m["last"])
+        patch["frozen_through"] = ft
+    oos = split_after(m, ft) if gate["decision"] == "pass" else None
+    if gate["decision"] != "pass":
+        v = gate
+    elif oos["cycles"] < KILL_MIN_CYCLES:
+        v = {"decision": "wait", "text": (f"{gate['text']} · 规则冻结后({ft} 之后的新数据)已走完 {oos['cycles']}/{KILL_MIN_CYCLES} 笔,"
+                                          f"满 {KILL_MIN_CYCLES} 笔再下结论")}
+    else:
+        v = judge("paper", oos, cmp_, caught_up=True, unit=unit)
+    if ln.get("auto_kill") is False:
+        # 用户自己的研究对象(2026-09-13 用户:「我还没开始调整参数你就给我淘汰了」)——
+        # 判定照算,只当参考写进 verdict,**状态不动**。淘汰 / 晋级由用户决定
+        if v["decision"] in ("kill", "pass"):
+            # 判定文案末尾的「—— 淘汰」换掉:卡片上还写着淘汰,用户会以为线又被淘汰了
+            t = re.sub(r"\s*——\s*(没过回测关,)?淘汰\s*$", " —— 按回测关口径不达标(仅参考)", v["text"])
+            v = {"decision": "advice", "text": "参考结论(用户研究线,不自动淘汰):" + t}
+        patch["verdict"] = {"decision": v["decision"], "text": v["text"], "at": _now()}
+        return v, patch
+    patch["verdict"] = {"decision": v["decision"], "text": v["text"], "at": _now()}
+    if v["decision"] == "kill":
+        patch.update({"status": "killed", "killed_at": str(date.today()), "events": _event(ln, v["text"])})
+    elif gate["decision"] == "pass" and st == "backtest":
+        # 状态值 paper 只是内部记号(显示同为「运行中」),事件里写清过了回测关、从哪天起算新数据
+        patch.update({"status": "paper", "events": _event(ln, f"{gate['text']} —— 规则冻结于 {ft},之后的新交易满 {KILL_MIN_CYCLES} 笔再判")})
+    return v, patch
+
+
 def evaluate(cur) -> list[dict]:
-    """对 backtest / paper 的线各判一次,状态有变就落库。→ [{key, decision, text}]"""
+    """对运行中(backtest / paper)的线各判一次,状态有变就落库。→ [{key, decision, text}]"""
     # 「追到最新交易日」按市场分开算:A 股比美股早收盘一天,混在一起取 max 的话美股线永远追不上
     cur.execute("SELECT branch, max(trade_date) FROM agent_day GROUP BY branch")
     latest_of: dict = {}
@@ -265,26 +354,9 @@ def evaluate(cur) -> list[dict]:
         if ct and ct[0] in by_key:
             cmp_ = branch_metrics(cur, ct[1])
         latest = latest_of.get(ao.market_of(ln["best"]))
-        v = judge(st, m, cmp_, caught_up=bool(m and latest and m["last"] >= latest),
-                  unit=ao.currency(ln["best"])["unit"])
-        if ln.get("auto_kill") is False:
-            # 用户自己的研究对象(2026-09-13 用户:「我还没开始调整参数你就给我淘汰了」)——
-            # 回测关照算,只当参考写进 verdict,**状态不动**。淘汰 / 晋级由用户决定
-            if v["decision"] in ("kill", "pass"):
-                # 判定文案末尾的「—— 淘汰」换掉:卡片上还写着淘汰,用户会以为线又被淘汰了
-                t = re.sub(r"\s*——\s*(没过回测关,)?淘汰\s*$", " —— 按回测关口径不达标(仅参考)", v["text"])
-                v = {"decision": "advice", "text": "参考结论(用户研究线,不自动淘汰):" + t}
-            patch = {"verdict": {"decision": v["decision"], "text": v["text"], "at": _now()}}
-            if (ln.get("verdict") or {}).get("text") != v["text"]:
-                _save(cur, ln["key"], patch)
-            out.append({"key": ln["key"], **v})
-            continue
-        patch = {"verdict": {"decision": v["decision"], "text": v["text"], "at": _now()}}
-        if v["decision"] == "kill":
-            patch.update({"status": "killed", "killed_at": str(date.today()), "events": _event(ln, v["text"])})
-        elif v["decision"] == "pass" and st == "backtest":
-            patch.update({"status": "paper", "events": _event(ln, v["text"])})
-        if (ln.get("verdict") or {}).get("text") != v["text"] or "status" in patch:
+        v, patch = decide(ln, m, cmp_, caught_up=bool(m and latest and m["last"] >= latest), unit=ao.currency(ln["best"])["unit"])
+        changed = {k for k in patch if k != "verdict"}
+        if (ln.get("verdict") or {}).get("text") != v["text"] or changed:
             _save(cur, ln["key"], patch)
         out.append({"key": ln["key"], **v})
     return out
@@ -316,7 +388,7 @@ def create_idea(cur, uid, body: dict) -> dict:
          "events": [{"at": _now(), "text": "立项:淘汰线已锁定"}]}
     _meta()._meta_set(cur, f"line:{key}", v)
     return {"key": key, "status": "idea",
-            "note": "立项已记下。要跑回测,还得按规则草案写一个引擎文件并登记方向 —— 这一步需要开发,研究台上会一直显示「立项」"}
+            "note": "已记下,放在「运行中」一栏、标着「待写引擎」。要跑起来还得按规则草案写引擎并登记方向 —— 这一步需要开发"}
 
 
 def set_archived(cur, key: str, archived: bool, uid) -> dict:
@@ -365,9 +437,16 @@ def board(cur) -> dict:
         best = ln.get("best") if ln["branches"] else None
         m = metrics.get(best) if best else None
         ct = ln.get("compare_to")
+        ft = ln.get("frozen_through")
+        oos = split_after(m, ft) if (m and ft) else None
         out_lines.append({
             "key": ln["key"], "label": ln.get("label"), "status": ln.get("status"),
             "status_text": STATUS_TEXT.get(ln.get("status"), ln.get("status")),
+            # 研究台只有两列:running(待写引擎 / 回测 / 纸上跑)· archived;killed 不上看板
+            "column": ("archived" if ln.get("status") == "archived" else "killed" if ln.get("status") == "killed" else "running"),
+            "frozen_at": ln.get("frozen_at"), "frozen_through": ft, "frozen_note": ln.get("frozen_note"),
+            "oos": ({k: oos[k] for k in ("frozen_through", "days", "cycles", "expectancy_net", "win_rate", "net", "pnl_pct")}
+                    | {"last": str(oos["last"])}) if oos else None,
             "custom": bool(ln.get("custom")),
             "hypothesis": ln.get("hypothesis"), "rules_draft": ln.get("rules_draft"), "pool": ln.get("pool"),
             "created_at": ln.get("created_at"), "archived_at": ln.get("archived_at"), "killed_at": ln.get("killed_at"),
@@ -389,7 +468,7 @@ def board(cur) -> dict:
         "common": {"start": str(axis[0]) if axis else None, "end": str(axis[-1]) if axis else None, "days": len(axis),
                    "bench_label": ar.BENCH_LABEL,
                    "bench_pct": round((bench[axis[-1]] / b0 - 1) * 100, 2) if (axis and b0 and bench.get(axis[-1])) else None},
-        "status_order": STATUS_ORDER, "status_text": STATUS_TEXT,
+        "status_order": STATUS_ORDER, "status_text": STATUS_TEXT, "columns": COLUMNS,
         "kill_text": KILL_TEXT, "kill_min_cycles": KILL_MIN_CYCLES,
         "dates": [str(d) for d in axis],
         "bench_nav": [round((bench[d] / b0 - 1) * 100, 3) if (b0 and bench.get(d)) else None for d in axis],

@@ -41,9 +41,10 @@ from app.services.quant import agent_vcp4 as av4
 from app.services.quant import agent_donchian as ad
 from app.services.quant import agent_breakout as abk
 from app.services.quant import agent_limitup as alu
+from app.services.quant import agent_limitup_yin as aly
 from app.services.quant import agent_sim
 
-ENGINES = {"vcp": av, "vcp3": av3, "vcp4": av4, "donchian": ad, "breakout": abk, "limitup": alu}
+ENGINES = {"vcp": av, "vcp3": av3, "vcp4": av4, "donchian": ad, "breakout": abk, "limitup": alu, "limitup_yin": aly}
 
 MIN_CYCLES = 8
 OBS_DAYS = 10           # 原 5,2026-09-12 全年回测后用户同意拉长
@@ -88,9 +89,13 @@ BRANCHES: dict = {
     "limitup": {"engine": "limitup", "label": "涨停后强势整理 · 基准",
                 "direction": "A 股:4 个交易日前涨停、之后三天没再涨停且收盘都高于涨停日收盘 → 当天收盘买 1 万,次日收盘卖;规则固定",
                 "tunable": {}},
+    # 2026-09-18 用户:同一条研究线新开迭代方向「涨停 + 三根阴线」,只做主板,原方向 limitup(v4)不动
+    "limitup_yin": {"engine": "limitup_yin", "label": "涨停三阴 · 主板",
+                    "direction": "A 股主板:4 个交易日前涨停、之后连续三天阴线(收盘 < 开盘)→ 当天收盘买 1 万,次日收盘卖;规则固定",
+                    "tunable": {}},
 }
 # 方向键全局唯一(四张表按方向分行,不分研究线)。归属哪条研究线看 agent_research.LINES
-BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian", "breakout", "breakout3y", "limitup"]
+BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian", "breakout", "breakout3y", "limitup", "limitup_yin"]
 
 
 # ─── 市场(2026-09-17 加 A 股线时引入)──────────────────────────────

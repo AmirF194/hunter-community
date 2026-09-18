@@ -669,8 +669,8 @@ try {
 
 // ─── 小鹿智能体 · 研究台(2026-09-13 · docs/agent-research-plan.md)──────────────
 // 要钉住的:
-//   ① 四列阶段按真实先后顺序(立项 → 全年回测 → 纸上跑 → 封存),卡片进对的列,淘汰的单独一块;
-//   ② 封存卡有「打开看板」「解除封存」;还没引擎的立项卡写明「还没有引擎」,不画数字格;
+//   ① 两列(2026-09-18 起):运行中(待写引擎 / 回测 / 纸上跑都在这里)· 封存;卡片进对的列,淘汰的单独一块;
+//   ② 封存卡有「打开看板」「解除封存」;还没引擎的卡写明「还没有引擎」,不画数字格;运行中的卡把冻结后的新数据单列;
 //   ③ 对照表只列跑出数据的线,被引用为对照组的那条带「对照组」;净值图每条有净值的线一条 path + 基准一条;
 //   ④ 全 null / 后端 404 骨架:四列照画、数据位 —,不出现 NaN / undefined / null 字面量;
 //   ⑤ 看板视图顶上只有分页(面包屑 2026-09-14 用户要求去掉),封存的线常驻提示条带「解除封存」(新功能入口不许藏 hover);
@@ -693,13 +693,24 @@ try {
           best_branch:'c', best_label:'方向 C · 三段式',
           metrics:{ pnl_pct:5.13, excess_pt:-6.51, max_dd_pct:-5.51, sells:14, win_rate:50, profit_factor:2.37,
                     sharpe:0.88, cycles:14, expectancy_net:364.15 }, nav:NAV3 },
-        { key:'donchian', label:'唐奇安突破线', status:'backtest', status_text:'全年回测',
+        { key:'breakout', label:'突破买入', status:'backtest', status_text:'运行中', column:'running',
+          frozen_at:'2026-09-15 13:25', frozen_through:'2026-09-14', frozen_note:'v14 财报风控',
+          oos:{ frozen_through:'2026-09-14', days:3, cycles:2, expectancy_net:120.5, win_rate:50, net:241, pnl_pct:0.42, last:'2026-09-17' },
+          branches:[{key:'breakout',label:'突破买入 · 基准',version:'v1'}], best_branch:'breakout', best_label:'突破买入 · 基准',
+          metrics:{ pnl_pct:9.43, excess_pt:-2.2, max_dd_pct:-2.81, sells:30, win_rate:58.8, profit_factor:2.1,
+                    sharpe:1.2, cycles:26, expectancy_net:361 }, nav:[0, 3, 9.43] },
+        { key:'limitup', label:'涨停后强势整理', status:'paper', status_text:'运行中', column:'running',
+          frozen_at:'2026-09-17 23:50', frozen_through:'2026-09-17', oos:{ frozen_through:'2026-09-17', days:0, cycles:0, expectancy_net:null, win_rate:null, net:0, pnl_pct:null, last:'2026-09-17' },
+          branches:[{key:'limitup',label:'涨停 · 基准',version:'v1'}], best_branch:'limitup', best_label:'涨停 · 基准',
+          metrics:{ pnl_pct:1.2, excess_pt:null, max_dd_pct:-0.43, sells:149, win_rate:55, profit_factor:1.3,
+                    sharpe:1, cycles:149, expectancy_net:50 }, nav:null },
+        { key:'donchian', label:'唐奇安突破线', status:'backtest', status_text:'运行中',
           hypothesis:'趋势一旦形成会延续', rules_draft:'进:收盘第一次突破前 55 日最高',
           compare_text:'VCP 波段线 · 方向 C · 三段式', kill_text:'…淘汰',
           verdict:{ decision:'wait', text:'全年回测进行中:已跑到 2026-05-01' },
           branches:[{key:'donchian',label:'唐奇安 · 基准',version:'v1'}], best_branch:'donchian', best_label:'唐奇安 · 基准',
           metrics:null, nav:null },
-        { key:'idea-1', label:'均线回踩线', status:'idea', status_text:'立项', custom:true,
+        { key:'idea-1', label:'均线回踩线', status:'idea', status_text:'待写引擎', custom:true,
           hypothesis:'回踩 EMA20 缩量企稳会延续', compare_text:'VCP 波段线 · 方向 C · 三段式', kill_text:'…淘汰',
           branches:[], best_branch:null, metrics:null, nav:null },
         { key:'old', label:'被淘汰的线', status:'killed', status_text:'淘汰',
@@ -729,43 +740,59 @@ try {
     const j = H.indexOf('data-stage=', i + 10)
     return i < 0 ? '' : H.slice(i, j < 0 ? H.indexOf('同口径对照') : j)
   }
+  // 一张卡的 HTML(按标题找):运行中那列里有好几张,断言要落到具体那张上
+  const card = (label) => {
+    const i = H.indexOf('<div class="t">' + label)
+    if (i < 0) return ''
+    const s0 = H.lastIndexOf('<div class="rs-card', i)
+    const e = H.indexOf('<div class="rs-card', i)
+    return H.slice(s0, e < 0 ? H.indexOf('同口径对照') : e)
+  }
   const at = (t) => H.indexOf(t)
   const banned = [/NaN/, /undefined/, />null</]
   const clean = (x) => banned.every((re) => !re.test(x))
   const checks = [
-    ['四列按先后顺序:立项 → 全年回测 → 纸上跑 → 封存',
-      at('data-stage="idea"') >= 0 && at('data-stage="idea"') < at('data-stage="backtest"') &&
-      at('data-stage="backtest"') < at('data-stage="paper"') && at('data-stage="paper"') < at('data-stage="archived"')],
+    ['⭐只有两列:运行中 → 封存(没有立项 / 全年回测 / 纸上跑列)',
+      at('data-stage="running"') >= 0 && at('data-stage="running"') < at('data-stage="archived"') &&
+      ['idea', 'backtest', 'paper'].every((k) => at('data-stage="' + k + '"') < 0) && (H.match(/class="rs-col"/g) || []).length === 2],
     ['封存的 VCP 进「封存」列', col('archived').indexOf('VCP 波段线') >= 0],
-    ['唐奇安进「全年回测」列、写着进度', col('backtest').indexOf('唐奇安突破线') >= 0 && col('backtest').indexOf('已跑到 2026-05-01') >= 0],
-    ['自建立项进「立项」列并写明还没有引擎', col('idea').indexOf('均线回踩线') >= 0 && col('idea').indexOf('还没有引擎') >= 0],
-    ['立项卡不画数字格(没有方向就没有数字)', col('idea').indexOf('rs-kv') < 0],
-    ['空列写「暂时没有」', col('paper').indexOf('暂时没有') >= 0],
-    ['淘汰的线不在看板四列里,在「淘汰记录」',
-      ['idea', 'backtest', 'paper', 'archived'].every((k) => col(k).indexOf('被淘汰的线') < 0) &&
+    ['⭐回测中 / 纸上跑 / 待写引擎的线都进「运行中」', ['突破买入', '涨停后强势整理', '唐奇安突破线', '均线回踩线'].every((t) => col('running').indexOf(t) >= 0)],
+    ['唐奇安卡写着回测进度', card('唐奇安突破线').indexOf('已跑到 2026-05-01') >= 0],
+    ['待写引擎的卡写明还没有引擎、状态标「待写引擎」', card('均线回踩线').indexOf('还没有引擎') >= 0 && card('均线回踩线').indexOf('待写引擎') >= 0],
+    ['待写引擎的卡不画数字格(没有方向就没有数字)', card('均线回踩线').indexOf('rs-kv') < 0 && card('均线回踩线').indexOf('rs-oos') < 0],
+    ['⭐冻结后单列:冻结时间、新交易日、x/30 笔、每笔净损益', /规则冻结于 2026-09-15 13:25\(v14 财报风控\)/.test(card('突破买入'))
+      && /新交易日 <b>3<\/b> 个 · 完整交易 <b>2\/30<\/b> 笔/.test(card('突破买入')) && /\+\$121|\+\$120/.test(card('突破买入'))],
+    ['全段数字标明含回测', card('突破买入').indexOf('全段(含回测)') >= 0],
+    ['冻结后还没有新交易日:写明从下一个交易日起计', card('涨停后强势整理').indexOf('还没有新交易日') >= 0],
+    ['没有冻结日的线不画冻结段', card('唐奇安突破线').indexOf('rs-oos') < 0],
+    ['运行中的线都有「封存」按钮(status 是 paper 也算)', /data-arch="1"[^>]*data-line="limitup"/.test(col('running')) && /data-arch="1"[^>]*data-line="breakout"/.test(col('running'))],
+    ['淘汰的线不在看板两列里,在「淘汰记录」',
+      ['running', 'archived'].every((k) => col(k).indexOf('被淘汰的线') < 0) &&
       H.slice(at('淘汰记录')).indexOf('<div class="rs-card killed">') >= 0],
     ['封存卡有「打开看板」和「解除封存」', /data-open="c"/.test(col('archived')) && /data-arch="0"/.test(col('archived'))],
-    ['回测中的卡有「封存」按钮', /data-arch="1"[^>]*data-line="donchian"/.test(col('backtest'))],
+    ['回测中的卡有「封存」按钮', /data-arch="1"[^>]*data-line="donchian"/.test(col('running'))],
     ['最好的方向带星标', /class="best">方向 C · 三段式 ★/.test(H)],
-    ['没算出来的数字位是 —', /完整交易<b><span class="ag-na">—<\/span><\/b>/.test(col('backtest'))],
-    ['对照表只列有数据的线(VCP + 淘汰的那条)', (H.match(/<tr( class="ref")?><td>/g) || []).length === 2],
+    ['没算出来的数字位是 —', /完整交易<b><span class="ag-na">—<\/span><\/b>/.test(card('唐奇安突破线'))],
+    ['对照表只列有数据的线(VCP + 突破 + 涨停 + 淘汰的那条)', (H.match(/<tr( class="ref")?><td>/g) || []).length === 4],
+    ['对照表阶段列写「运行中」', /<td><span class="rs-chip [a-z]*">运行中<\/span><\/td>/.test(H)],
     ['被引用为对照组的 VCP 那行带「对照组」', /<tr class="ref"><td>VCP 波段线 · 方向 C · 三段式<span class="rs-chip cool">对照组/.test(H)],
-    ['净值图:两条有净值的线 + 基准一条 = 3 条 path', (H.match(/<path d="M/g) || []).length === 3],
+    ['净值图:三条有净值的线 + 基准一条 = 4 条 path', (H.match(/<path d="M/g) || []).length === 4],
     ['基准是虚线', /stroke-dasharray="4 3"/.test(H)],
     ['新建入口常驻可见(按钮在研究台面板里)', /id="rs-new"/.test(H)],
     // 用户 2026-09-14 要求:研究台首页去掉扫描筛选入口卡(09-13 曾加在分页和研究台面板之间);运行看板那张同日也去掉
     ['研究台首页没有扫描筛选入口卡', H.indexOf('扫描筛选 · 找候选票') < 0 && !/打开扫描筛选/.test(H)],
     ['404 骨架里也没有扫描筛选入口卡', ctx.H_RSSKEL.indexOf('扫描筛选 · 找候选票') < 0],
-    ['研究台面板仍紧跟在分页之后', H.indexOf('rs-seg') >= 0 && H.indexOf('rs-seg') < at('从左到右是一条线必经的先后阶段')],
+    ['研究台面板仍紧跟在分页之后', H.indexOf('rs-seg') >= 0 && H.indexOf('rs-seg') < at('运行中 / 封存 · 淘汰的线收在下面')],
     ['研究台视图顶上是分页,研究台高亮', /data-go="research" class="on"/.test(H)],
     ['正常数据不出现 NaN / undefined / null', clean(H)],
     ['全 null 的线不出现 NaN / undefined / null', clean(ctx.H_RSNULL)],
     ['全 null 的线数字位全是 —', (ctx.H_RSNULL.match(/<b><span class="ag-na">—<\/span><\/b>/g) || []).length >= 6],
     ['全 null 净值不画线,写明还没有净值', ctx.H_RSNULL.indexOf('还没有净值数据') >= 0 && !/<path d="M/.test(ctx.H_RSNULL)],
-    ['后端 404 骨架:四列照画', ['idea', 'backtest', 'paper', 'archived'].every((k) => ctx.H_RSSKEL.indexOf('data-stage="' + k + '"') >= 0)],
+    ['后端 404 骨架:两列照画', ['running', 'archived'].every((k) => ctx.H_RSSKEL.indexOf('data-stage="' + k + '"') >= 0)],
     ['后端 404 骨架:顶上说明为什么是 —', /ag-banner dev/.test(ctx.H_RSSKEL) && clean(ctx.H_RSSKEL)],
     ['新建表单写出淘汰线并声明提交后锁定', ctx.H_RSFORM.indexOf('id="rs-f-submit"') >= 0 && ctx.H_RSFORM.indexOf('提交后这一栏锁定') >= 0
       && ctx.H_RSFORM.indexOf('每笔平均净损益 &lt; 0') >= 0],
+    ['新建表单(暂时保留)写明提交后进「运行中」标「待写引擎」', ctx.H_RSFORM.indexOf('提交后放在「运行中」、标「待写引擎」') >= 0 && />提交<\/button>/.test(ctx.H_RSFORM)],
     ['看板视图:分页里「运行看板」高亮', /data-go="dash" class="on"/.test(ctx.H_DASH)],
     // 用户 2026-09-14 要求去掉面包屑(和分页、方向卡、提示条重复)
     ['看板视图:分页右边没有面包屑', ctx.H_DASH.indexOf('rs-crumb') < 0 && !/<a href="#view=research"/.test(ctx.H_DASH)],

@@ -355,3 +355,95 @@ def test_a_share_fee():
     assert cm.a_share_fee("sell", 100, 100) == 10.1        # + 印花税 5
     assert cm.a_share_fee("sell", 1000, 50) == 38.0        # 5 万:佣金 12.5 + 过户费 0.5 + 印花税 25
     assert cm.a_share_fee("buy", 0, 10) == 0.0
+
+
+# ─── 涨停 + 三根阴线 · 主板(agent_limitup_yin,2026-09-18 用户新开的迭代方向)──────────
+from app.services.quant import agent_limitup_yin as ly
+
+
+def ybars(closes, opens, start=date(2026, 3, 2)):
+    """6 元组(日期, 收, 高, 低, 量, 开)。opens 与 closes 等长,前几根可给 None。"""
+    return [(start + timedelta(days=i), c, max(c, o or c), min(c, o or c), 1e6, o)
+            for i, (c, o) in enumerate(zip(closes, opens))]
+
+
+# 主板:T-5 9.5 · T-4 10.0 · T-3 11.0(+10%)· 三天开 11.5 收 11.2 / 开 11.3 收 11.0 / 开 11.1 收 10.8(全阴)
+YC = [9.5, 10.0, 11.0, 11.2, 11.0, 10.8]
+YO = [9.5, 10.0, 10.2, 11.5, 11.3, 11.1]
+
+
+def test_yin_params():
+    assert ly.PARAMS["mode"] == "yin" and ly.WITH_OPEN and ly.MARKET == "a"
+    assert [r["id"] for r in ly.RULES][:3] == ["Y-01", "Y-02", "Y-03"]
+    assert lu.PARAMS["mode"] == "hold"          # 原方向不受影响
+
+
+def test_yin_signal_main_board():
+    i = ly.indicators(ybars(YC, YO))
+    assert i["yin3"] is True and i["opens"] == [11.5, 11.3, 11.1]
+    f = ly.entry_checks(i, "600001", "测试")
+    assert f["Y-01"] and f["Y-02"] and f["Y-03"] and f["ok"]
+
+
+def test_yin_close_below_limit_day_still_ok():
+    # 用户没要求守住涨停价:三天收盘都跌破涨停日收盘 11.0 也照买
+    i = ly.indicators(ybars([9.5, 10.0, 11.0, 10.9, 10.6, 10.3], [9.5, 10.0, 10.2, 11.0, 10.8, 10.5]))
+    assert ly.entry_checks(i, "000001", "测试")["ok"]
+
+
+def test_yin_one_yang_rejected():
+    o = list(YO); o[4] = 10.9                      # T-1 开 10.9 收 11.0 → 阳线
+    f = ly.entry_checks(ly.indicators(ybars(YC, o)), "600001", "测试")
+    assert f["Y-01"] and not f["Y-02"] and not f["ok"]
+
+
+def test_yin_doji_not_yin():
+    o = list(YO); o[5] = 10.8                      # T 开 = 收 → 十字星,不算阴线
+    assert not ly.entry_checks(ly.indicators(ybars(YC, o)), "600001", "测试")["Y-02"]
+
+
+def test_yin_needs_open():
+    o = list(YO); o[4] = None
+    i = ly.indicators(ybars(YC, o))
+    f = ly.entry_checks(i, "600001", "测试")
+    assert i["yin3"] is None and f["yin_na"] and not f["ok"]
+    assert "算不出" in ly.watch_item("600001", "测试", i, False, None)["gap"]
+    # 没有开盘价的 5 元组(老调用方)同样算不出,不会误判
+    assert lu.indicators(bars(YC))["yin3"] is None
+
+
+@pytest.mark.parametrize("code,ok", [("600001", True), ("601318", True), ("603165", True), ("605088", True),
+                                     ("000001", True), ("001896", True), ("002594", True), ("003816", True),
+                                     ("300750", False), ("301236", False), ("688981", False), ("689009", False),
+                                     ("430047", False), ("830799", False), ("920000", False)])
+def test_yin_main_board_only(code, ok):
+    growth = code.startswith(("30", "68"))
+    closes = [9.5, 10.0, 12.0, 11.9, 11.7, 11.5] if growth else YC
+    opens = [9.5, 10.0, 10.2, 12.2, 11.95, 11.8] if growth else YO
+    f = ly.entry_checks(ly.indicators(ybars(closes, opens)), code, "测试")
+    assert f["Y-03"] is ok and f["ok"] is (ok and f["Y-01"])
+
+
+def test_yin_limit_threshold_and_cap():
+    # 主板涨 9.0% 不算涨停;涨 19% 超过上限(数据错 / 新股)也不算
+    for t3 in (10.9, 11.9):
+        c = [9.5, 10.0, t3, t3 + 0.2, t3, t3 - 0.2]
+        o = [9.5, 10.0, 10.0, t3 + 0.5, t3 + 0.3, t3 + 0.1]
+        assert not ly.entry_checks(ly.indicators(ybars(c, o)), "600001", "测试")["Y-01"]
+
+
+def test_yin_buy_and_next_day_sell():
+    i = ly.indicators(ybars(YC, YO))
+    r = ly.run_day("2026-03-07", [], 1_000_000.0, None, [("600001", "测试", None)], None, 0, dict(ly.PARAMS),
+                   ind_of=lambda c: i)
+    assert len(r["fills"]) == 1
+    f = r["fills"][0]
+    assert f["shares"] == int(10000 // 10.8) and f["rule_name"] == "涨停三阴买入" and "Y-02" in f["rationale"]
+    nxt = ly.indicators(ybars([10.0, 11.0, 11.2, 11.0, 10.8, 11.1], [10.0, 10.2, 11.5, 11.3, 11.1, 10.9]))
+    r2 = ly.run_day("2026-03-08", r["positions"], r["cash"], None, [], None, 0, dict(ly.PARAMS), ind_of=lambda c: nxt)
+    s = r2["fills"][0]
+    assert s["side"] == "sell" and s["rule_id"] == "L-05" and s["pnl_pct"] == pytest.approx((11.1 / 10.8 - 1) * 100, abs=0.01)
+
+
+def test_yin_rules_and_summary_text():
+    assert "只做主板" in ly.summary() and "阴线" in ly.rules_for()[1]["condition"]
