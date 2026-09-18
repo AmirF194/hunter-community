@@ -225,4 +225,8 @@ if [ -d "$USER_SKILLS_DIR" ] && [ -z "$(ls -A "$USER_SKILLS_DIR" 2>/dev/null)" ]
 fi
 
 # ── ③ 启动 ────────────────────────────────────────────────────
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+# 监听地址默认 0.0.0.0(IPv4)。Railway 的**老环境**(2025-10-16 之前创建)私有网络
+# 是 IPv6-only,绑 0.0.0.0 的服务在那里互相连不上 —— 官方给的办法就是改绑 `::`。
+# 见 https://docs.railway.com/networking/private-networking/how-it-works
+# 留成变量、默认值不变:本地与其他平台一个字都不用改。
+exec uvicorn main:app --host "${HUNTER_BIND_HOST:-0.0.0.0}" --port 8000
