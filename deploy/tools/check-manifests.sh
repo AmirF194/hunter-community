@@ -26,5 +26,6 @@ a = sorted({f"{m['platform']['os']}/{m['platform']['architecture']}" for m in ms
 print(', '.join(a) if a else ('单架构:' + str(d.get('architecture', '?'))))
 PY
 )
+  if [ "$out" != "200" ]; then archs="(这个标签还没发布)"; fi
   printf '%-10s %-8s HTTP %s  架构: %s\n' "$img" "$TAG" "$out" "${archs:-解析失败}"
 done
