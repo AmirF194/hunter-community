@@ -175,6 +175,17 @@ services:
       OPENCODE_URL: http://opencode:3901
       OPENCODE_SERVER_USERNAME: ${OPENCODE_USER:-}
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_PASS:-}
+      # ⚠️ **api 也要知道 llm-shim 在哪** —— 不是只有 opencode 需要。
+      # 向导保存后,api 走 PATCH /global/config 把 provider 的 baseURL 推给 opencode,
+      # 而那个值取自 **api 容器的** LLM_SHIM_URL(services/opencode_admin.py)。
+      #
+      # 在这份 compose 里服务就叫 llm-shim,不设也会回落到同一个值 —— 但换到服务名
+      # 不叫 llm-shim 的地方(Sealos 是 `<应用名>-llm-shim`、1Panel 是
+      # `<容器前缀>-llm-shim`、Zeabur 私有网络是 `llm-shim.zeabur.internal`)就会被
+      # 推进去一个解析不了的主机名。M3 在 Sealos 等价栈上实测:向导五步全绿、
+      # engine-ready 也返回 true,**但发消息永远收不到回复,日志里一条报错都没有**。
+      # 显式写在这里,是为了让「api 依赖 shim 地址」这件事在默认文件里就看得见。
+      LLM_SHIM_URL: ${LLM_SHIM_URL:-http://llm-shim:3999/v1}
     volumes:
       # 用户能力**可写** —— UI 里新建/编辑/删除 SKILL 要往这里写文件(_19 §5.2)。
       # 原来是 bind mount ./user-skills;改成 api 自己的具名卷,因为云平台上

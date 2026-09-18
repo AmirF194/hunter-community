@@ -171,15 +171,29 @@ def probe_migrations() -> dict:
 
 # ── 密钥 ────────────────────────────────────────────────────────────
 def _secret_source(name: str) -> str:
-    """密钥是从哪来的。与 boot.sh 的优先级一致：环境变量非空 → 密钥卷。
+    """密钥是从哪来的。与 boot.sh 的优先级一致：环境变量非空 → 密钥卷 → 本次生成。
 
     ⚠️ boot.sh 会把读到的值 **export** 进 api 进程，所以在 api 里
-    `os.environ[name]` 一定非空，靠它区分不了来源。真正的判据是
-    密钥卷文件里有没有同一个值。
+    `os.environ[name]` 一定非空，靠它区分不了来源。
+
+    权威判据是 boot.sh 导出的 `HUNTER_SECRET_SRC_<名字>`（它自己就知道优先级
+    命中了哪一条）。**不要再回去比对密钥卷文件的内容** —— boot.sh 会把生效值
+    写回文件「哪怕它来自环境变量」（那是为了用户以后从 .env 里删掉也不丢），
+    所以"文件里有同一个值"永远成立，比对的结果恒为 volume。
+
+    M3 实测（2026-09-18，Zeabur 等价 compose）：密钥由模板注入成环境变量、
+    整个栈里连 hunter_secrets 卷都没有，向导第 1 步照样显示
+    「来源：首启自动生成（hunter_secrets 卷）」—— 两个说法都不成立。
+    本地部署在 .env 里显式设了 JWT_SECRET 时同样报错。
+
+    老镜像没有那个导出变量，退回旧的比对逻辑（结论不比现在更差）。
     """
     cur = (os.environ.get(name) or "").strip()
     if not cur:
         return "none"
+    declared = (os.environ.get(f"HUNTER_SECRET_SRC_{name}") or "").strip()
+    if declared in ("env", "volume", "generated"):
+        return declared
     f = Path(os.getenv("HUNTER_SECRETS_FILE", "/opt/hunter-secrets/secrets.env"))
     try:
         if f.is_file():
@@ -199,7 +213,9 @@ def probe_secrets() -> list:
     ):
         val = (os.environ.get(name) or "").strip()
         src = _secret_source(name)
-        src_cn = {"env": "环境变量（.env 或平台注入）", "volume": "首启自动生成（hunter_secrets 卷）",
+        src_cn = {"env": "环境变量（.env 或云平台模板注入）",
+                  "volume": "首启自动生成（hunter_secrets 卷）",
+                  "generated": "本次启动生成（还没落进 hunter_secrets 卷）",
                   "none": "未设置"}[src]
         if not val:
             out.append(_item(f"secret:{name}", label, "fail", "未设置",

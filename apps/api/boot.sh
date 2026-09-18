@@ -88,6 +88,14 @@ fi
 
 export JWT_SECRET HUNTER_INTERNAL_KEY
 
+# 把「这把密钥是从哪来的」也导出去。向导第 1 步(setup_probe._secret_source)要报这个，
+# 而它在 api 进程里**推不出来**:上面那个 export 之后 os.environ 一定非空,而
+# _persist_secrets 又会把环境变量来的值也写回密钥卷文件 —— 靠比对文件内容永远得到
+# 「来自卷」。只有这里知道真相。
+HUNTER_SECRET_SRC_JWT_SECRET="$(case "$_jwt_src" in 环境变量) echo env;; 密钥卷) echo volume;; *) echo generated;; esac)"
+HUNTER_SECRET_SRC_HUNTER_INTERNAL_KEY="$(case "$_int_src" in 环境变量) echo env;; 密钥卷) echo volume;; *) echo generated;; esac)"
+export HUNTER_SECRET_SRC_JWT_SECRET HUNTER_SECRET_SRC_HUNTER_INTERNAL_KEY
+
 # 把当前生效的两个值写回卷,让下次重启、以及 opencode / web 容器拿到同一份。
 # **两个都写**(哪怕来自环境变量):这样用户以后从 .env 里删掉它们,值也不会变,
 # 已加密的 key 仍然解得开。内容没变就不动文件,免得每次重启都改 mtime。
@@ -142,10 +150,27 @@ if _persist_secrets; then
     # 判据见仓内 CLAUDE.md「挂了卷不等于状态都进卷了 · 用 df 逐个查」。
     case "$(df -P "$HUNTER_SECRETS_DIR" 2>/dev/null | tail -n 1 | awk '{print $1}')" in
         overlay|overlayfs|none)
-            echo "[boot] WARN  $HUNTER_SECRETS_DIR 在容器可写层上,没有挂 hunter_secrets 卷。" >&2
-            echo "[boot] WARN    密钥只活到下次 recreate;之后已保存的 key 会全部解不开、登录全部失效。" >&2
-            echo "[boot] WARN    处理:确认 compose 里 api 挂了 hunter_secrets:$HUNTER_SECRETS_DIR。" >&2
-            _persist_note="⚠ 写在容器可写层上($HUNTER_SECRETS_FILE)· 没挂 hunter_secrets 卷 · 重启后密钥会变"
+            # ⚠️ 只有当密钥**不是**全部来自环境变量时才告警。
+            #
+            # 云平台(Zeabur / Sealos / 1Panel 之外的 K8s 场景)不支持跨服务共享卷,
+            # 模板改成由平台生成随机值、注入成环境变量给 api / opencode / web 三家 ——
+            # 这时 /opt/hunter-secrets 落在可写层上是**正常且无害**的:下次重启平台
+            # 还会注入同样的值,密钥根本不会变。
+            #
+            # M3 实测(2026-09-18,Zeabur 等价 compose 从空卷启动):这里会无条件打出
+            # 「已保存的 key 会全部解不开、登录全部失效」,而当时两把密钥都来自环境变量,
+            # 一个字都不成立。云用户看到这行只会白白吓一跳、或者去找一个根本不存在的卷。
+            if [ "$_jwt_src" = '环境变量' ] && [ "$_int_src" = '环境变量' ]; then
+                echo "[boot] INFO  $HUNTER_SECRETS_DIR 在容器可写层上(没挂 hunter_secrets 卷)," >&2
+                echo "[boot] INFO    但两把密钥都来自环境变量 —— 重启后值不变,不影响已保存的 key。" >&2
+                _persist_note="缓存在容器可写层($HUNTER_SECRETS_FILE)· 密钥以环境变量为准"
+            else
+                echo "[boot] WARN  $HUNTER_SECRETS_DIR 在容器可写层上,没有挂 hunter_secrets 卷。" >&2
+                echo "[boot] WARN    密钥只活到下次 recreate;之后已保存的 key 会全部解不开、登录全部失效。" >&2
+                echo "[boot] WARN    处理:确认 compose 里 api 挂了 hunter_secrets:$HUNTER_SECRETS_DIR," >&2
+                echo "[boot] WARN    或(云平台上)由模板把 JWT_SECRET 与 HUNTER_INTERNAL_KEY 注入成环境变量。" >&2
+                _persist_note="⚠ 写在容器可写层上($HUNTER_SECRETS_FILE)· 没挂 hunter_secrets 卷 · 重启后密钥会变"
+            fi
             ;;
     esac
 else
