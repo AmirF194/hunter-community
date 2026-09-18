@@ -509,6 +509,46 @@ SHOULD_REJECT += [
 ]
 
 
+# ── 2026-09-18(第 8 轮)· 字段名里的比较词被读成比较 ─────────────────────────────
+# 全量字段探针查出两条既有静默错(与第 7 轮无关,新旧版本结果一致):
+#   「recommendation_under > 0」→ recommendation_under < 0:英文比较词 under 从字段原名内部被读出来(_find_op 裸 find、无词边界);
+#   「盘前变动(绝对值)大于0」→ change_abs > 0:同名多字段中文名按设计不收,里面的「变动(绝对值)」(change_abs)却被截了出来。
+# 按类别补:字段原名里含 under / over 的写法(符号 / 中文 / 英文比较词 / 大写),
+#   普通英文单词里的比较词(overbought / oversold / undervalued / overshoot —— oversold 30 曾产出 RSI > 30,意思整个反了),
+#   同名多字段中文名的各种写法(必须报点名错误,不能让子串命中别的字段)
+FIELDS |= {"recommendation_over", "recommendation_under", "pre_change_abs", "premarket_change_abs", "change_abs"}
+SHOULD_MATCH += [
+    ("recommendation_under > 0", "recommendation_under > 0"),           # ← 探针原句
+    ("recommendation_under大于0", "recommendation_under > 0"),           # ← 探针原句
+    ("RECOMMENDATION_UNDER >= 3", "recommendation_under >= 3"),
+    ("recommendation_under不低于1", "recommendation_under >= 1"),
+    ("recommendation_under above 2", "recommendation_under > 2"),
+    ("recommendation_over小于5", "recommendation_over < 5"),             # 旧版 over 抢在「小于」前面 → > 5
+    ("recommendation_over below 5", "recommendation_over < 5"),
+    ("变动(绝对值)大于0", "change_abs > 0"),                             # 唯一的中文名照旧认
+    # 独立的英文比较词照旧认
+    ("close under 10", "close < 10"),
+    ("RSI over 70", "RSI > 70"),
+]
+SHOULD_REJECT += [
+    "盘前变动(绝对值)大于0",                 # ← 探针原句:pre_change_abs / premarket_change_abs 同名
+    "盘前变动(绝对值)小于-1",
+    "盘前变动(绝对值) > 0",
+    "收盘价大于10，盘前变动(绝对值)大于0",    # 全中或全不中
+    # 普通英文单词里的比较词不是比较
+    "RSI overbought 70",
+    "RSI oversold 30",                      # 旧版 → RSI > 30(超卖读成大于)
+    "市盈率undervalued 10",
+    "close overshoot 10",
+]
+# 同名多字段中文名:必须报「拿不准指哪个」且点名全部字段,不能退成「没看懂」或命中别的字段
+SHOULD_AMBIG = [
+    ("盘前变动(绝对值)大于0", ("pre_change_abs", "premarket_change_abs")),
+    ("盘前变动(绝对值) > 0", ("pre_change_abs", "premarket_change_abs")),
+    ("历史最低大于0", ("Low.All", "all_time_low")),
+]
+
+
 def _run(sd, kw) -> list[str]:
     has = lambda n: n in FIELDS                          # noqa: E731
     fails: list[str] = []
@@ -536,6 +576,13 @@ def _run(sd, kw) -> list[str]:
                 fails.append(f"应报缺比较  {text!r}\n        报错里没点名字段 {fld}:{e}")
         except sd.ScreenError as e:
             fails.append(f"应报缺比较  {text!r}\n        报的却是普通错误(会给 AI 按钮):{e}")
+    for text, flds in SHOULD_AMBIG:
+        try:
+            r = kw.translate(text, has, SMA, EMA, RSI, names=FIELDS)
+            fails.append(f"应报同名多字段  {text!r}\n        却产出 {r['script']}   ← 静默错误")
+        except sd.ScreenError as e:
+            if not all(f in str(e) for f in flds):
+                fails.append(f"应报同名多字段  {text!r}\n        报错里没点名 {' / '.join(flds)}:{e}")
     return fails
 
 
@@ -548,7 +595,7 @@ def test_screen_kw():
 if __name__ == "__main__":
     sd, kw = _load()
     fails = _run(sd, kw)
-    total = len(SHOULD_MATCH) + len(SHOULD_REJECT) + len(SHOULD_MISS_CMP)
+    total = len(SHOULD_MATCH) + len(SHOULD_REJECT) + len(SHOULD_MISS_CMP) + len(SHOULD_AMBIG)
     print(f"应识别 {len(SHOULD_MATCH)} 条 · 应拒绝 {len(SHOULD_REJECT)} 条 · 共 {total}")
     if fails:
         print(f"FAIL {len(fails)} 条:")

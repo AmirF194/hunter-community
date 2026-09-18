@@ -488,6 +488,13 @@ class _Vocab:
         # 「rs_score」「close_price」「ema20_slope」都不是字段,里面的 rs / close / ema20
         # 不能拿出来猜 —— 那正是本模块最要避免的「静默理解错」。
         unknown: list[tuple[int, int]] = []
+        # 同名多字段的中文名(盘前变动(绝对值) = pre_change_abs / premarket_change_abs)按设计不收,
+        # 但它**内部**的子串同样不能拿出来猜:2026-09-18 探针「盘前变动(绝对值)大于0」产出 change_abs > 0,
+        # 截的是里面「变动(绝对值)」—— 和「涨跌量比」里截出量比同一类。整段按不认识的标识符处理,
+        # 句子认不出后由 translate 报「同时是哪几个字段的中文名」。
+        for lab in self.ambiguous:
+            for m in re.finditer(re.escape(lab), low):
+                unknown.append((m.start(), m.end()))
         for m in _IDENT_RE.finditer(text):
             tok = m.group(0)
             c = self.canon(tok)
@@ -677,16 +684,33 @@ def _range_expr(t: str, fs: list) -> str | None:
     return f"{fld} {op1} {_fmt(a)} and {fld} {op2} {_fmt(b)}"
 
 
+# 英文比较词必须按**词边界**找,边界里算上 `_ . |`(和 _candidates 里英文字段词同一口径)。
+# 2026-09-18 全量探针:「recommendation_under > 0」产出 recommendation_under < 0 —— 裸 find 从字段原名内部读出了 under;
+# 同类还有 *_over_* / *_below_* / *_above_* 这些字段,以及 overbought / undervalued 这类普通英文单词。
+def _op_re(w: str) -> re.Pattern:
+    if w[0].isascii() and w[0].isalpha():
+        return re.compile(r"(?<![a-z0-9_.|])" + re.escape(w) + r"(?![a-z0-9_])")
+    return re.compile(re.escape(w))
+
+
+_OP_RES = [(w, op, _op_re(w)) for w, op in _OP_WORDS]
+
+
 def _find_op(text: str) -> tuple[str, str] | None:
+    """最靠前的比较词 → (符号, 原词)。
+
+    **调用方要传把字段名挖掉之后的文字**(_clause_core 的 outside):字段名和中文名内部的比较词不是比较,
+    英文靠这里的词边界、中文靠挖掉字段 —— 两道一起才封得住。
+    """
     low = text.lower()
     best = None
-    for w, op in _OP_WORDS:
-        i = low.find(w)
-        if i < 0:
+    for w, op, rx in _OP_RES:
+        m = rx.search(low)
+        if not m:
             continue
         # 取最靠前的那个;同位置取更长的(_OP_WORDS 已按长度组织)
-        if best is None or i < best[0]:
-            best = (i, op, w)
+        if best is None or m.start() < best[0]:
+            best = (m.start(), op, w)
     return (best[1], best[2]) if best else None
 
 
@@ -729,10 +753,11 @@ def _rs_line_expr(t: str, vocab: _Vocab) -> str | None:
     # 「RS线高于21日均线超过50天」里真正的比较符是「超过」,不是「高于」
     head = t2[:m.start()].lower()
     best = None
-    for w, op in _OP_WORDS:
-        i = head.rfind(w)
-        if i < 0:
+    for w, op, rx in _OP_RES:
+        hits = list(rx.finditer(head))              # 英文词同样按词边界(见 _op_re)
+        if not hits:
             continue
+        i = hits[-1].start()
         key = (i + len(w), len(w))
         if best is None or key > best[0]:
             best = (key, op)
@@ -912,7 +937,7 @@ def _clause_core(clause: str, vocab: _Vocab, notes: list[str] | None = None) -> 
         return None
 
     # ── 通用:字段 + 比较符 + (字段 | 数字) ─────────────────
-    op = _find_op(t)
+    op = _find_op(outside)          # 字段名内部的比较词不算(recommendation_under 里的 under)
     if not fs or not op:
         return None
     left = fs[0]
@@ -967,7 +992,7 @@ def _clause_core(clause: str, vocab: _Vocab, notes: list[str] | None = None) -> 
 # 「收盘价不低于10且不高于20」—— 后半句省略了主语,只剩「比较词 + 数字」。
 # 单独一句「不高于20」永远认不出(没有字段),原来整句因此被拒;现在拼回前一句,交给 _range_expr 判区间。
 # 前一句必须以「比较词 + 数字」结尾:「RS线连涨超过50天」「收盘价大于50日均线」这类不拼(天数 / 两字段,「小于20」不知道比谁)。
-_CMP_WORDS = "|".join(re.escape(w) for w, _op in _OP_WORDS)
+_CMP_WORDS = "|".join(rx.pattern for _w, _op, rx in _OP_RES)      # 英文词带词边界,同 _find_op
 _CMP_NUM = r"\s*-?\d+(?:\.\d+)?\s*(?:万亿|亿|万|[kmb]|%)?\s*元?"
 _STARTS_CMP_RE = re.compile(rf"\s*(?:{_CMP_WORDS}|[<>]=?|==|!=)", re.I)   # 两字短名后面必须紧跟比较
 _BARE_CMP_RE = re.compile(rf"(?:{_CMP_WORDS}){_CMP_NUM}", re.I)
