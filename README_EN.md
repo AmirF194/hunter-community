@@ -47,7 +47,9 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 
 ## 🚀 Deploy in 5 minutes
 
-**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 10 GB disk · 4 GB RAM · access to `ghcr.io`
+**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 10 GB disk · 4 GB RAM (measured peak ~1.3 GB) · access to `ghcr.io`
+
+All six images ship for **amd64 and arm64**, so Apple Silicon and arm cloud instances run natively — no emulation.
 
 > [!IMPORTANT]
 > **Only two things to understand before you start**
@@ -454,8 +456,14 @@ Built something on HunterCode or maintaining a fork? Tell us in [Discussions](ht
 - [x] **v0.1** · Self-hosted skeleton, local account auth, pluggable data / LLM / forecast layers
 - [x] **v0.2** · opencode chat engine, plugins and MCP, one key for everything, GitHub SKILL install
 - [x] **v1.0.0** (2026-09-13) · Market-wide screener, research desk agent, quant factors and backtests isolated per market, SKILL import with attached docs and Chinese descriptions, kronos / truesource MCPs published, chat sessions on named volumes — [full changelog](./CHANGELOG.md)
-- [ ] **v1.0.1** · Docs and community groundwork — [milestone](https://github.com/agentpit-io/hunter-community/milestone/1)
-- [ ] **v1.1.0** · First-run setup wizard (no `.env` editing), multi-arch images, daily deploy smoke test — [milestone](https://github.com/agentpit-io/hunter-community/milestone/2)
+- [x] **v1.0.1** (2026-09-17) · Chat-engine image **7.56 GB → 618 MB** (download 1.70 GB → 153 MB), api image 1.32 GB → 909 MB, entrypoint hardening, daily deploy smoke CI, docs and community groundwork — [how and measurements](./docs/image-slim/)
+- [ ] **v1.1.0** · Works out of the box with no config file editing — [milestone](https://github.com/agentpit-io/hunter-community/milestone/2)
+  - [x] All six services from pre-built images, amd64 + arm64 (`v1.1.0-rc1`)
+  - [x] Database migrations run automatically on api start; `JWT_SECRET` and friends generated on first boot
+  - [x] LLM settings can live in the database (no longer `.env`-only) and apply live without restarting containers
+  - [ ] Graphical first-run wizard (pick a model → paste the key and test it on the spot → start chatting)
+  - [ ] One-click deploy templates (Zeabur / Sealos / Railway / 1Panel)
+  - Progress and measurements: [`docs/setup-wizard/`](./docs/setup-wizard/)
 
 Want a feature? Vote in [Discussions Ideas](https://github.com/agentpit-io/hunter-community/discussions/categories/ideas).
 
