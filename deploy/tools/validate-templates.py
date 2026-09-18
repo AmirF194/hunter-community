@@ -66,10 +66,13 @@ def load_yaml_docs(path: Path, strip_cond: bool = False):
 
 # ══════════════════════════════════════════════════════════════════════
 def check_yaml_syntax() -> None:
-    print("\n[1/4] YAML 语法")
+    print("\n[1/6] YAML 语法")
     targets = [
         (ROOT / "deploy/zeabur/template.yaml", False),
         (ROOT / "deploy/sealos/index.yaml", True),
+        (ROOT / "deploy/railway/services.yaml", False),
+        (ROOT / "deploy/coolify/docker-compose.yml", False),
+        (ROOT / "deploy/dokploy/docker-compose.yml", False),
         (ROOT / "docker-compose.yml", False),
     ]
     targets += [(p, False) for p in sorted((ROOT / "deploy/1panel").rglob("*.yml"))]
@@ -100,7 +103,7 @@ def fetch_schemas(online: bool) -> dict:
 
 
 def check_zeabur(online: bool) -> None:
-    print("\n[2/4] Zeabur 模板 · 官方 JSON Schema 校验")
+    print("\n[2/6] Zeabur 模板 · 官方 JSON Schema 校验")
     path = ROOT / "deploy/zeabur/template.yaml"
     if not path.exists():
         skip("deploy/zeabur/template.yaml 不存在")
@@ -192,7 +195,7 @@ SEALOS_CATEGORIES = {
 
 
 def check_sealos() -> None:
-    print("\n[3/4] Sealos 模板 · 结构自检")
+    print("\n[3/6] Sealos 模板 · 结构自检")
     path = ROOT / "deploy/sealos/index.yaml"
     if not path.exists():
         skip("deploy/sealos/index.yaml 不存在")
@@ -311,7 +314,7 @@ def check_sealos_k8s(docs: list) -> None:
 
 # ══════════════════════════════════════════════════════════════════════
 def check_1panel() -> None:
-    print("\n[4/4] 1Panel 应用包 · 结构自检")
+    print("\n[4/6] 1Panel 应用包 · 结构自检")
     base = ROOT / "deploy/1panel/hunter-community"
     if not base.exists():
         skip("deploy/1panel/hunter-community 不存在")
@@ -354,6 +357,136 @@ def check_1panel() -> None:
                 ok(f"{v.name}/docker-compose.yml 的相对挂载都在 ./data/ 下（面板备份打得进去）")
 
 
+# ══════════════════════════════════════════════════════════════════════
+IMAGES = ("api", "web", "opencode", "llm-shim")
+
+
+def check_railway() -> None:
+    print("\n[5/6] Railway 手工搭建清单 · 结构自检")
+    f = ROOT / "deploy/railway/services.yaml"
+    if not f.exists():
+        skip("deploy/railway/services.yaml 不存在")
+        return
+    doc = yaml.safe_load(f.read_text(encoding="utf-8"))
+    svcs = {s["name"]: s for s in doc.get("services") or []}
+
+    want = {"postgres", "redis", "llmshim", "api", "opencode", "web"}
+    (ok if want <= set(svcs) else bad)(
+        f"六个服务齐全：{sorted(svcs)}" if want <= set(svcs) else f"少了服务：{sorted(want - set(svcs))}")
+
+    # 服务名不能带连字符 —— 引用变量 ${{名.变量}} 里带连字符能不能解析官方没写
+    bads = [n for n in svcs if "-" in n]
+    (ok if not bads else bad)("服务名都不带连字符（引用变量安全）" if not bads
+                              else f"服务名带连字符，引用变量可能解析不了：{bads}")
+
+    # 只有 web 对外
+    pub = [n for n, v in svcs.items() if v.get("public")]
+    (ok if pub == ["web"] else bad)("只有 web 对外暴露" if pub == ["web"] else f"对外的服务不对：{pub}")
+
+    # 一个服务只能挂一个卷（Railway 硬限制）—— 清单里 volume 是单数字段，这里防手滑写成列表
+    multi = [n for n, v in svcs.items() if isinstance(v.get("volume"), list)]
+    (ok if not multi else bad)("每个服务至多一个卷（Railway 限制）" if not multi
+                               else f"这些服务写了多个卷：{multi}")
+
+    env = {n: {k: str(v.get("value", "")) for k, v in (s.get("variables") or {}).items()}
+           for n, s in svcs.items()}
+
+    # PGDATA 必须是挂载点的子目录（ext4 的 lost+found 会让 initdb 拒绝）
+    mp = (svcs["postgres"].get("volume") or {}).get("mountPath", "")
+    pgdata = env["postgres"].get("PGDATA", "")
+    (ok if pgdata.startswith(mp + "/") else bad)(
+        f"PGDATA 是挂载点的子目录（{pgdata}）" if pgdata.startswith(mp + "/")
+        else f"PGDATA={pgdata!r} 不是 {mp} 的子目录 —— postgres 会因 lost+found 无限重启")
+
+    # 非 root 镜像 + 卷 → 必须 RAILWAY_RUN_UID=0
+    for n in ("postgres", "redis", "opencode"):
+        v = env[n].get("RAILWAY_RUN_UID")
+        (ok if v == "0" else bad)(f"{n} 设了 RAILWAY_RUN_UID=0" if v == "0"
+                                  else f"{n} 没设 RAILWAY_RUN_UID=0 —— 卷是 root 属主的，写不进去")
+
+    # api 的卷不能遮住镜像自带的静态数据目录
+    amp = (svcs["api"].get("volume") or {}).get("mountPath", "")
+    (ok if amp != "/opt/hunter-data" else bad)(
+        f"api 的卷挂在 {amp}（没遮住镜像的 /opt/hunter-data）" if amp != "/opt/hunter-data"
+        else "api 的卷挂在 /opt/hunter-data，会把镜像自带的向导预设遮掉")
+
+    # 两个必设、且最容易被漏掉的跨服务地址
+    for n, k in (("api", "LLM_SHIM_URL"), ("api", "OPENCODE_URL"),
+                 ("opencode", "HERMES_API_URL"), ("web", "HERMES_API_URL"),
+                 ("web", "OPENCODE_URL")):
+        v = env[n].get(k, "")
+        (ok if v.startswith("http") else bad)(f"{n}.{k} 已设" if v.startswith("http")
+                                              else f"{n}.{k} 没设或不是 http 地址")
+
+    # 三家必须同值的密钥
+    same = (env["opencode"].get("JWT_SECRET") == "${{api.JWT_SECRET}}"
+            and env["opencode"].get("HUNTER_INTERNAL_KEY") == "${{api.HUNTER_INTERNAL_KEY}}"
+            and env["web"].get("HUNTER_INTERNAL_KEY") == "${{api.HUNTER_INTERNAL_KEY}}")
+    (ok if same else bad)("opencode / web 用引用变量取 api 的那把密钥（不会填错）" if same
+                          else "密钥没用引用变量 —— 三处填不一致就会「服务全绿但一对话 401」")
+
+    (ok if env["api"].get("HUNTER_SINGLE_USER") == "0" else bad)(
+        "api 关掉了单用户模式（公网必须）" if env["api"].get("HUNTER_SINGLE_USER") == "0"
+        else "api 的 HUNTER_SINGLE_USER 不是 0 —— 公网上谁打开谁就是 admin")
+
+    tok = env["api"].get("HUNTER_SETUP_TOKEN", "")
+    (ok if tok.startswith("${{secret(") else bad)(
+        "初始化口令由 secret() 生成" if tok.startswith("${{secret(")
+        else f"HUNTER_SETUP_TOKEN={tok!r} —— 必须由变量函数生成，不能写死也不能留空")
+
+
+def check_paas_compose() -> None:
+    print("\n[6/6] Coolify / Dokploy compose · 结构自检与一致性")
+    a = ROOT / "deploy/coolify/docker-compose.yml"
+    b = ROOT / "deploy/dokploy/docker-compose.yml"
+    if not (a.exists() and b.exists()):
+        skip("Coolify / Dokploy 的 compose 不齐")
+        return
+    ca, cb = (yaml.safe_load(f.read_text(encoding="utf-8")) for f in (a, b))
+
+    want = {"web", "api", "opencode", "llm-shim", "postgres", "redis"}
+    for name, c in (("coolify", ca), ("dokploy", cb)):
+        got = set(c.get("services") or {})
+        (ok if want <= got else bad)(f"{name}：六个服务齐全" if want <= got
+                                     else f"{name}：少了 {sorted(want - got)}")
+        builds = [n for n, v in (c["services"] or {}).items() if v.get("build")]
+        (ok if not builds else bad)(f"{name}：没有服务带 build:" if not builds
+                                    else f"{name}：这些服务带了 build:{builds}")
+        # 宿主端口映射 —— 对外靠平台反代，映射端口等于把库挂到公网 IP 上
+        ports = [n for n, v in (c["services"] or {}).items() if v.get("ports")]
+        (ok if not ports else bad)(f"{name}：没有宿主端口映射（对外交给平台反代）" if not ports
+                                   else f"{name}：这些服务映射了宿主端口：{ports}")
+        # 相对路径挂载 —— 平台上没有本仓源码
+        rel = [f"{n}:{m}" for n, v in (c["services"] or {}).items()
+               for m in (v.get("volumes") or []) if isinstance(m, str) and m.startswith(".")]
+        (ok if not rel else bad)(f"{name}：没有相对路径挂载" if not rel
+                                 else f"{name}：有相对路径挂载(平台上没有本仓源码)：{rel}")
+        # 三家共享密钥卷
+        shared = [n for n in ("api", "web", "opencode")
+                  if any("hunter_secrets" in m for m in (c["services"][n].get("volumes") or []))]
+        (ok if len(shared) == 3 else bad)(
+            f"{name}：api/web/opencode 三家共挂 hunter_secrets 卷" if len(shared) == 3
+            else f"{name}：只有 {shared} 挂了密钥卷 —— 少一家就会一对话 401")
+        (ok if (c["services"]["api"]["environment"].get("HUNTER_SINGLE_USER") == "0") else bad)(
+            f"{name}：关掉了单用户模式" if c["services"]["api"]["environment"].get("HUNTER_SINGLE_USER") == "0"
+            else f"{name}：HUNTER_SINGLE_USER 不是 0")
+
+    # 两份文件必须只差「随机值谁生成 / 域名怎么绑」那几处，别的不许漂
+    def norm(c):
+        out = {}
+        for n, v in c["services"].items():
+            out[n] = {"image": v.get("image"), "volumes": v.get("volumes"),
+                      "depends_on": v.get("depends_on"),
+                      "env_keys": sorted(set(v.get("environment") or {}) - {"SERVICE_FQDN_WEB_3000"})}
+        return out
+    (ok if norm(ca) == norm(cb) else bad)(
+        "两份 compose 的镜像/卷/依赖/环境变量名完全一致（不会各自漂移）" if norm(ca) == norm(cb)
+        else "两份 compose 出现了不该有的差异，逐项对一下")
+    (ok if sorted(ca.get("volumes") or {}) == sorted(cb.get("volumes") or {}) else bad)(
+        "两份 compose 的卷清单一致" if sorted(ca.get("volumes") or {}) == sorted(cb.get("volumes") or {})
+        else "两份 compose 的卷清单不一致")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--online", action="store_true", help="重新下载 Zeabur 官方 schema")
@@ -366,6 +499,8 @@ def main() -> int:
     check_zeabur(args.online)
     check_sealos()
     check_1panel()
+    check_railway()
+    check_paas_compose()
 
     print("\n" + "=" * 70)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
