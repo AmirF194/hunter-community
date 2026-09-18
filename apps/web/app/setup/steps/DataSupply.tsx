@@ -62,7 +62,7 @@ export default function DataSupply({
                 tag={<Tag tone="plain">不用填任何东西</Tag>}>
           现在就能用的:K 线、财务、新闻、研报、龙虎榜、十大股东、治理 —— 深度分析跑得完。
           <div style={{ marginTop: 4, color: HUNTER.INK_F }}>
-            现在还不能用的:**实时行情**会明确提示「未配置 Hunter Key」,不会编一个价格给你。
+            现在还不能用的:<b>实时行情</b>会明确提示「未配置 Hunter Key」,不会编一个价格给你。
             随时可以回到这一步补上面那把免费 key;想完全自给自足,
             也可以在「数据源与 MCP」页把数据源换成 AKShare 等公开源
             (免 key,但容器直连这些站点在部分网络环境下不稳定,且港美股覆盖不全)。
