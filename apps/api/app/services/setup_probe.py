@@ -23,6 +23,8 @@ import httpx
 from loguru import logger
 
 PROBE_TIMEOUT = 3.0
+# 需要对端现扫一遍目录的探测用这个(见 probe_opencode_to_api)
+SCAN_PROBE_TIMEOUT = 10.0
 
 # .env.example 里的示例值 —— 照抄它等于把公开字符串当密钥用（与 boot.sh 同一份）
 WEAK_JWT_SAMPLE = "change-me-in-production-please"
@@ -114,7 +116,10 @@ def probe_opencode_to_api() -> dict:
         return _item("skill-sync", "opencode → api 反向连通", "unknown",
                      "HUNTER_INTERNAL_KEY 为空，无法构造探测地址")
     try:
-        r = httpx.get(f"{base}/skill", timeout=PROBE_TIMEOUT)
+        # 这一条不是 ping,是让 opencode 扫一遍 SKILL 目录再返回。刚启动那几十秒里
+        # 它还在加载插件,3 秒会超时 —— 而向导第 1 步恰恰是用户开机后第一眼看的页面,
+        # 在那里挂一个黄色的 ReadTimeout 纯属吓人(M4 实测:热起来之后只要 16~70 毫秒)。
+        r = httpx.get(f"{base}/skill", timeout=SCAN_PROBE_TIMEOUT)
         if r.status_code == 401:
             return _item("skill-sync", "opencode → api 反向连通", "unknown",
                          "opencode 开了 Basic Auth，本探测不带凭据，跳过")
@@ -124,6 +129,13 @@ def probe_opencode_to_api() -> dict:
                          f"opencode 当前可见 {n} 个 SKILL（其中用户 SKILL 由 api 提供）")
         return _item("skill-sync", "opencode → api 反向连通", "warn",
                      f"opencode /skill 返回 HTTP {r.status_code}")
+    except httpx.TimeoutException:
+        # 冷启后的头几十秒,opencode 还在加载 6 个插件 + 连 MCP,扫一遍 SKILL 会超过
+        # 10 秒 —— 而向导第 1 步正是用户开机后看的第一屏。在那里甩一句 `ReadTimeout`
+        # 纯属吓人(实测热起来之后只要 16~80 毫秒)。说人话,并告诉他怎么办。
+        return _item("skill-sync", "opencode → api 反向连通", "warn",
+                     f"对话引擎还在启动(等它 {SCAN_PROBE_TIMEOUT:.0f} 秒没扫完 SKILL)",
+                     "等半分钟点一次「重新检查」;一直这样再看 docker compose logs opencode")
     except Exception as e:  # noqa: BLE001
         return _item("skill-sync", "opencode → api 反向连通", "warn", f"{type(e).__name__}: {e}")
 
@@ -215,7 +227,9 @@ def probe_secrets() -> list:
         src = _secret_source(name)
         src_cn = {"env": "环境变量（.env 或云平台模板注入）",
                   "volume": "首启自动生成（hunter_secrets 卷）",
-                  "generated": "本次启动生成（还没落进 hunter_secrets 卷）",
+                  # 「还没落进卷」这句话是错的:boot.sh 生成之后紧接着就 _persist_secrets 写回去了,
+        # 写不进去时它会在日志里单独告警。这里只说事实:这把是这次启动第一次生成的。
+        "generated": "本次启动首次生成",
                   "none": "未设置"}[src]
         if not val:
             out.append(_item(f"secret:{name}", label, "fail", "未设置",

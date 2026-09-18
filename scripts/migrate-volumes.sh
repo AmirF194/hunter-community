@@ -22,14 +22,32 @@
 set -euo pipefail
 
 DRY=0
-[ "${1:-}" = "--dry-run" ] && DRY=1
+PROJECT=""
 
-# compose 的项目名决定卷的前缀。docker-compose.yml 里写了 `name: hunter-community`,
-# 但用户可能用 -p 改过,所以优先问 compose 自己。
-PROJECT="$(docker compose config --format json 2>/dev/null \
-            | python3 -c 'import json,sys;print(json.load(sys.stdin).get("name",""))' 2>/dev/null || true)"
+# compose 的项目名决定卷的前缀。优先级:命令行 --project > COMPOSE_PROJECT_NAME
+# > 问 compose 自己(它读 docker-compose.yml 里的 `name: hunter-community`)。
+#
+# ⚠️ `docker compose -p <名> up` 起的栈,这个脚本是**问不出来**那个名字的 ——
+#    -p 只活在那一条命令里,不落任何文件。M4 实测:那种部署跑本脚本会拿到
+#    hunter-community,然后报「卷还不存在」,提示把人往「先 up -d」的方向带偏。
+#    所以下面卷找不到时会把疑似的卷名列出来。
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run)   DRY=1 ;;
+        --project)   PROJECT="${2:?--project 后面要跟项目名}"; shift ;;
+        --project=*) PROJECT="${1#--project=}" ;;
+        -h|--help)   echo "用法:bash scripts/migrate-volumes.sh [--dry-run] [--project <compose项目名>]"; exit 0 ;;
+        *)           echo "不认识的参数:$1(--help 看用法)" >&2; exit 2 ;;
+    esac
+    shift
+done
+[ -n "$PROJECT" ] || PROJECT="${COMPOSE_PROJECT_NAME:-}"
+if [ -z "$PROJECT" ]; then
+    PROJECT="$(docker compose config --format json 2>/dev/null \
+                | python3 -c 'import json,sys;print(json.load(sys.stdin).get("name",""))' 2>/dev/null || true)"
+fi
 PROJECT="${PROJECT:-hunter-community}"
-echo "compose 项目名:$PROJECT"
+echo "compose 项目名:$PROJECT（不对的话:bash scripts/migrate-volumes.sh --project <你的项目名>）"
 
 migrate_one() {
     local src="$1" vol="${PROJECT}_$2" label="$3"
@@ -47,7 +65,16 @@ migrate_one() {
     fi
 
     if ! docker volume inspect "$vol" >/dev/null 2>&1; then
-        echo "⏭  $label:卷 $vol 还不存在(先 docker compose up -d 建出来再跑本脚本)"
+        echo "⏭  $label:卷 $vol 还不存在"
+        local guess
+        guess=$(docker volume ls --format '{{.Name}}' | grep -E "_$2\$" | head -5)
+        if [ -n "$guess" ]; then
+            echo "    但机器上有这些同名后缀的卷 —— 项目名多半不是 $PROJECT:"
+            echo "$guess" | sed 's/^/      /'
+            echo "    重跑:bash scripts/migrate-volumes.sh --project <上面卷名里 _$2 之前那一段>"
+        else
+            echo "    先 docker compose up -d 把卷建出来再跑本脚本"
+        fi
         return
     fi
 
@@ -73,5 +100,9 @@ migrate_one user-skills   hunter_user_skills "用户 SKILL"
 migrate_one data-packages hunter_packages    "数据包"
 
 echo
-echo "搬完之后让 api 重读一次(不影响对话):"
-echo "    docker compose restart api && docker compose exec -T api curl -s -XPOST http://opencode:3901/skill/refresh"
+echo "搬完之后重启这两个容器,让它们重新扫一遍 SKILL(对话数据不受影响):"
+echo "    docker compose restart api opencode"
+echo
+echo "（原来这里印的是直接 curl opencode 的 /skill/refresh —— 那条命令在开了"
+echo "  OPENCODE_PASS 的部署上会 401,而 curl -s 把 401 的响应体也吞掉了,"
+echo "  看上去像是成功了。重启 opencode 时它会自己按 skills.urls 重新拉一遍,更稳。）"

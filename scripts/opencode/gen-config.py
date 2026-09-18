@@ -152,19 +152,36 @@ def _env_cfg():
     }
 
 
-def _api_cfg(attempts: int = 3, timeout: float = 10.0):
+# api 还没起来时最多等多久(秒)。0 = 不等。
+#
+# 为什么要等、又为什么不能无脑等:
+#   · 本地 compose 有 `depends_on: service_healthy`,opencode 起来时 api 一定在,
+#     **api 会立刻回话**,这个预算一秒都用不上。
+#   · **云平台大多没有启动顺序编排**(Railway 官方就是六个服务同时起)。api 要跑完
+#     数据库迁移才监听,实测几十秒。原来的「重试 3 次、1+2 秒」在那里必然打空,
+#     opencode 于是带着占位 provider 起来 —— 用户明明在向导里配好了,
+#     **每次重新部署之后发消息都回「大模型尚未配置」**,而日志里只有三行连接被拒。
+#
+# 关键是**只对「连不上」重试**:api 一旦回话(哪怕回的是 configured=false),
+# 立刻按它说的办,不浪费一秒 —— 全新安装的启动速度一点不受影响。
+CONFIG_WAIT = float(os.environ.get("HUNTER_CONFIG_WAIT") or 90)
+
+
+def _api_cfg(budget: float | None = None, timeout: float = 10.0):
     """向 api 要当前生效的配置。拿不到返回 None(不抛)。
 
-    重试 3 次是因为 compose 的 `depends_on: service_healthy` 只保证 api 的
-    /api/health 通了,而首次启动时它可能正在跑数据库迁移 —— 这几秒里
-    /api/internal/runtime/llm 读库会失败(接口不抛异常,会回 configured=false)。
+    api 连不上时按 CONFIG_WAIT 的预算退避重试;api 一回话就立刻返回。
     """
     key = (os.environ.get("HUNTER_INTERNAL_KEY") or "").strip()
     if not key:
         _log("HUNTER_INTERNAL_KEY 为空 —— 不向 api 拉配置(没有口令拉不到,也不该拉)")
         return None
     url = f"{API_URL}/api/internal/runtime/llm"
-    for attempt in range(1, attempts + 1):
+    budget = CONFIG_WAIT if budget is None else budget
+    deadline = time.monotonic() + budget
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             req = urllib.request.Request(url, headers={"X-Hunter-Internal-Key": key})
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -174,10 +191,18 @@ def _api_cfg(attempts: int = 3, timeout: float = 10.0):
             if isinstance(e, urllib.error.HTTPError) and e.code == 401:
                 _log(f"api 返回 401 —— opencode 与 api 的 HUNTER_INTERNAL_KEY 不一致。{detail}")
                 return None
-            _log(f"第 {attempt}/{attempts} 次拉配置失败({detail})")
-            if attempt < attempts:
-                time.sleep(attempt)          # 1s · 2s
+            left = deadline - time.monotonic()
+            if left <= 0:
+                _log(f"第 {attempt} 次拉配置失败,已等满 {budget:.0f} 秒,放弃({detail})")
+                _log("  api 起得比这还慢的话,把 HUNTER_CONFIG_WAIT 调大;"
+                     "或者在向导里重新点一次「应用」也能热生效。")
+                return None
+            wait = min(5.0, attempt, left)
+            _log(f"第 {attempt} 次拉配置失败,{wait:.0f} 秒后重试(还剩 {left:.0f} 秒预算)({detail})")
+            time.sleep(wait)
             continue
+        if attempt > 1:
+            _log(f"api 第 {attempt} 次尝试时回话了")
         if not body.get("configured"):
             _log("api 说大模型还没配置(向导还没跑)")
             return None

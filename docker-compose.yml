@@ -283,6 +283,9 @@ services:
       llm-shim:
         condition: service_healthy
     environment:
+      # api 还没起来时最多等多久再放弃拉配置(秒)。本地有 depends_on,api 一定先健康,
+      # 这个预算一秒都用不上;云平台大多不编排启动顺序,那里靠它。见 scripts/opencode/gen-config.py
+      HUNTER_CONFIG_WAIT: "${HUNTER_CONFIG_WAIT:-90}"
       # 监听地址。默认 0.0.0.0;Railway 的老环境私有网络是 IPv6-only,那里设 `::`。
       # 见 docs/deploy/railway.md
       HUNTER_BIND_HOST: "${HUNTER_BIND_HOST:-0.0.0.0}"

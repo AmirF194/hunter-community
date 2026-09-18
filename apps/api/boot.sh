@@ -217,6 +217,14 @@ python -m app.migrate
 # 但**空卷**这个信号本身足够准:全新安装也是空的,那时这句提示无害;
 # 老用户看到它就知道该去跑那个脚本了。比让他自己发现「SKILL 不见了」强得多。
 USER_SKILLS_DIR="${HUNTER_USER_SKILLS_DIR:-/opt/hunter-user-skills}"
+PACKAGE_DIR="${HUNTER_PACKAGE_DIR:-/opt/hunter-packages}"
+
+# 两个目录自己建出来。默认 compose 上它们是各自的具名卷、本来就存在,这一行是白做的;
+# **Railway 上不是** —— 那里一个服务只能挂一个卷(官方文档明写的限制),所以 api 的两份
+# 数据只能塞进同一个卷的两个子目录,而子目录在空卷里并不存在。不建的话向导第 1 步
+# 会把两项都报成红色的「目录不存在」,而其实只差一个 mkdir。
+mkdir -p "$USER_SKILLS_DIR" "$PACKAGE_DIR" 2>/dev/null || true
+
 if [ -d "$USER_SKILLS_DIR" ] && [ -z "$(ls -A "$USER_SKILLS_DIR" 2>/dev/null)" ]; then
     echo "[boot] 提示:用户 SKILL 目录 $USER_SKILLS_DIR 是空的。"
     echo "[boot]   全新安装可忽略这句。**如果你是从 v1.0.x 升级、之前在界面里装过 SKILL**,"
@@ -229,4 +237,7 @@ fi
 # 是 IPv6-only,绑 0.0.0.0 的服务在那里互相连不上 —— 官方给的办法就是改绑 `::`。
 # 见 https://docs.railway.com/networking/private-networking/how-it-works
 # 留成变量、默认值不变:本地与其他平台一个字都不用改。
-exec uvicorn main:app --host "${HUNTER_BIND_HOST:-0.0.0.0}" --port 8000
+#
+# 不直接 `uvicorn --host` 的原因见 bind.py 的文件头(一句话:`--host ::` 起出来的
+# socket **只收 IPv6**,IPv4 侧全是 Connection refused,而日志里一切正常)。
+exec python bind.py

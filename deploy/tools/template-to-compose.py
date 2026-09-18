@@ -545,10 +545,270 @@ def translate_1panel(rng: Rng, web_port: int, debug_ports: bool) -> tuple[dict, 
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Railway
+# ══════════════════════════════════════════════════════════════════════
+# Railway 没有「模板文件」——官方流程是在控制台里把项目跑通，再 Settings →
+# Generate Template from Project 反向生成模板。所以这里读的是 deploy/railway/
+# services.yaml：那是一张「要在控制台里敲什么」的逐字对照表（见该文件头部说明）。
+RAILWAY_FN = re.compile(r"\$\{\{\s*(.+?)\s*\}\}")
+RAILWAY_INTERNAL = re.compile(r"\b([A-Za-z0-9_-]+)\.railway\.internal\b")
+
+
+def translate_railway(rng: Rng, web_port: int, debug_ports: bool) -> tuple[dict, list[str]]:
+    doc = yaml.safe_load((ROOT / "deploy/railway/services.yaml").read_text(encoding="utf-8"))
+    services = doc["services"]
+    notes: list[str] = []
+    by_name = {s["name"]: s for s in services}
+
+    # 1) 先把每个服务的字面量变量收进来；${{...}} 留到第二遍解
+    resolved: dict[str, dict[str, str]] = {}
+    for s in services:
+        env = {}
+        for k, v in (s.get("variables") or {}).items():
+            env[k] = str(v.get("value", ""))
+        resolved[s["name"]] = env
+
+    # 2) secret(n) / randomInt(a,b) —— 官方：每处独立求值，不是全局同一个值
+    #    https://docs.railway.com/templates/create
+    def eval_fn(expr: str) -> str | None:
+        # secret(length?, alphabet?) · 官方默认 32 字符。本清单没用自定义字母表，
+        # 真传了就按它给的字符集取，免得以后加了这里悄悄用错。
+        m = re.fullmatch(r'secret\(\s*(\d+)?\s*(?:,\s*"([^"]*)"\s*)?\)', expr)
+        if m:
+            n = int(m.group(1) or 32)
+            alpha = m.group(2)
+            return rng.token(n) if not alpha else "".join(
+                alpha[ord(c) % len(alpha)] for c in rng.token(n))
+        # randomInt(min?, max?) · 默认 0~100。本清单没用到，留着是为了将来加了不会静默失效。
+        m = re.fullmatch(r"randomInt\(\s*(\d+)?\s*(?:,\s*(\d+)\s*)?\)", expr)
+        if m:
+            lo, hi = int(m.group(1) or 0), int(m.group(2) or 100)
+            return str(lo + sum(ord(c) for c in rng.token(8)) % (hi - lo + 1))
+        return None
+
+    for name, env in resolved.items():
+        for k, v in list(env.items()):
+            def rep(m, _name=name, _k=k):
+                out = eval_fn(m.group(1))
+                if out is None:
+                    return m.group(0)
+                return out
+            env[k] = RAILWAY_FN.sub(rep, v)
+
+    # 3) 引用变量 ${{Service.VAR}}。RAILWAY_PRIVATE_DOMAIN → compose 里的服务名
+    #    （compose 的服务名就是网络别名，语义与 <服务名>.railway.internal 一致）
+    for _ in range(10):
+        changed = False
+        for name, env in resolved.items():
+            for k, v in list(env.items()):
+                def rep(m):
+                    expr = m.group(1)
+                    if "." not in expr:
+                        return m.group(0)
+                    svc, var = expr.split(".", 1)
+                    if var == "RAILWAY_PRIVATE_DOMAIN":
+                        return svc
+                    val = resolved.get(svc, {}).get(var)
+                    return val if val is not None and "${{" not in val else m.group(0)
+                new = RAILWAY_FN.sub(rep, v)
+                if new != v:
+                    env[k] = new
+                    changed = True
+        if not changed:
+            break
+
+    leftover = {f"{n}.{k}": v for n, e in resolved.items() for k, v in e.items() if "${{" in v}
+    if leftover:
+        raise SystemExit(f"❌ 有变量没解析出来（清单写错了）：{json.dumps(leftover, ensure_ascii=False)}")
+
+    # 4) 写死的 <服务名>.railway.internal → compose 服务名
+    for env in resolved.values():
+        for k, v in env.items():
+            env[k] = RAILWAY_INTERNAL.sub(lambda m: m.group(1), v)
+
+    # 5) 生成 compose
+    out: dict = {"name": "hunter-tpl-railway", "services": {}, "volumes": {}}
+    for s in services:
+        name = s["name"]
+        env = dict(resolved[name])
+        svc: dict = {"image": s["image"], "restart": "unless-stopped", "environment": env}
+
+        # RAILWAY_RUN_UID=0 → 容器以 root 跑（Railway 的卷是 root 属主的，官方给的办法）
+        uid = env.get("RAILWAY_RUN_UID")
+        if uid is not None:
+            svc["user"] = f"{uid}:{uid}"
+            notes.append(f"{name} · RAILWAY_RUN_UID={uid} → compose user: {uid}:{uid}")
+
+        vol = s.get("volume")
+        if vol:
+            vname = f"rw_{name}"
+            out["volumes"][vname] = None
+            svc["volumes"] = [f"{vname}:{vol['mountPath']}"]
+            # ⚠️ Railway 的卷和 K8s 的 PVC 一样,挂上去就是个**空目录**;
+            # 而 Docker 的具名卷首次挂载会把镜像里该路径的内容与属主拷进卷。
+            # 不模拟这一条,「把卷挂到了镜像里本来有东西的路径上」这种错误在本机
+            # 一点症状都没有,到了平台上才发现文件不见了(M4 实测踩过一次:
+            # api 的卷原本挂在 /opt/hunter-data,那是随镜像分发的静态数据目录)。
+            #
+            # 只在**首次**清空(打一个 marker),否则 `docker compose start` 会把
+            # 一次性服务也拉起来,每次重启都清一遍卷 —— M3 在 Sealos 的模拟上踩过。
+            init_name = f"{name}-emptyvol"
+            out["services"][init_name] = {
+                "image": "busybox:1.36",
+                "command": ["/bin/sh", "-c",
+                            "[ -f /mnt/lost+found/.done ] && exit 0; "
+                            "rm -rf /mnt/..?* /mnt/.[!.]* /mnt/* 2>/dev/null; "
+                            # Railway 的卷是 ext4 块设备,根目录天生带 lost+found ——
+                            # 少了它,「把卷直接当 PGDATA」这个必炸的配置在本机一点症状都没有
+                            "mkdir -p /mnt/lost+found && touch /mnt/lost+found/.done; "
+                            "echo '[init] 模拟 Railway 空卷(ext4 · 带 lost+found):已清空'"],
+                "volumes": [f"{vname}:/mnt"],
+                "restart": "no",
+            }
+            svc["depends_on"] = {init_name: {"condition": "service_completed_successfully"}}
+
+        if s.get("public"):
+            svc["ports"] = [f"{web_port}:{s['listenPort']}"]
+        elif debug_ports:
+            svc["ports"] = [str(s["listenPort"])]
+
+        hcp = s.get("healthcheckPath")
+        test = http_probe(s["listenPort"], hcp) if hcp else tcp_probe(s["listenPort"])
+        svc["healthcheck"] = {
+            "test": ["CMD-SHELL", test],
+            "interval": "10s", "timeout": "5s", "retries": 12, "start_period": "20s",
+        }
+        out["services"][name] = svc
+
+    # Railway **没有**服务间的启动顺序编排：六个服务同时起。这里照搬（不写 depends_on）——
+    # 这恰恰是云平台上的真实情形，api 会先于 postgres 就绪启动，靠 connect_with_retry 顶住。
+    notes.insert(0, "Railway 无启动顺序编排 → 生成的 compose 里**没有 depends_on**，六个服务同时起")
+
+    api_env = resolved["api"]
+    notes.append(
+        "Railway · 三把密钥由 ${{secret(N)}} 在部署时生成（每处独立求值）："
+        f"JWT_SECRET={mask(api_env['JWT_SECRET'])} · "
+        f"HUNTER_INTERNAL_KEY={mask(api_env['HUNTER_INTERNAL_KEY'])} · "
+        f"HUNTER_SETUP_TOKEN={mask(api_env['HUNTER_SETUP_TOKEN'])}；"
+        "opencode / web 用引用变量 ${{api.X}} 取同一个值"
+    )
+    notes.append("监听地址全部设成 `::`（Railway 老环境私有网络 IPv6-only）——"
+                 "这一套等价栈就是在验证四个镜像绑 `::` 之后还能不能互通")
+    return out, notes
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Coolify / Dokploy
+# ══════════════════════════════════════════════════════════════════════
+# 这两家「模板」本身就是一份 docker compose —— 平台把它原样交给 docker compose 跑。
+# 所以翻译要做的只有一件事:**按平台自己的规则把变量填上**，别的一个字都不改。
+#   · Coolify：magic 变量由平台生成并持久化
+#       SERVICE_PASSWORD_<ID>    32 位随机口令(不含符号)
+#       SERVICE_PASSWORD_64_<ID> 64 位
+#       SERVICE_USER_<ID>        16 位随机用户名
+#       SERVICE_FQDN_<服务>_<端口> / SERVICE_URL_<服务>_<端口>  平台分配的域名
+#       https://coolify.io/docs/knowledge-base/docker/compose
+#   · Dokploy：**没有**自动生成，用户在 Environment 页签里填，平台写进同目录 .env，
+#       compose 的 ${VAR} 插值读它。这里就模拟「用户自己 openssl rand 一把」。
+#       https://docs.dokploy.com/docs/core/docker-compose
+COOLIFY_MAGIC = re.compile(
+    r"\$\{(SERVICE_(?:FQDN|URL|PASSWORD_64|PASSWORD|USER|BASE64)_[A-Z0-9_]+)\}")
+PLAIN_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+FAKE_FQDN = "hunter.example.test"
+
+
+def _paas_common(path: str, project: str, resolve, rng: Rng,
+                 web_port: int, debug_ports: bool) -> tuple[dict, list[str]]:
+    notes: list[str] = []
+    seen: dict[str, str] = {}
+
+    def sub(m):
+        key = m.group(1)
+        if key not in seen:
+            val = resolve(key)
+            if val is None:
+                raise SystemExit(f"❌ 变量 {key} 没人给值 —— 平台不会生成它,文档里也没让用户填")
+            seen[key] = val
+            notes.append(f"{key} → {mask(val) if 'PASSWORD' in key or 'TOKEN' in key else val}")
+        return seen[key]
+
+    # ⚠️ 先 load 再替换,**不要在原始文本上替换** —— 文件头的注释里就写着
+    # 「compose 的 ${VAR} 插值读它」这种句子,在文本上替换会把注释里的 ${VAR}
+    # 也当成一个真变量,然后报「没人给值」。YAML 解析完注释自然就没了。
+    out = yaml.safe_load((ROOT / path).read_text(encoding="utf-8"))
+
+    def walk(node):
+        if isinstance(node, str):
+            return PLAIN_VAR.sub(sub, COOLIFY_MAGIC.sub(sub, node))
+        if isinstance(node, list):
+            return [walk(x) for x in node]
+        if isinstance(node, dict):
+            return {k: walk(v) for k, v in node.items()}
+        return node
+
+    out = walk(out)
+    out["name"] = project
+
+    # 平台的反代按域名把流量送进 web 的 3000;本机没有反代,给 web 映一个宿主端口。
+    # 其余服务一律不映射 —— 与这两个平台上的实际情形一致(只有绑了域名的服务对外)。
+    out["services"]["web"].setdefault("ports", []).append(f"{web_port}:3000")
+    if debug_ports:
+        for name, port in (("api", 8000), ("opencode", 3901), ("llm-shim", 3999),
+                           ("postgres", 5432), ("redis", 6379)):
+            out["services"][name].setdefault("ports", []).append(str(port))
+
+    # 具名卷在这两个平台上由 docker 自己管(Coolify 只在 Persistent Storage 里只读展示),
+    # 翻译时原样保留 —— 这正是「compose 语义平台」相对 K8s 的优势,不需要任何模拟。
+    notes.append("卷:原样保留 compose 的具名卷(这两家就是把文件交给 docker compose 跑)")
+    return out, notes
+
+
+def translate_coolify(rng: Rng, web_port: int, debug_ports: bool) -> tuple[dict, list[str]]:
+    def resolve(key: str) -> str | None:
+        if key.startswith("SERVICE_PASSWORD_64_"):
+            return rng.token(64)
+        if key.startswith("SERVICE_PASSWORD_"):
+            return rng.token(32)          # 官方:32 位、不含符号
+        if key.startswith("SERVICE_USER_"):
+            return rng.token(16)
+        if key.startswith("SERVICE_BASE64_"):
+            return rng.token(32)
+        if key.startswith(("SERVICE_FQDN_", "SERVICE_URL_")):
+            return FAKE_FQDN              # 本机没有反代,这个值只是被写进环境变量
+        return None
+
+    out, notes = _paas_common("deploy/coolify/docker-compose.yml", "hunter-tpl-coolify",
+                              resolve, rng, web_port, debug_ports)
+    notes.insert(0, "Coolify · 随机值由平台的 magic 变量生成并持久化(重新部署不变)")
+    notes.append("JWT_SECRET / HUNTER_INTERNAL_KEY 不在 compose 里 —— "
+                 "由 api 首启生成写进 hunter_secrets 卷,web/opencode 只读挂同一个卷")
+    return out, notes
+
+
+def translate_dokploy(rng: Rng, web_port: int, debug_ports: bool) -> tuple[dict, list[str]]:
+    # Dokploy 没有随机值生成器,文档让用户自己 `openssl rand`。这里就照办。
+    def resolve(key: str) -> str | None:
+        if key == "POSTGRES_PASSWORD":
+            return rng.token(48)          # openssl rand -hex 24
+        if key == "HUNTER_SETUP_TOKEN":
+            return rng.token(24)          # openssl rand -hex 12
+        return None
+
+    out, notes = _paas_common("deploy/dokploy/docker-compose.yml", "hunter-tpl-dokploy",
+                              resolve, rng, web_port, debug_ports)
+    notes.insert(0, "Dokploy · 两个值由用户在 Environment 页签里填(平台写进 .env,"
+                    "compose 的 ${VAR} 插值读它);这里模拟用户 openssl rand 生成")
+    return out, notes
+
+
+# ══════════════════════════════════════════════════════════════════════
 TRANSLATORS = {
     "zeabur": translate_zeabur,
     "sealos": translate_sealos,
     "1panel": translate_1panel,
+    "railway": translate_railway,
+    "coolify": translate_coolify,
+    "dokploy": translate_dokploy,
 }
 
 
