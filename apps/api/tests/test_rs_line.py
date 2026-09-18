@@ -322,6 +322,29 @@ def 日线覆盖不足90pct_整批退回快照法_不混用():
 
 
 @case
+def 精确法分母_扫描源也说是次新的不计入():
+    # 2026-09-18 港股:15 只新股(扫描源 SMA250 空、我们也不足 253 根)。原口径 85/100 < 90% 整批退回快照
+    rows = _rows()
+    h = _hist(n=85)
+    for r in rows[85:]:
+        r["SMA250"] = None
+    st = rs.inject(rows, "us", h, today=TODAY)
+    assert st["method"] == "exact", st              # 85 / (100 - 15) = 100%
+    assert rows[-1]["rs_rating"] is None and rows[0]["rs_rating"] == 99
+
+
+@case
+def 精确法分母_真没拉到的仍在分母里_门槛照拦():
+    # 扫描源有 SMA250(不是新股)却没有精确值 = 每晚任务没拉到 —— 不许被当成新股移出分母
+    rows = _rows()
+    h = _hist(n=85)
+    for r in rows[85:90]:
+        r["SMA250"] = None                          # 5 只新股移出分母,另 10 只没拉到仍在:85/95 < 90%
+    st = rs.inject(rows, "us", h, today=TODAY)
+    assert st["method"] == "snapshot", st
+
+
+@case
 def 日线过期_天数全空_评级退回快照():
     rows = _rows()
     st = rs.inject(rows, "us", _hist(as_of=date(2026, 9, 1)), today=TODAY)
