@@ -506,7 +506,7 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
   - [x] 六个服务全部预构建镜像 + amd64/arm64 双架构(`v1.1.0-rc1`)
   - [x] 数据库迁移改为 api 启动时自动执行;`JWT_SECRET` 等密钥首次启动自动生成
   - [x] 大模型配置可存库(不再只能写 `.env`),改配置热生效、无需重启容器
-  - [ ] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)
+  - [x] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)(`v1.1.0-rc2`)
   - [ ] 一键部署模板(Zeabur / Sealos / Railway / 1Panel)
   - 进度与实测数据:[`docs/setup-wizard/`](./docs/setup-wizard/)
 

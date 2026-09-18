@@ -488,7 +488,7 @@ Built something on HunterCode or maintaining a fork? Tell us in [Discussions](ht
   - [x] All six services from pre-built images, amd64 + arm64 (`v1.1.0-rc1`)
   - [x] Database migrations run automatically on api start; `JWT_SECRET` and friends generated on first boot
   - [x] LLM settings can live in the database (no longer `.env`-only) and apply live without restarting containers
-  - [ ] Graphical first-run wizard (pick a model → paste the key and test it on the spot → start chatting)
+  - [x] Graphical first-run wizard (pick a model → paste the key and test it on the spot → start chatting) (`v1.1.0-rc2`)
   - [ ] One-click deploy templates (Zeabur / Sealos / Railway / 1Panel)
   - Progress and measurements: [`docs/setup-wizard/`](./docs/setup-wizard/)
 
