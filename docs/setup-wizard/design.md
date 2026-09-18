@@ -300,7 +300,7 @@ apps/web/app/setup/
 | **Zeabur** | `template.yaml`（`kind: Template`），服务类型 `PREBUILT` 镜像或 `GIT` | ✅ 支持 `dependencies` | ✅ 每服务 `volumes`（`id` + `dir`） | ✅ `configs`（`path` + `template`，支持变量替换） | ✅ `${PASSWORD}` 类变量；服务可 `expose` 变量供其他服务引用 | ✅ `domainKey` 绑定域名变量 | CLI 发布到模板市场；按钮格式上线前核实 |
 | **Sealos** | `template/<名>/index.yaml`（Template CR + K8s 资源） | ✅ | ✅（StatefulSet 卷） | ✅ ConfigMap | ✅ `${{ random(8) }}`，输入 `${{ inputs.x }}` | ✅ Ingress | 向 `labring-actions/templates` 提 PR，需 `README.md` / `README_zh.md` / logo / 截图；按钮 `[![](https://sealos.io/Deploy-on-Sealos.svg)](https://sealos.io/products/app-store/<name>)` |
 | **Railway** | 模板编辑器（从项目生成） | ✅ | ✅ 每服务挂卷 | 未查到 | ✅ `${{ secret() }}`、`${{ randomInt() }}` | ✅ | 发布到模板市场（维护者可获佣金） |
-| **1Panel** | `apps/<key>/` 下 `data.yml` + 版本目录 `docker-compose.yml` | ✅ 标准 compose | ✅ | ✅ 版本目录可带 `data/` 与 `scripts/` | ✅ 表单字段 `random` | 由面板反代配置 | 向 `1Panel-dev/appstore` 提交 |
+| **1Panel** | `apps/<key>/` 下 `data.yml` + 版本目录 `docker-compose.yml` | ✅ 标准 compose | ✅ | ✅ 版本目录可带 `data/` 与 `scripts/` | ✅ **`type: password` + `random: true`**（M3 更正：**没有** `type: random`） | 由面板反代配置 | 向 `1Panel-dev/appstore` 提交 |
 | **Coolify / Dokploy** | 直接用 docker-compose | ✅ | ✅ | 依赖 compose 能力 | 平台变量 | ✅ | 无需上架，文档给步骤 |
 
 > Zeabur 按钮 URL、Railway 模板文件格式、Coolify/Dokploy 细节本次未在官方文档中查到原文，**模板开发第一天核实**，不凭印象写进 README。
@@ -320,7 +320,7 @@ apps/web/app/setup/
 | 服务 | 镜像 | 对外端口 | 卷 | 关键环境变量 |
 |---|---|---|---|---|
 | web | `hunter-community-web:<版本>` | **3000，唯一绑定域名** | — | `HERMES_API_URL=http://api:8000`、`OPENCODE_URL`、`HUNTER_INTERNAL_KEY` |
-| api | `hunter-community-api:<版本>` | 不对外 | `/opt/hunter-user-skills`、`/opt/hunter-packages` | `DATABASE_URL`、`REDIS_URL`、`JWT_SECRET`、`HUNTER_INTERNAL_KEY`、`HUNTER_SETUP_TOKEN`、`HUNTER_SINGLE_USER=0`、`HUNTER_MINIMAL_BOOT=1` |
+| api | `hunter-community-api:<版本>` | 不对外 | `/opt/hunter-user-skills`、`/opt/hunter-packages` | `DATABASE_URL`、`REDIS_URL`、`JWT_SECRET`、`HUNTER_INTERNAL_KEY`、`HUNTER_SETUP_TOKEN`、`HUNTER_SINGLE_USER=0`、`HUNTER_MINIMAL_BOOT=1`、`OPENCODE_URL`、**`LLM_SHIM_URL`**（M3 补，见下） |
 | opencode | `hunter-community-opencode:<版本>` | 不对外 | `/home/hunter/.local`（会话数据，**必须持久化**） | `JWT_SECRET`、`HUNTER_INTERNAL_KEY`、`HERMES_API_URL`、`LLM_SHIM_URL` |
 | llm-shim | `hunter-community-llm-shim:<版本>` | 不对外 | — | 无必填 |
 | postgres | `postgres:16-alpine` | 不对外 | 数据目录 | `POSTGRES_PASSWORD`（模板生成） |
@@ -328,10 +328,54 @@ apps/web/app/setup/
 
 - **模板生成的随机值**：`JWT_SECRET`（≥ 48 字符）、`HUNTER_INTERNAL_KEY`、`POSTGRES_PASSWORD`、`HUNTER_SETUP_TOKEN`
 - **模板不要求用户填写任何大模型配置**（全部交给向导）；高级用户仍可在平台变量里填 `LLM_*`，此时向导显示「已锁定」
-- **资源建议**：最低 2 核 2 GB（空闲实测约 1.1 GB），推荐 2 核 4 GB；磁盘 ≥ 10 GB（镜像约 3.4 GB + 数据）
 - **镜像源**：GHCR 为主；国内平台若拉取 GHCR 受限，需先完成执行计划中的 Docker Hub / 阿里云 ACR 同步（本方案列为 Sealos 模板的前置预研项）
 
-### 5.4 Zeabur 模板草图（示意，字段以核实后的文档为准）
+#### 资源建议（M3 按 R0 实测回填）
+
+| 场景 | 实测内存（六容器合计） |
+|---|---|
+| 空闲 60 秒 | 1171 MB |
+| 全市场扫描 | 1250 MB |
+| 深度分析 | 1245 MB |
+| **两者并发（峰值）** | **1271 MB** |
+
+| | 值 | 依据 |
+|---|---|---|
+| 最低 | **2 核 2 GB** | 峰值 1271 MB，2 GB 留给系统约 700 MB，紧但可跑 |
+| 推荐 | **2 核 4 GB** | 舒适 |
+| 磁盘 | **≥ 10 GB** | 镜像实测合计 **3.8 GB**（web 1.67 / api 909 MB / opencode 618 MB / postgres 420 MB / redis 61 MB / shim 83 MB）+ 数据 |
+
+内存大头是 `opencode`（869 MB，占 68%），而且**几乎与负载无关** —— 那是常驻占用，
+不是峰值风险；真正随负载涨的是 api（105 → 203 MB）。
+
+> 原文写「镜像约 3.4 GB」，实测 3.8 GB，已更正。
+> 三个模板里每个工作负载的 requests / limits 都按上表这几个数字写。
+
+#### M3 实测补进来的三条硬性要求
+
+1. **api 必须显式设 `LLM_SHIM_URL`**（原方案只给了 opencode）。向导保存后 api 走
+   `PATCH /global/config` 把 provider 的 `baseURL` 推给 opencode，那个值取自
+   **api 容器的** `LLM_SHIM_URL`；不设就回落到硬编码的 `http://llm-shim:3999/v1`。
+   服务名不叫 `llm-shim` 的部署（Sealos `<应用名>-llm-shim`、1Panel
+   `<容器前缀>-llm-shim`、Zeabur `llm-shim.zeabur.internal`）会被推进去一个解析不了
+   的主机名 —— Sealos 等价栈上实测：**向导五步全绿、`engine-ready` 也返回 true，
+   但发消息永远收不到回复，日志里一条报错都没有**。
+2. **opencode 的卷在「空目录」语义的平台上必须先改属主**。K8s 用
+   `securityContext.fsGroup: 1001`；Zeabur 的卷同样是空目录（官方指南原文
+   *Zeabur Volume defaults to empty directory*），用 `init` 规则 chown；
+   1Panel 是 bind mount，用 `scripts/init.sh`。实测这三条都是**不做就 CrashLoop**。
+3. **`${PASSWORD}` 在 Zeabur 上是「每个服务一个」**，不是「每次引用一个」。要四把
+   互不相同的密钥，只能把它们借位定义在四个不同的服务上再 `expose`。Sealos 的
+   `${{ random(N) }}` 每处独立求值，没有这个问题。
+
+### 5.4 Zeabur 模板草图（M3 已按官方文档核实并实现 → [`deploy/zeabur/template.yaml`](../../deploy/zeabur/template.yaml)）
+
+> 下面这份草图**保留原样留档**，与最终实现的差异全部记在
+> [`M3-成果与测试报告.md`](./M3-成果与测试报告.md) 第二节。最要紧的四处：
+> `template` 用 `PREBUILT_V2`；服务间主机名靠 `${CONTAINER_HOSTNAME}` + `expose`
+> 而不是写死服务名；四把密钥要借位到四个服务（`${PASSWORD}` 每服务一个）；
+> api 必须补 `LLM_SHIM_URL`。
+
 
 ```yaml
 apiVersion: zeabur.com/v1
@@ -409,13 +453,16 @@ spec:
 
 | 平台 | 要点 |
 |---|---|
-| Sealos | 每个服务一个 StatefulSet（有卷）或 Deployment；密钥用 `${{ random(48) }}` 生成一次后通过 Secret 共享给多个工作负载；web 配 Ingress；提交需中英 README、logo、截图 |
+| Sealos | 每个服务一个 StatefulSet（有卷）或 Deployment；密钥用 `${{ random(48) }}` 在 `defaults` 里生成（每处独立求值），**直接以环境变量注入多个工作负载，不需要另建 Secret**；postgres / redis 走 KubeBlocks `Cluster`（与仓库里 100+ 个现有模板一致），凭据取自 KubeBlocks 生成的 `<名>-pg-conn-credential` / `<名>-redis-redis-account-default`；web 配 Ingress（**必须放宽 `proxy-read-timeout` 到 600 并关 `proxy-buffering`**，深度分析是 SSE 流式，实测单次 20～54 秒）；opencode 必须 `fsGroup: 1001`；提交是 `template/<名>/index.yaml` + `README.md` / `README_zh.md` / logo / `website-screenshot.webp` |
 | Railway | 在一个示例项目里配好 6 个服务后「生成模板」；密钥 `${{ secret(48) }}` 定义在 api，其余服务用引用变量取同一个值；内网主机名用 `${{api.RAILWAY_PRIVATE_DOMAIN}}` 这类引用而非写死 |
-| 1Panel | `data.yml` 表单：访问端口、`HUNTER_SETUP_TOKEN`（`random`）、`POSTGRES_PASSWORD`（`random`）；compose 与 3.1 的默认 compose 一致；面板反代由用户在面板内配置 |
+| 1Panel | `data.yml` 表单：访问端口、`HUNTER_SETUP_TOKEN`、`POSTGRES_PASSWORD`（两者都是 **`type: password` + `random: true`**，M3 更正）；compose 与 3.1 的默认 compose 基本一致，但**六个具名卷改成 `./data/*` 相对挂载**（面板的应用备份只打包安装目录，用具名卷会漏掉对话正文）、服务间一律用 `${CONTAINER_NAME}-<服务>`（`1panel-network` 是全面板共用的外部网络，裸服务名会撞别名）；面板反代由用户在面板内配置 |
 
 ### 5.6 README 入口
 
 在「5 分钟跑起来」之前增加「一键部署」小节：各平台按钮 + 一句话（适合谁、大概费用由平台决定、部署后打开域名按向导操作、初始化口令在平台变量 `HUNTER_SETUP_TOKEN` 中查看）。按钮只在对应模板**上架并实测通过后**才加。
+
+> M3 状态：三个模板都写完并做了等价验证，但**都没有平台账号、都没上架**，所以
+> **README 本轮不加任何部署按钮**，只在 `docs/deploy/` 下给了三篇用户视角的说明。
 
 ---
 

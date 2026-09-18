@@ -1,0 +1,814 @@
+apiVersion: app.sealos.io/v1
+kind: Template
+metadata:
+  name: hunter-community
+spec:
+  title: 'HunterCode'
+  url: 'https://hunter-community.agentpit.io'
+  gitRepo: 'https://github.com/agentpit-io/hunter-community'
+  author: 'agentpit-io'
+  description: 'Self-hosted AI investment research assistant for A-share / HK / US markets. Bring your own LLM key — data, conversations and keys all stay on your instance.'
+  readme: 'https://raw.githubusercontent.com/agentpit-io/hunter-community/main/deploy/sealos/README.md'
+  icon: 'https://raw.githubusercontent.com/agentpit-io/hunter-community/main/deploy/sealos/logo.png'
+  screenshots:
+    - 'https://raw.githubusercontent.com/agentpit-io/hunter-community/main/deploy/sealos/website-screenshot.webp'
+  templateType: inline
+  locale: en
+  i18n:
+    zh:
+      title: 'HunterCode'
+      description: '自部署的 AI 投研助手 · A股/港股/美股 · 用你自己的大模型 key，数据、对话和密钥都留在你自己的实例上。'
+      readme: 'https://raw.githubusercontent.com/agentpit-io/hunter-community/main/deploy/sealos/README_zh.md'
+  categories:
+    - ai
+    - tool
+
+  # ── 模板生成的随机值 ────────────────────────────────────────────────
+  # Sealos 的 ${{ random(N) }} 每处独立求值（example.md「Built-in System Functions」），
+  # 所以四把密钥天然互不相同，不需要像 Zeabur 那样借位。
+  defaults:
+    app_name:
+      type: string
+      value: huntercode-${{ random(8) }}
+    app_host:
+      type: string
+      value: huntercode-${{ random(8) }}
+    # api 签发的 JWT 要由 opencode 的 hunter-auth 插件验签 —— 两边必须同值，
+    # 否则服务照常启动、一对话就 401。
+    # ⚠️ 换掉或丢失它 = 已保存的大模型 key 全部解不开，要重新填。
+    jwt_secret:
+      type: string
+      value: ${{ random(48) }}
+    # /api/internal/* 的共享口令 · api / web / opencode 三家必须同值，
+    # 不同值时图片 OCR 一律 401，前端只表现为「上传图片没反应」。
+    internal_key:
+      type: string
+      value: ${{ random(48) }}
+    setup_token_gen:
+      type: string
+      value: ${{ random(16) }}
+
+  # ── 用户表单 ───────────────────────────────────────────────────────
+  # 刻意不要求填任何大模型配置：那些全部交给部署后的图形化首启向导。
+  inputs:
+    setup_token:
+      description: 'Setup token for the first-run wizard. Auto-generated — copy it before deploying, step 0 of the wizard asks for it.'
+      type: string
+      default: ${{ defaults.setup_token_gen }}
+      required: true
+    session_volume_size:
+      description: 'Disk for conversations and sessions (GiB). All chat content lives here.'
+      type: string
+      default: '5'
+      required: false
+    data_volume_size:
+      description: 'Disk for user-installed SKILLs and imported data packages (GiB).'
+      type: string
+      default: '3'
+      required: false
+
+---
+# ══════════════════════════════════════════════════════════════════════
+# postgres · 业务数据（自选股 / 组合 / 研究台 / 配置 / 大模型 key 密文）
+# 用 KubeBlocks Cluster，与仓库里 100+ 个现有模板一致（example.md
+# 「Underlying Requirements → Database」的 PostgreSQL 片段，逐字照搬）。
+# 连接凭据由 KubeBlocks 写进 Secret `<name>-pg-conn-credential`。
+# ══════════════════════════════════════════════════════════════════════
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  finalizers:
+    - cluster.kubeblocks.io/finalizer
+  labels:
+    kb.io/database: postgresql-16.4.0
+    clusterdefinition.kubeblocks.io/name: postgresql
+    clusterversion.kubeblocks.io/name: postgresql-16.4.0
+  annotations: {}
+  name: ${{ defaults.app_name }}-pg
+spec:
+  affinity:
+    nodeLabels: {}
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+    topologyKeys: []
+  clusterDefinitionRef: postgresql
+  clusterVersionRef: postgresql-16.4.0
+  componentSpecs:
+    - componentDefRef: postgresql
+      disableExporter: true
+      enabledLogs:
+        - running
+      name: postgresql
+      replicas: 1
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 1024Mi
+        requests:
+          cpu: 100m
+          memory: 102Mi
+      serviceAccountName: ${{ defaults.app_name }}-pg
+      switchPolicy:
+        type: Noop
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 5Gi
+            storageClassName: openebs-backup
+  terminationPolicy: Delete
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-pg
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-pg
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-pg
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-pg
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-pg
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-pg
+
+---
+# ══════════════════════════════════════════════════════════════════════
+# redis · 缓存与限流
+# ══════════════════════════════════════════════════════════════════════
+apiVersion: apps.kubeblocks.io/v1alpha1
+kind: Cluster
+metadata:
+  finalizers:
+    - cluster.kubeblocks.io/finalizer
+  labels:
+    kb.io/database: redis-7.2.7
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/version: 7.2.7
+    clusterversion.kubeblocks.io/name: redis-7.2.7
+    clusterdefinition.kubeblocks.io/name: redis
+  annotations: {}
+  name: ${{ defaults.app_name }}-redis
+spec:
+  affinity:
+    podAntiAffinity: Preferred
+    tenancy: SharedNode
+    topologyKeys:
+      - kubernetes.io/hostname
+  clusterDefinitionRef: redis
+  componentSpecs:
+    - componentDef: redis-7
+      name: redis
+      replicas: 1
+      enabledLogs:
+        - running
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 1024Mi
+        requests:
+          cpu: 100m
+          memory: 102Mi
+      serviceAccountName: ${{ defaults.app_name }}-redis
+      serviceVersion: 7.2.7
+      switchPolicy:
+        type: Noop
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 2Gi
+            storageClassName: openebs-backup
+    - componentDef: redis-sentinel-7
+      name: redis-sentinel
+      replicas: 1
+      resources:
+        limits:
+          cpu: 100m
+          memory: 100Mi
+        requests:
+          cpu: 10m
+          memory: 10Mi
+      serviceAccountName: ${{ defaults.app_name }}-redis
+      serviceVersion: 7.2.7
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 2Gi
+  terminationPolicy: Delete
+  topology: replication
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-redis
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-redis
+rules:
+  - apiGroups:
+      - '*'
+    resources:
+      - '*'
+    verbs:
+      - '*'
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    sealos-db-provider-cr: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/instance: ${{ defaults.app_name }}-redis
+    app.kubernetes.io/managed-by: kbcli
+  name: ${{ defaults.app_name }}-redis
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${{ defaults.app_name }}-redis
+subjects:
+  - kind: ServiceAccount
+    name: ${{ defaults.app_name }}-redis
+
+---
+# ══════════════════════════════════════════════════════════════════════
+# llm-shim · 洗 tool schema 的转发层
+# opencode 送出的是完整 JSON Schema，Gemini 只认 OpenAPI 子集，收到
+# $schema / additionalProperties 会整个请求报错 —— 症状是「一发消息就没回复」。
+# 这一层只洗 tools[].function.parameters，其余原样转发。
+# ══════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}-llm-shim
+  annotations:
+    originImageName: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0-rc2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-llm-shim
+    app: ${{ defaults.app_name }}-llm-shim
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-llm-shim
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-llm-shim
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}-llm-shim
+          image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0-rc2
+          env:
+            # 大模型地址由首启向导写进数据库后热生效，这里留空即可
+            - name: LLM_BASE_URL
+              value: ''
+          ports:
+            - name: http
+              containerPort: 3999
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3999
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3999
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            # R0 实测常驻 15.6 MB
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          imagePullPolicy: IfNotPresent
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-llm-shim
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-llm-shim
+spec:
+  ports:
+    - port: 3999
+      targetPort: 3999
+      name: http
+  selector:
+    app: ${{ defaults.app_name }}-llm-shim
+
+---
+# ══════════════════════════════════════════════════════════════════════
+# api · 后端 + 启动时自动迁移 + 首启向导
+# 用 StatefulSet 是因为要挂两个持久卷（用户 SKILL、数据包）。
+# ══════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-api
+  annotations:
+    originImageName: ghcr.io/agentpit-io/hunter-community-api:1.1.0-rc2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-api
+    app: ${{ defaults.app_name }}-api
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-api
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-api
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-api
+    spec:
+      terminationGracePeriodSeconds: 10
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}-api
+          image: ghcr.io/agentpit-io/hunter-community-api:1.1.0-rc2
+          env:
+            # ── postgres 连接 · 凭据来自 KubeBlocks 生成的 Secret ──────
+            # $(VAR) 是 K8s 的 env 互引用，只能引用**同一个列表里靠前**的项，
+            # 所以这四个必须排在 DATABASE_URL 前面。
+            - name: PG_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: host
+            - name: PG_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: port
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: username
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-pg-conn-credential
+                  key: password
+            - name: DATABASE_URL
+              value: postgresql://$(PG_USER):$(PG_PASSWORD)@$(PG_HOST):$(PG_PORT)/postgres
+            # ── redis 连接 ────────────────────────────────────────────
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ${{ defaults.app_name }}-redis-redis-account-default
+                  key: password
+            - name: REDIS_URL
+              value: redis://default:$(REDIS_PASSWORD)@${{ defaults.app_name }}-redis-redis-redis.${{ SEALOS_NAMESPACE }}.svc:6379/0
+            # ── 密钥（与 opencode / web 同值，见 defaults 处的注释）────
+            - name: JWT_SECRET
+              value: ${{ defaults.jwt_secret }}
+            - name: HUNTER_INTERNAL_KEY
+              value: ${{ defaults.internal_key }}
+            # 首启向导的初始化口令。**非空 = 一律要口令**，不管来源看起来是不是
+            # 内网 —— 来源判断靠 HTTP 转发头，那是访问者可以伪造的。
+            - name: HUNTER_SETUP_TOKEN
+              value: ${{ inputs.setup_token }}
+            # ── 运行模式 ──────────────────────────────────────────────
+            # ⚠️ 必须是 0。单用户模式（本地 compose 默认 1）不要账号密码，
+            #    挂到 Ingress 上等于谁都能拿到 admin token。
+            - name: HUNTER_SINGLE_USER
+              value: '0'
+            - name: REGISTRATION_MODE
+              value: open
+            - name: HUNTER_MINIMAL_BOOT
+              value: '1'
+            - name: JWT_ACCESS_TTL
+              value: '3600'
+            - name: JWT_REFRESH_TTL
+              value: '2592000'
+            # 独立运行模式 · 不指回我们的演示站网关
+            - name: HUNTER_UPSTREAM_URL
+              value: ''
+            - name: LLM_PROVIDER
+              value: openai_compat
+            - name: HUNTER_SKILLS_DIR
+              value: /opt/hunter-skills
+            - name: HUNTER_USER_SKILLS_DIR
+              value: /opt/hunter-user-skills
+            - name: HUNTER_PACKAGES_DIR
+              value: /opt/hunter-packages
+            # ⚠️ **api 也必须知道 shim 在哪** —— 不是只有 opencode 需要。
+            # 向导保存后 api 走 PATCH /global/config 把 provider 的 baseURL 推给
+            # opencode，那个值取自 **api 容器的** LLM_SHIM_URL；不设就回落到硬编码的
+            # `http://llm-shim:3999/v1`。服务名不叫 llm-shim 的部署（Sealos 是
+            # `<应用名>-llm-shim`、1Panel 是 `<容器前缀>-llm-shim`、Zeabur 私有网络是
+            # `llm-shim.zeabur.internal`）会被推进去一个解析不了的主机名 ——
+            # M3 实测：向导五步全绿、engine-ready 也是 true，**但发消息永远没有回复**，
+            # 日志里没有任何报错（opencode 就卡在连不上的 baseURL 上）。
+            - name: LLM_SHIM_URL
+              value: http://${{ defaults.app_name }}-llm-shim.${{ SEALOS_NAMESPACE }}.svc:3999/v1
+            # api 回调 opencode:向导保存后 PATCH /global/config 让大模型热生效
+            # （实测 283 毫秒，不用重启容器）、装完 SKILL 后 POST /skill/refresh
+            - name: OPENCODE_URL
+              value: http://${{ defaults.app_name }}-opencode.${{ SEALOS_NAMESPACE }}.svc:3901
+            # 留空即可 · 聊天用你自己的大模型 key
+            - name: HUNTER_API_KEY
+              value: ''
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            # 首次启动要跑数据库迁移，给足时间（30 × 10s = 5 分钟）
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            # R0 实测：空闲 105 MB，深度分析 + 全市场扫描并发峰值 203 MB
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1024Mi
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: userskills
+              mountPath: /opt/hunter-user-skills
+            - name: packages
+              mountPath: /opt/hunter-packages
+      volumes: []
+  volumeClaimTemplates:
+    - metadata:
+        annotations:
+          path: /opt/hunter-user-skills
+          # ⚠️ 必须加引号，理由同上
+          value: '${{ inputs.data_volume_size }}'
+        name: userskills
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: ${{ inputs.data_volume_size }}Gi
+    - metadata:
+        annotations:
+          path: /opt/hunter-packages
+          # ⚠️ 必须加引号，理由同上
+          value: '${{ inputs.data_volume_size }}'
+        name: packages
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: ${{ inputs.data_volume_size }}Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-api
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-api
+spec:
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http
+  selector:
+    app: ${{ defaults.app_name }}-api
+
+---
+# ══════════════════════════════════════════════════════════════════════
+# opencode · 对话内核
+#
+# ⚠️ 会话正文（opencode-local.db，所有对话）必须落在 PVC 上。
+#    2026-09-07 事故：没挂卷时一次容器重建让 33 个用户会话全部消失，不可恢复。
+#    postgres 里的 chat_session_owner 表**不是**备份，它只存归属映射。
+#
+# ⚠️ fsGroup: 1001 不能省。容器以 uid 1001(hunter) 运行，而 K8s 的 PVC 是空目录、
+#    属主是平台给的（R0 实测 1000:1003 或 0:0）—— 不设 fsGroup 时入口脚本会打印
+#    「会话数据目录不可写」并退出，Pod 进入 CrashLoopBackOff。
+#    （Docker 具名卷不会有这个问题，所以本地 compose 里看不到这条。）
+# ══════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ${{ defaults.app_name }}-opencode
+  annotations:
+    originImageName: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0-rc2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-opencode
+    app: ${{ defaults.app_name }}-opencode
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  minReadySeconds: 10
+  serviceName: ${{ defaults.app_name }}-opencode
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}-opencode
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}-opencode
+    spec:
+      terminationGracePeriodSeconds: 10
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: ${{ defaults.app_name }}-opencode
+          image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0-rc2
+          env:
+            - name: JWT_SECRET
+              value: ${{ defaults.jwt_secret }}
+            - name: HUNTER_INTERNAL_KEY
+              value: ${{ defaults.internal_key }}
+            - name: HERMES_API_URL
+              value: http://${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc:8000
+            - name: LLM_SHIM_URL
+              value: http://${{ defaults.app_name }}-llm-shim.${{ SEALOS_NAMESPACE }}.svc:3999/v1
+            # auto = 模型名含 gemini 时才经 shim
+            - name: LLM_SCHEMA_SANITIZE
+              value: auto
+            - name: LLM_PROVIDER
+              value: openai_compat
+            # 审计日志写进卷内 —— 放 /tmp 的话一次重建就没，而审计的全部意义就是留痕
+            - name: HUNTER_AUDIT_PATH
+              value: /home/hunter/.local/share/hunter-audit/AUDIT.jsonl
+            # 自部署用户付的是自己的大模型账单，不该被我们限额
+            - name: HUNTER_BUDGET_ENABLED
+              value: 'false'
+          ports:
+            - name: http
+              containerPort: 3901
+          startupProbe:
+            tcpSocket:
+              port: 3901
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 3901
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            # R0 实测常驻 869 MB，且几乎与负载无关（占全栈内存的 68%）
+            requests:
+              cpu: 200m
+              memory: 768Mi
+            limits:
+              cpu: 2000m
+              memory: 1536Mi
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: sessions
+              mountPath: /home/hunter/.local
+      volumes: []
+  volumeClaimTemplates:
+    - metadata:
+        annotations:
+          path: /home/hunter/.local
+          # ⚠️ 必须加引号：annotations 的值只能是字符串，渲染出来的是裸数字会被 API server 拒
+          value: '${{ inputs.session_volume_size }}'
+        name: sessions
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: ${{ inputs.session_volume_size }}Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}-opencode
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}-opencode
+spec:
+  ports:
+    - port: 3901
+      targetPort: 3901
+      name: http
+  selector:
+    app: ${{ defaults.app_name }}-opencode
+
+---
+# ══════════════════════════════════════════════════════════════════════
+# web · 前端 + BFF（唯一挂 Ingress 的服务）
+# ══════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${{ defaults.app_name }}
+  annotations:
+    originImageName: ghcr.io/agentpit-io/hunter-community-web:1.1.0-rc2
+    deploy.cloud.sealos.io/minReplicas: '1'
+    deploy.cloud.sealos.io/maxReplicas: '1'
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    app: ${{ defaults.app_name }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: ${{ defaults.app_name }}
+  template:
+    metadata:
+      labels:
+        app: ${{ defaults.app_name }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: ${{ defaults.app_name }}
+          image: ghcr.io/agentpit-io/hunter-community-web:1.1.0-rc2
+          env:
+            - name: NODE_ENV
+              value: production
+            # BFF 要回调 api 查会话归属；不传会回落 127.0.0.1:8000 → 503
+            - name: HERMES_API_URL
+              value: http://${{ defaults.app_name }}-api.${{ SEALOS_NAMESPACE }}.svc:8000
+            # BFF 要反代到 opencode；不传会回落 127.0.0.1:3901（那是 web 自己）→ 502
+            - name: OPENCODE_URL
+              value: http://${{ defaults.app_name }}-opencode.${{ SEALOS_NAMESPACE }}.svc:3901
+            # 必须与 api 同值，否则图片 OCR 一律 401
+            - name: HUNTER_INTERNAL_KEY
+              value: ${{ defaults.internal_key }}
+          ports:
+            - name: http
+              containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /
+              port: 3000
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            # R0 实测常驻 139 MB
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          imagePullPolicy: IfNotPresent
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  ports:
+    - port: 3000
+      targetPort: 3000
+      name: http
+  selector:
+    app: ${{ defaults.app_name }}
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+    cloud.sealos.io/app-deploy-manager-domain: ${{ defaults.app_host }}
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    # 深度分析走 SSE 流式返回，实测单次 57.6 秒 —— 默认 60 秒读超时会把它掐断，
+    # 表现是「报告生成到一半白屏」。这里放宽到 10 分钟，并关掉响应缓冲。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '600'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '600'
+    nginx.ingress.kubernetes.io/proxy-buffering: 'off'
+    nginx.ingress.kubernetes.io/server-snippet: |
+      client_header_buffer_size 64k;
+      large_client_header_buffers 4 128k;
+    nginx.ingress.kubernetes.io/ssl-redirect: 'false'
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/client-body-buffer-size: 64k
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 64k
+spec:
+  rules:
+    - host: ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: ${{ defaults.app_name }}
+                port:
+                  number: 3000
+  tls:
+    - hosts:
+        - ${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+      secretName: ${{ SEALOS_CERT_SECRET_NAME }}
+
+---
+# App · Sealos 界面用的应用元信息（必须是最后一个资源）
+apiVersion: app.sealos.io/v1
+kind: App
+metadata:
+  name: ${{ defaults.app_name }}
+  labels:
+    cloud.sealos.io/app-deploy-manager: ${{ defaults.app_name }}
+spec:
+  data:
+    url: https://${{ defaults.app_host }}.${{ SEALOS_CLOUD_DOMAIN }}
+  displayType: normal
+  icon: 'https://raw.githubusercontent.com/agentpit-io/hunter-community/main/deploy/sealos/logo.png'
+  name: 'HunterCode'
+  type: link

@@ -1,0 +1,213 @@
+# Hunter Community Edition · 1Panel 应用商店编排
+#
+# 事实来源是仓库根目录的 docker-compose.yml(六个服务的镜像、环境变量、卷、
+# 依赖关系、健康检查全部以它为准)。这里只做「面板 / 公网场景」必须做的改动,
+# 每一处都写了原因,逐项差异表见 docs/setup-wizard/M3-E-1Panel应用包.md 第 4 节。
+#
+# ⚠️ 这个文件里**不要写 build:**,也**不要挂任何仓库内文件** —— 面板机器上
+#    没有 hunter-community 的源码目录,挂载会让容器起不来;有 build: 则会让
+#    面板在本地编译 Next.js(十几分钟甚至超时)。
+#
+# ⚠️ 服务间互相访问一律用 `${CONTAINER_NAME}-<服务>`,**不要用裸服务名**。
+#    1panel-network 是全面板共用的一张外部网络,compose 会把 `api`、`web`、
+#    `postgres`、`redis` 这类服务名当作网络别名注册上去 —— 面板里只要再装一个
+#    同样有 `api` 服务的应用,DNS 就会在两者之间随机解析,表现是「时好时坏的
+#    502 / 连错数据库」,而且完全查不出规律。容器名带上 ${CONTAINER_NAME}
+#    前缀(1Panel 保证同面板唯一)才不会撞。
+#
+# ⚠️ **web 必须排在第一个服务**。appstore 仓库的 Renovate 工作流
+#    (.github/workflows/renovate-app-version.sh)升级时取 `.services | keys | .[0]`
+#    的镜像标签,**拿它去重命名版本目录**。postgres 排第一的话,某次自动升级会把
+#    目录改成 `16-alpine`,整个应用的版本号就毁了。
+
+services:
+  # ── 前端 · 本应用唯一对外暴露的服务 ──────────────────────────
+  # 它是主服务,所以用裸 ${CONTAINER_NAME};面板的「访问」按钮指向这里。
+  web:
+    image: ghcr.io/agentpit-io/hunter-community-web:1.1.0-rc2
+    container_name: ${CONTAINER_NAME}
+    restart: always
+    depends_on:
+      - api
+      - opencode
+    environment:
+      NODE_ENV: production
+      # 这三个必须给 web(不只是 opencode),否则 /chat 起不来:
+      #  · OPENCODE_URL 不传 → 回落 127.0.0.1:3901,在 web 容器内那是它自己 → 502
+      #  · 用户名/密码不传 → BFF 拼出空密码 → 401
+      OPENCODE_URL: http://${CONTAINER_NAME}-opencode:3901
+      OPENCODE_SERVER_USERNAME: ""
+      OPENCODE_SERVER_PASSWORD: ""
+      # BFF 要回调 api 查会话归属;不传会 503 ownership_unavailable
+      HERMES_API_URL: http://${CONTAINER_NAME}-api:8000
+    volumes:
+      # 只读 · web 的 BFF 调 /api/internal/ocr/extract 要和 api 用同一把
+      # HUNTER_INTERNAL_KEY,否则「上传图片没反应」(其实是 401)。
+      - ./data/secrets:/opt/hunter-secrets:ro
+    ports:
+      - ${PANEL_APP_PORT_HTTP}:3000
+    networks:
+      - 1panel-network
+    labels:
+      createdBy: "Apps"
+
+  # ── API · 不对外映射端口 ──────────────────────────────────────
+  api:
+    # **钉具体版本,别用 latest** —— 浮动标签意味着某次 pull 会无声换掉运行的
+    # 代码,排查时连「什么时候变的」都查不出来。
+    image: ghcr.io/agentpit-io/hunter-community-api:1.1.0-rc2
+    container_name: ${CONTAINER_NAME}-api
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 跳过重启动调度器,让全新安装能直接健康
+      HUNTER_MINIMAL_BOOT: "1"
+      DATABASE_URL: postgresql://hunter:${POSTGRES_PASSWORD}@${CONTAINER_NAME}-postgres:5432/hunter
+      REDIS_URL: redis://${CONTAINER_NAME}-redis:6379/0
+      # JWT_SECRET / HUNTER_INTERNAL_KEY **故意不在这里出现**。
+      # 留空(= 不注入)时 api 首启会各生成一把 64 位随机串写进
+      # ./data/secrets/secrets.env(属主 1001:1001 · 权限 640),
+      # web 与 opencode 只读挂同一个目录读回来 —— 三家同值靠的就是这个目录。
+      # 在表单里让用户填这两个值只会带来「三处填不一致 → 对话莫名 401」的坑。
+      JWT_ACCESS_TTL: "3600"
+      JWT_REFRESH_TTL: "2592000"
+      # 首启向导的初始化口令 · **非空 = 一律要口令**(不管来源看起来是不是本机)。
+      # 面板部署基本都会反代到公网,所以这个值由表单的 random 字段生成,必填。
+      # 装完在「应用 → 参数」里能看到明文,向导第 0 步要填的就是它。
+      HUNTER_SETUP_TOKEN: ${HUNTER_SETUP_TOKEN}
+      # 单用户免登录模式 · 仓库默认 compose 是 1(本机自用方便),
+      # **面板场景必须 0**:开着等于任何打开页面的人都能拿到 admin token。
+      # 这里写死不做成表单项 —— 这不是偏好,是安全底线。
+      HUNTER_SINGLE_USER: "0"
+      # 注册策略 · open = 允许注册(第一个注册的账号自动成为管理员)。
+      # 管理员建好之后建议在面板里改成 closed 再重建容器。
+      REGISTRATION_MODE: ${REGISTRATION_MODE}
+      HUNTER_ADMIN_EMAILS: ${HUNTER_ADMIN_EMAILS}
+      # 可选 · 一把管所有 SaaS 功能(行情数据 / 工具 / 预测)。留空也能跑:
+      # 聊天用你自己的大模型 key,工具再到 UI 左下角「解锁全部工具」里填。
+      HUNTER_API_KEY: ${HUNTER_API_KEY}
+      # 大模型配置全部交给首启向导(入库 + 热生效),这里不预设任何 LLM_* 值。
+      LLM_PROVIDER: openai_compat
+      # SKILL 目录 · 内置 SKILL 随镜像走,用户 SKILL 落在下面的持久化目录
+      HUNTER_SKILLS_DIR: /opt/hunter-skills
+      HUNTER_USER_SKILLS_DIR: /opt/hunter-user-skills
+      # api 写完 user-skills 之后要让 opencode 重扫(它只在启动时扫一次)
+      OPENCODE_URL: http://${CONTAINER_NAME}-opencode:3901
+      # ⚠️ **api 也必须知道 llm-shim 在哪** —— 不是只有 opencode 需要。
+      # 向导保存后 api 走 PATCH /global/config 把 provider 的 baseURL 推给 opencode,
+      # 那个值取自 **api 容器的** LLM_SHIM_URL;不设就回落到硬编码的
+      # `http://llm-shim:3999/v1` —— 而这里的容器叫 `${CONTAINER_NAME}-llm-shim`,
+      # 解析不了。M3 在 Sealos 等价栈上实测过这个失败:向导五步全绿、engine-ready
+      # 也返回 true,**但发消息永远收不到回复,日志里一条报错都没有**。
+      LLM_SHIM_URL: http://${CONTAINER_NAME}-llm-shim:3999/v1
+    volumes:
+      - ./data/user-skills:/opt/hunter-user-skills
+      - ./data/packages:/opt/hunter-packages
+      # 自动生成的密钥 · api **可写**(它是写方),web / opencode 只读挂同一个目录
+      - ./data/secrets:/opt/hunter-secrets
+    networks:
+      - 1panel-network
+    labels:
+      createdBy: "Apps"
+
+  # ── 对话引擎 · 不对外映射端口 ────────────────────────────────
+  opencode:
+    image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0-rc2
+    container_name: ${CONTAINER_NAME}-opencode
+    restart: always
+    depends_on:
+      api:
+        condition: service_healthy
+      llm-shim:
+        condition: service_healthy
+    environment:
+      # JWT_SECRET / HUNTER_INTERNAL_KEY 同样不注入 —— 由入口脚本从下面那个
+      # 只读密钥目录读 api 生成的那一份(hunter-auth 插件要用 JWT_SECRET 验签)。
+      HERMES_API_URL: http://${CONTAINER_NAME}-api:8000
+      LLM_PROVIDER: openai_compat
+      # 审计日志必须落在持久化目录里(容器可写层一次 recreate 就没了,
+      # 而审计日志的全部意义就是留痕)。
+      HUNTER_AUDIT_PATH: /home/hunter/.local/share/hunter-audit/AUDIT.jsonl
+      # 自部署用户付的是自己的大模型账单,不该被我们限额
+      HUNTER_BUDGET_ENABLED: "false"
+      HUNTER_BUDGET_DAILY: "999999999"
+      HUNTER_BUDGET_PER_REQUEST: "999999999"
+      # auto = 模型名含 gemini 时才经 shim
+      LLM_SCHEMA_SANITIZE: auto
+      LLM_SHIM_URL: http://${CONTAINER_NAME}-llm-shim:3999/v1
+    volumes:
+      # ⚠️ 会话正文(opencode-local.db · 所有对话内容)必须落在持久化目录上。
+      #    2026-09-07 事故:没挂这个目录时,一次容器 recreate 让 33 个用户会话
+      #    全部消失且**不可恢复** —— postgres 里只有 session_id↔user_id 的归属
+      #    映射,对话正文一个字都不在里面。
+      # ⚠️ 挂的是 `.local` **整个目录**,不是更精确的 `.local/share/opencode`。
+      #    容器以 uid 1001 跑,宿主目录属主由 scripts/init.sh 提前改成 1001:1001。
+      - ./data/opencode:/home/hunter/.local
+      - ./data/secrets:/opt/hunter-secrets:ro
+    networks:
+      - 1panel-network
+    labels:
+      createdBy: "Apps"
+
+  # ── LLM schema 清洗层 · 不对外映射端口 ────────────────────────
+  # opencode 送出的 tool schema 是完整 JSON Schema,Gemini 只认 OpenAPI 子集,
+  # 这一层只洗 tools[].function.parameters,其余原样转发。
+  # 用非 Gemini 模型时这个容器空转,不影响任何东西。
+  llm-shim:
+    image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0-rc2
+    container_name: ${CONTAINER_NAME}-llm-shim
+    restart: always
+    networks:
+      - 1panel-network
+    labels:
+      createdBy: "Apps"
+
+  # ── 数据库 · 不对外映射端口 ───────────────────────────────────
+  # 仓库默认 compose 为了本机调试映射了 5442,面板场景下不该把库暴露到宿主。
+  # 需要连库调试时用「容器 → 终端」或 1Panel 的容器端口临时映射。
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${CONTAINER_NAME}-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: hunter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: hunter
+    volumes:
+      # 相对挂载 = 落在应用安装目录下,1Panel 的「应用备份」才能带上它。
+      # 这里原来是具名卷 hunter_pg_data。
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hunter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - 1panel-network
+    labels:
+      createdBy: "Apps"
+
+  # ── Redis · 不对外映射端口 ────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ${CONTAINER_NAME}-redis
+    restart: always
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - 1panel-network
+    labels:
+      createdBy: "Apps"
+
+networks:
+  1panel-network:
+    external: true
