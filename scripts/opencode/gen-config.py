@@ -382,8 +382,8 @@ def main() -> int:
     _log(f"  provider/model 写在{'项目文件(环境变量锁定,向导改不动)' if source == 'env' else '全局文件(向导可热改)'}")
     if source == "none":
         _log("  ⚠ 大模型尚未配置 —— opencode 照常启动,但发消息会收到 llm-shim 的"
-             "「大模型尚未配置」提示。请在部署环境里配置 LLM_BASE_URL / LLM_API_KEY /"
-             " LLM_DEFAULT_MODEL,或等待初始化向导上线。")
+             "「大模型尚未配置」提示。打开浏览器访问这台实例的 /setup 走一遍首启向导即可"
+             "(不用改任何文件);或在 .env 里配 LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL。")
     return 0
 
 

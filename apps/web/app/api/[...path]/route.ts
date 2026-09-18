@@ -32,6 +32,28 @@ async function handle(req: Request, segs: string[]): Promise<Response> {
     const v = req.headers.get(h)
     if (v) headers.set(h, v)
   }
+  // 初始化会话(首启向导第 0 步签发的)· 不带的话向导每一步都是 401
+  const setupSession = req.headers.get('x-hunter-setup-session')
+  if (setupSession) headers.set('X-Hunter-Setup-Session', setupSession)
+
+  // ── 真实来源地址 ────────────────────────────────────────────────
+  // api 容器看到的对端永远是 web 容器(172.x),拿它判断"用户是不是在本机"
+  // 一定是错的 —— 而首启向导的第 0 步正要这个判断(设计方案 4.2)。
+  //
+  // 这个头从哪来:
+  //   · 前面有 nginx 的部署(演示站)—— nginx 写的 X-Forwarded-For;
+  //   · 裸 docker compose(没有反代)—— **Next.js 自己补**:`next start` 对
+  //     x-forwarded-for 做 `??=`,值取 req.socket.remoteAddress。
+  //
+  // ⚠️ 用单独的头名转给 api,而不是原样透传 x-forwarded-for:
+  //    后者会和真实的反代链混在一起,api 那边分不清"这一跳是谁加的"。
+  //
+  // ⚠️ 这个值**是客户端可以伪造的**(Next 的 `??=` 不会覆盖客户端自带的头)。
+  //    所以 api 侧的门禁不靠它决定安全性 —— 设了 HUNTER_SETUP_TOKEN 就一律要
+  //    口令,不管来源看起来是什么。详见 apps/api/app/services/setup_guard.py 的
+  //    模块文档。这里转发它,是为了让"本机开箱即用"和第 1 步的环境自检能工作。
+  const fwd = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip')
+  if (fwd) headers.set('X-Hunter-Forwarded-For', fwd)
 
   const init: RequestInit = { method: req.method, headers, cache: 'no-store' }
   if (req.method !== 'GET' && req.method !== 'HEAD') {

@@ -79,6 +79,12 @@ COPY data /opt/hunter-data
 # 已有部署永远跑不到)。现在改由 api 启动时执行(boot.sh → app.migrate,子任务 B)。
 # ⚠️ 路径 /opt/hunter-migrations 是迁移执行器写死读的位置,**不要改名**。
 COPY db/migrations /opt/hunter-migrations
+# tool schema 清洗函数(M2 · 设计方案 4.5)· **与 llm-shim 共用同一个文件**。
+# 向导第 3 步的"工具调用"检测由 api 发出,清洗规则必须和 shim 一模一样,
+# 否则会出现"向导说能用、实际对话一发就 400"(或者反过来)。
+# 在 api 里另存一份副本迟早会漂,所以这里拷的是 shim 的那一份原文件。
+# 读取方:app/services/llm_probe.py::_load_schema_clean()
+COPY scripts/llm-shim/schema_clean.py /opt/hunter-shim/schema_clean.py
 
 EXPOSE 8000
 

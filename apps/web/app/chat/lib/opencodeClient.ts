@@ -176,6 +176,11 @@ export interface ProviderInfo {
   models: Record<string, { id?: string; name?: string; [k: string]: any }>
 }
 
+/** 未配置大模型时 gen-config 写进去的占位模型名(scripts/opencode/gen-config.py)。
+ *  它**永远不是用户挑的**:不许留在 localStorage 里,不许进模型选择器,
+ *  也不许被当成默认值 —— 选中它发消息只会得到一句「大模型尚未配置」。 */
+const PLACEHOLDER_MODEL = 'hunter-unconfigured'
+
 /**
  * opencode 自己声明的默认模型 · 形如 {"hunter-llm": "gemini-3-flash-preview"}。
  *
@@ -186,7 +191,34 @@ export interface ProviderInfo {
  * 返回 "providerID/modelID";拿不到返回空串,调用方此时**不要**传 model 字段,
  * 让 opencode 用配置文件里的默认值。
  */
+/**
+ * 这台实例**当前真正在用**的模型(`GET /config` 的 `model` 字段)。
+ *
+ * ⚠️ 为什么不能只看 `/config/providers` 的 `default`:首启向导热生效走的是
+ * opencode 的 `updateGlobal`,而它是 **mergeDeep** —— 旧模型名会一直累积在
+ * provider 的 models 里(M1 交接第 3 条),`default` 取的是里面的第一个,
+ * 于是向导配好之后 `default.hunter-llm` 仍然是占位名 `hunter-unconfigured`。
+ * 2026-09-18 M2 实测:向导说配好了,浏览器却拿着占位名发消息,页面底部标着
+ * `hunter-unconfigured`,而 opencode 全局配置里明明是新模型。
+ *
+ * `/config` 的 `model` 是「这台实例选定的那个」,和 opencode 自己在不传 model
+ * 时用的值完全一致 —— 这才是该问的地方。
+ */
+export async function currentModelKey(): Promise<string> {
+  try {
+    const data = await req<any>('GET', '/config')
+    const m = data?.model
+    if (typeof m === 'string' && m.includes('/')) return m
+  } catch (e) {
+    console.warn('[opencodeClient] currentModelKey failed:', e)
+  }
+  return ''
+}
+
 export async function defaultModelKey(): Promise<string> {
+  // 先问「当前选定的那个」,它才是真相(见 currentModelKey 的注释)
+  const cur = await currentModelKey()
+  if (cur && cur.split('/').slice(1).join('/') !== PLACEHOLDER_MODEL) return cur
   try {
     const data = await req<any>('GET', '/config/providers')
     const def = data?.default
@@ -195,7 +227,7 @@ export async function defaultModelKey(): Promise<string> {
       const ids: string[] = (data.providers || [])
         .filter((p: any) => p.id !== 'opencode')
         .map((p: any) => p.id)
-      const pick = ids.find((id) => def[id])
+      const pick = ids.find((id) => def[id] && def[id] !== PLACEHOLDER_MODEL)
       if (pick) return `${pick}/${def[pick]}`
     }
   } catch (e) {
@@ -221,16 +253,28 @@ export async function resolveModelKey(saved: string | null): Promise<string> {
     // 与 listProviders 保持一致 · 过滤掉 OpenCode Zen(内置无 key · tool schema 不兼容会 400)
     // 这里必须过滤 · 否则 saved='opencode/xxx' 会通过校验被继续使用 · UI 显示但发消息必挂
     const providers: any[] = (data?.providers || []).filter((p: any) => p.id !== 'opencode')
+    // ⚠️ **占位模型名要先排掉,不能走下面那条"还在清单里就算有效"。**
+    //
+    // 首启向导热生效走的是 opencode 的 `updateGlobal`,它是 mergeDeep —— 旧模型名
+    // 会**一直累积**在 provider 的 models 里(M1 交接第 3 条)。所以向导配好之后
+    // `hunter-unconfigured` 仍然出现在 /config/providers 的清单里,校验"还有效"就
+    // 直接通过了,浏览器继续拿着它发消息,用户看到的是:向导说配好了、
+    // 第一条消息却回「大模型尚未配置」。2026-09-18 M2 实测踩到。
+    if (saved && saved.split('/').slice(1).join('/') === PLACEHOLDER_MODEL) saved = null
     if (saved) {
       const [pid, ...rest] = saved.split('/')
       const mid = rest.join('/')
       const p = providers.find((x) => x.id === pid)
       if (p && mid && (p.models || {})[mid]) return saved      // 还有效
     }
+    // 存的那个用不了 → 回到「这台实例当前选定的模型」(同 defaultModelKey 的理由:
+    // `default` 会被累积下来的占位名占住)
+    const cur = await currentModelKey()
+    if (cur && cur.split('/').slice(1).join('/') !== PLACEHOLDER_MODEL) return cur
     const def = data?.default
     if (def && typeof def === 'object') {
       const ids: string[] = providers.map((p) => p.id)
-      const pick = ids.find((id) => def[id])
+      const pick = ids.find((id) => def[id] && def[id] !== PLACEHOLDER_MODEL)
       if (pick) return `${pick}/${def[pick]}`
     }
   } catch (e) {
@@ -250,7 +294,12 @@ export async function listProviders(): Promise<ProviderInfo[]> {
         .map((p: any) => ({
           id: p.id,
           name: p.name || p.id,
-          models: p.models || {},
+          // 占位名不进选择器 —— 它在向导热生效之后会作为 mergeDeep 的残留一直留在
+          // models 里(M1 遗留问题 #3 的同一个根因),用户点中它只会得到
+          // 一句「大模型尚未配置」。容器重启后 gen-config 整份重写才会真正清掉。
+          models: Object.fromEntries(
+            Object.entries(p.models || {}).filter(([mid]) => mid !== PLACEHOLDER_MODEL),
+          ),
         }))
     }
     if (Array.isArray(data)) return data

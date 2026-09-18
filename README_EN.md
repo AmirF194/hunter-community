@@ -57,23 +57,50 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 **Time**: since v1.1.0 all six services run from **pre-built images — nothing is built locally**. First run is ~3–5 minutes (all of it image downloads); later `up -d` takes seconds.
 
 ```bash
-# 1. Get the code and start (no need to touch .env first — JWT_SECRET is generated for you)
 git clone https://github.com/agentpit-io/hunter-community
 cd hunter-community
 docker compose up -d
-open http://localhost:3100
-
-# 2. Configure the LLM (**still manual today**; the setup wizard ships in the next release)
-cp .env.example .env
-# Fill these three in .env (DeepSeek example), then run `docker compose up -d` again:
-# LLM_BASE_URL=https://api.deepseek.com/v1
-# LLM_DEFAULT_MODEL=deepseek-v4-pro
-# LLM_API_KEY=sk-xxxxx
-# LLM_SCHEMA_SANITIZE=1                 # required for DeepSeek
-# HUNTER_API_KEY=hunt_tools_xxxxx       # optional · platform data pipeline
+open http://localhost:3100          # finish the setup wizard in the browser — no file edits
 ```
 
-> Without the three LLM settings all six services still come up healthy — you just cannot chat yet.
+**There is no step 2.** Since v1.1.0 you never touch `.env`: secrets are generated,
+the database migrates itself, all six services run from pre-built images, and the LLM
+is configured in the browser.
+
+### The first-run wizard
+
+The first time you open the app (with no LLM configured) it takes you through five steps:
+
+| Step | What it does |
+|---|---|
+| 1 · Environment check | Six services, migration ledger, secret origin & strength, volume writability, how you're reaching this instance — every item actually probed |
+| 2 · Pick a model | Preset cards carry **measured** tool-call hit rates and latencies (from [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)); or type your own |
+| 3 · Paste the key, test it now | Reachability → chat → tool call. Failures are classified, and **you cannot save a config that did not pass**. The schema-sanitize switch is decided by the test result |
+| 4 · Data supply | Free open-source sources / platform data pipeline / your own MCP — pick one, or skip |
+| 5 · Done | Applied live, **without restarting any container**, plus three example questions to get you into the chat |
+
+<p align="center">
+  <img src="./docs/screenshots/setup-wizard/04-三项检测通过.png" alt="Step 3 · the three checks" width="760" />
+</p>
+
+All screenshots: [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/).
+
+> [!IMPORTANT]
+> **If this instance is reachable from the public internet, set `HUNTER_SETUP_TOKEN` in `.env` first**
+> (any random string — `openssl rand -base64 24`), then `docker compose up -d`.
+> Without it, whoever opens the page first gets to configure the LLM. With it, the wizard
+> asks for that token up front and locks for 15 minutes after 5 wrong tries.
+> Not needed for a machine only you can reach.
+
+**The old way (hard-coding it in `.env`) still works and takes priority**: an instance with
+`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_DEFAULT_MODEL` set is **locked** — the wizard shows the
+values read-only and cannot change them (that is how the demo site runs). To switch models,
+edit `.env` and run `docker compose up -d` (**not `restart`** — restart does not re-read `.env`).
+
+> Without an LLM configured all six services still come up healthy; sending a message just
+> returns a plain "the LLM is not configured yet" notice. Want to do it later? Click
+> "先进对话页(稍后再说)" on the last step. To run the wizard again: Settings → 大模型 →
+> "重新运行初始化向导".
 
 **Working on the code?** Stack the development override file on top. It brings back local builds and every source bind mount (edits under `apps/web/public` and `scripts/` take effect immediately):
 

@@ -427,6 +427,13 @@ app.include_router(internal_skills_router.router, prefix="/api")
 from app.routers import internal_runtime as internal_runtime_router
 app.include_router(internal_runtime_router.router, prefix="/api")
 
+# 首启向导(M2 · 设计方案第四节)· /api/setup/*
+# 鉴权不走 JWT 中间件(向导要在"还没有账号"时可用),自己一套门禁见 routers/setup.py。
+# `/api/setup/` 已加进 middleware/auth.py 的 _PUBLIC_PREFIXES —— 那只是让 JWT
+# 中间件放行,真正的鉴权在每个 handler 的 `_guard`。
+from app.routers import setup as setup_router
+app.include_router(setup_router.router, prefix="/api")
+
 # ── 用户画像与记忆体 + admin 用户洞察后台 ──
 # ── 平台 key 门控 · 开源版解锁全部工具与 SKILL ──
 from app.routers import hunter_unlock as hunter_unlock_router

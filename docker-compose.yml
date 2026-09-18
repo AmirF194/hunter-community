@@ -83,6 +83,16 @@ services:
       JWT_SECRET: ${JWT_SECRET:-}
       JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-3600}
       JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-2592000}
+      # 首启向导的初始化口令(M2 · 设计方案 4.2)。
+      #
+      # **留空 = 本机 / 内网可以直接进向导**(git clone && up -d 的主路径)。
+      # **非空 = 一律要口令**,不管来源看起来是本机还是公网 —— 来源判断靠 HTTP
+      # 转发头,而那是访问者可以伪造的;"有没有口令"伪造不了。
+      #
+      # ⚠️ **公网上跑就必须设**:不设的话,谁先打开这个页面谁就能配置大模型。
+      # 云平台模板会自动生成一个随机值。改完要 `docker compose up -d api`
+      # (不是 restart —— restart 不重新读 .env)。
+      HUNTER_SETUP_TOKEN: ${HUNTER_SETUP_TOKEN:-}
       # 单用户模式(默认开)· 本机自用不需要账号密码,前端自动换会话不显示登录页
       # 暴露到公网前务必置 0 —— 开着等于谁都能拿到 admin token
       HUNTER_SINGLE_USER: ${HUNTER_SINGLE_USER:-1}

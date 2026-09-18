@@ -289,6 +289,52 @@ jobs:
           grep -q '大模型' /tmp/shim.json || { echo "❌ 没有返回中文的未配置提示"; exit 1; }
           echo "✅ 未配置时立刻返回中文错误"
 
+      # ── 首启向导(M2 · 设计方案第七节「集成(CI)」)─────────────────
+      - name: 向导 · 未配置状态与门禁
+        run: |
+          set -eu
+          # ① 冷启动(没有 .env、没有 HUNTER_SETUP_TOKEN)· 本机来源应直接放行,
+          #    并报告"该跑向导"。这是 `git clone && docker compose up -d` 的主路径。
+          #    ⚠️ 必须**经 web**(3100)打,不能直接打 api(8100):来源判断依赖 web
+          #    BFF 注入的 X-Hunter-Forwarded-For,直连 api 测不到这条链路。
+          curl -sS --max-time 30 http://127.0.0.1:3100/api/setup/status > /tmp/setup.json
+          cat /tmp/setup.json; echo
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/setup.json'))
+          assert d['authed'] is True, f"本机来源被拦住了:{d}"
+          assert d['need_unlock'] is False, d
+          assert d['llm']['configured'] is False and d['llm']['source'] == 'none', d['llm']
+          assert d['setup']['should_run'] is True, d['setup']
+          assert d['llm']['api_key_masked'] == '', '不该回显 key'
+          print('✅ 未配置状态正确,且本机来源免口令')
+          PY
+
+          # ② 模拟公网来源 · 没设口令时必须**拒绝**进入向导。
+          #    Next.js 对 x-forwarded-for 是 `??=`,客户端自己带的不会被覆盖,
+          #    所以这一行就是在模拟"从公网打过来"。
+          code=$(curl -s -o /tmp/pub.json -w '%{http_code}' --max-time 30 \
+                 -H 'X-Forwarded-For: 8.8.8.8' http://127.0.0.1:3100/api/setup/env-check)
+          cat /tmp/pub.json; echo
+          [ "$code" = "401" ] || { echo "❌ 公网来源没被拦住(HTTP $code)"; exit 1; }
+          grep -q 'HUNTER_SETUP_TOKEN' /tmp/pub.json || { echo "❌ 拒绝理由没说清怎么办"; exit 1; }
+          echo "✅ 公网来源 + 没设口令 = 拒绝进入向导"
+
+          # ③ 预设清单随镜像走 —— 读不到就是 Dockerfile 漏了 COPY data
+          curl -sS --max-time 30 http://127.0.0.1:3100/api/setup/llm-presets > /tmp/presets.json
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/presets.json'))
+          assert not d.get('error'), d['error']
+          assert len(d['presets']) >= 4, d
+          print(f"✅ 预设 {len(d['presets'])} 条,来源 {d['source_doc']}")
+          PY
+
+          # ④ 向导第 3 项检测用的清洗函数必须在 api 镜像里
+          docker compose exec -T api sh -c 'test -f /opt/hunter-shim/schema_clean.py' \
+            || { echo "❌ api 镜像里没有 schema_clean.py,第 3 项检测会退化"; exit 1; }
+          echo "✅ schema_clean.py 在 api 镜像里"
+
       - name: 失败时导出日志
         if: failure()
         run: docker compose logs --tail=300

@@ -6,9 +6,22 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### ✨ 新增 · Added
+- **浏览器里的首启向导**(`/setup`)· 五步配完就能对话,**全程不用改任何文件**:
+  环境自检 → 选大模型 → 填 key 当场测 → 数据供给 → 完成。
+  第 3 步由 api 容器(和 opencode 实际调用走同一条网络路径)依次做**连通 / 对话 / 工具调用**
+  三项检测并显示各自真实耗时,**测不通不让保存**;schema 清洗开关由检测结果自动决定,不用自己猜。
+  最后一步**不重启任何容器**热生效。设置页 →「大模型」→「重新运行初始化向导」可随时换模型。
+  A first-run wizard in the browser: env self-check → pick a model → paste the key and test it
+  on the spot → data supply → done, applied live without restarting anything.
+- **`HUNTER_SETUP_TOKEN`** · 公网实例的初始化口令。**设了就一律要**(不管来源看起来是不是本机 ——
+  来源取自 HTTP 转发头,那是访问者可以伪造的);没设且来源判为公网时**拒绝进入向导**并说明怎么做。
+  连错 5 次锁 15 分钟,通过后签发 30 分钟的初始化会话。
+- **`data/llm-presets.json`** · 四个预设(DeepSeek v4 pro / Qwen 3.8 Max / Claude Sonnet 5 /
+  Gemini 3.5 Flash)+ 自定义。卡片上的工具调用命中率与耗时**全部抄自 `docs/model-testing/`**
+  的实测结果并标注实测日期,对不上的字段留空。
 - **`git clone` 之后不用改任何文件就能起来**。`docker compose up -d` 直接拉预构建镜像跑,
   `JWT_SECRET` 留空会在首次启动自动生成并写进 `hunter_secrets` 卷(opencode 与 web 只读挂同一个卷读回同一把)。
-  从零到六个服务健康需要编辑的文件从 4 处变成 **0 处**。大模型仍需配置,图形化向导在下一个版本。
+  从零到六个服务健康需要编辑的文件从 4 处变成 **0 处**;大模型也由上面的向导在浏览器里配完。
   A fresh clone now boots with `docker compose up -d` — no file edits, secrets are generated on first start.
 - **四个自家服务全部改成自包含的预构建镜像**(`api` / `web` / `opencode` / `llm-shim`),
   `linux/amd64` + `linux/arm64` 双架构。原来 compose 里 16 处挂载仓库文件的地方一处都不剩 ——
@@ -17,7 +30,7 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   原来挂给 postgres 的 `docker-entrypoint-initdb.d` **只在数据卷第一次创建时执行**,
   所以老部署一直缺表缺列。升级后第一次启动会把没跑过的迁移补齐,日志里逐个列出来。
 - **大模型配置可以存数据库并热生效**,不重启容器(实测端到端 9.2 秒,MCP 全部重连)。
-  本版本只提供服务函数,界面在下一个版本。
+  key 用 AES-256-GCM 加密后入库,接口只回显末 4 位,日志一个字不打。
 - **`scripts/migrate-volumes.sh`** · 升级用:把 `user-skills/` 与 `data-packages/` 搬进新的具名卷。
 - **`docker-compose.dev.yml`** · 开发者用:带回本地构建与全部源码挂载。
   `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build`
@@ -36,6 +49,14 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **保存 SKILL 要等 30 秒然后提示「请重启 opencode」**,而文件其实早就写好了。
   api 用同步 HTTP 调 opencode,而 opencode 会回头来拉 api 的清单,单 worker 的事件循环被自己堵死。
   现在走线程池,**30.07 秒 → 0.164 秒**。
+- **模型名写错却被报成「key 无效」**。不少网关(演示站那台 OneAPI 实测)对写错的模型名回
+  HTTP **403** 并附一句「该令牌无权使用模型:xxx」,先按状态码判就会让用户拿着一把好 key 去重新申请。
+  现在先看报错里提没提模型名,提了就按模型名报,并列出这个地址上可用的模型。
+- **全新安装无法校验平台 key**。v1.1.0 把 `HUNTER_UPSTREAM_URL` 的兜底改成空之后,
+  `manifest()` 拼出来的地址没有协议头,httpx 直接抛错,界面显示「连不上 Hunter 服务器,检查网络后重试」——
+  原因说反了。现在:**没有 key 就一个请求都不发**(独立运行模式下不该因为打开一个页面就去连官方);
+  用户主动粘一把 `hunt_tools_` key 时,没配上游就问官方平台(那把 key 本来就只能从那里申请)。
+  数据请求那条路不受影响,独立模式下仍然不指回官方。
 - **llm-shim 缺 `LLM_BASE_URL` 时不再拒绝启动**;上游地址加了白名单校验(拒绝内部服务名、回环、
   内网网段与 `169.254.169.254` 云元数据地址),防止它被当成访问内网的跳板。
 - **未配置大模型时对话会一直转圈**(实测 100 秒以上没有返回)。现在 llm-shim 立刻返回
