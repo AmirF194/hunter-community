@@ -9,6 +9,24 @@
 - Network access to `ghcr.io` (the chat engine image is pulled from there)
 - An LLM API key (any OpenAI-compatible gateway; DeepSeek is the tested default)
 
+## Deploy to a cloud platform instead · 部署到云平台
+
+Don't want to run a server? Every platform below has a step-by-step doc:
+不想自己管服务器?下面每个平台都有一篇逐步说明:
+
+| Platform | Doc |
+|---|---|
+| Zeabur | [`docs/deploy/zeabur.md`](./deploy/zeabur.md) |
+| Sealos | [`docs/deploy/sealos.md`](./deploy/sealos.md) |
+| Railway | [`docs/deploy/railway.md`](./deploy/railway.md) |
+| 1Panel | [`docs/deploy/1panel.md`](./deploy/1panel.md) |
+| Coolify / Dokploy | [`docs/deploy/coolify-dokploy.md`](./deploy/coolify-dokploy.md) |
+
+⚠️ None of these has been run on the real platform yet (we have no accounts), and none
+is listed in a marketplace — each doc says exactly what was verified and what was not.
+A public instance **must** keep `HUNTER_SINGLE_USER=0` and set `HUNTER_SETUP_TOKEN`;
+every template already does both.
+
 ## Install
 
 ```bash
@@ -148,7 +166,26 @@ docker compose up -d
 Migrations are idempotent — the API applies them on boot (the image ships
 `db/migrations/` at `/opt/hunter-migrations`; the old
 `/docker-entrypoint-initdb.d` mount on postgres is gone, it only ever ran on a
-brand-new data volume). To reset the database entirely:
+brand-new data volume).
+
+### Upgrading from v1.0.x · 从 v1.0.x 升级
+
+Two things, both one-off:
+
+1. **Run `bash scripts/migrate-volumes.sh` once.** `user-skills/` and `data-packages/`
+   used to be bind mounts; since v1.1.0 they are named volumes owned by the api service.
+   Without this, SKILLs you installed through the UI disappear from the list — the files
+   are all still there, the container just cannot see them any more.
+   Started the stack with `docker compose -p <name>`? Pass it through:
+   `bash scripts/migrate-volumes.sh --project <name>`.
+2. **Nothing else.** Keep your `.env` as it is. If it has `LLM_BASE_URL` / `LLM_API_KEY` /
+   `LLM_DEFAULT_MODEL`, those stay authoritative and are shown as locked in the UI —
+   the first-run wizard will **not** appear. Missing tables and columns are filled in
+   automatically on the first boot; the api log lists every migration it applies.
+   ⚠️ **Do not change `JWT_SECRET`** — it derives the key that encrypts stored API keys,
+   so changing it makes every saved key undecryptable and logs everyone out.
+
+To reset the database entirely:
 
 ```bash
 docker compose down -v   # ⚠ nukes users + all state, including the generated JWT_SECRET
