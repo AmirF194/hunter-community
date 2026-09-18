@@ -40,7 +40,9 @@ from app.services.quant.screen_dsl import ScreenError
 # 固定字段:中文/英文说法 → 扫描源字段名。
 # 同一个字段可以有多种说法,长的写在前面(匹配时按长度倒序,避免「市盈率」被「市」截胡)。
 _FIELD_WORDS: dict[str, str] = {
-    "成交量": "volume", "成交额": "volume", "volume": "volume", "量能": "volume",
+    # 「成交额」不在这里(2026-09-18):原来写成 "成交额": "volume",「成交额大于2000万」静默变成成交量 > 2000万股。
+    # 成交额是金额、成交量是股数,单位差一个股价。金额写法统一走 _AMOUNT_RE(见 _Vocab._candidates)
+    "成交量": "volume", "volume": "volume", "量能": "volume",
     "收盘价": "close", "股价": "close", "价格": "close", "现价": "close",
     "close": "close", "price": "close", "收盘": "close",
     "开盘价": "open", "open": "open",
@@ -63,9 +65,13 @@ _FIELD_WORDS: dict[str, str] = {
     "每股收益": "earnings_per_share_diluted_ttm", "eps": "earnings_per_share_diluted_ttm",
     "贝塔": "beta_1_year", "beta": "beta_1_year",
 
+    # 光秃秃的「涨幅」= 当日涨跌幅。前面带了区间(近一个月 / 近20日 / 年内)的走 _PERF_RE,
+    # 区间对不上字段就拒绝,**不许退回当日**(2026-09-18:「近一个月涨幅超过10%」曾产出 change > 10)。
+    # 「跌幅」的方向在 _clause_to_expr 里翻转:「跌幅超过10%」= change < -10,不是 change > 10
     "涨跌幅": "change", "涨幅": "change", "跌幅": "change", "change": "change",
     "相对成交量": "relative_volume_10d_calc", "量比": "relative_volume_10d_calc",
-    "换手率": "relative_volume_10d_calc",
+    # 「换手率」不收(2026-09-18):原来映射成量比(今日量 ÷ 10 日均量),换手率是量 ÷ 流通股本,
+    # 「换手率大于5%」静默变成「量比 > 5」。扫描源没有换手率字段,认不出比认错好
 
     "52周最高": "price_52_week_high", "52周新高": "price_52_week_high",
     "52周最低": "price_52_week_low", "52周新低": "price_52_week_low",
@@ -187,6 +193,95 @@ _EMA_RE = re.compile(
     r"(?:(\d+)\s*(?:日|天)?\s*ema)|(?:ema\s*\(?\s*(\d+)\s*\)?)", re.I)
 _AVGVOL_RE = re.compile(r"(\d+)\s*(?:日|天)\s*(?:均量|平均成交量|均成交量)", re.I)
 _RSI_N_RE = re.compile(r"rsi\s*\(?\s*(\d+)\s*\)?", re.I)
+
+# ── 成交额(金额)与区间涨幅 · 2026-09-18 ─────────────────────────
+# 用户实测「股价站上50日均线,成交额大于2000万,近一个月涨幅超过10%」:
+#   成交额 → volume > 20000000(金额被当成股数)、近一个月涨幅 → change > 10(区间被当成当日)。
+# 两句都「看起来正常」,扫描照跑 —— 本模块最怕的静默理解错。按写法类别整类处理:
+#
+# 成交额:当日 / N日均 / 没说几日 / 合计还是日均说不清,四种写法分开判。
+#   · 当日成交额 → `close * volume`。扫描源 metainfo 里**没有**当日成交额字段(Value.Traded 不在白名单,
+#     脚本里写了报不认识),收盘价 × 成交量是能写进脚本的唯一口径,盘中是最新价 × 当日累计量;写进 notes
+#   · N日均成交额 → AvgValue.Traded_{N}d,扫描源只有 10/30/60/90 天;其余周期拒绝(不拿近的周期冒充)
+#   · 「日均成交额」没说几天、「20日成交额」说不清是合计还是日均 → 拒绝,报错里给能用的写法
+_AMOUNT_EXPR = "close * volume"
+_AVG_AMT_DAYS = (10, 30, 60, 90)
+_AMOUNT_RE = re.compile(
+    r"(?:(?:近|最近|过去|前)\s*)?"
+    r"(?:(\d+|半)\s*(个交易日|交易日|日|天|个星期|星期|周|个月|月|年)\s*(?:内|以来)?\s*(?:的)?\s*)?"
+    r"(日均|平均|均)?\s*成交(?:金额|额度|额)", re.I)
+
+# 区间涨幅:区间词紧挨在「涨幅 / 跌幅 / 涨跌幅」前面(中间可以有 内 / 以来 / 的)。
+# 扫描源的区间涨幅按**自然日历**算(Perf.1M = 近一个月,不是近 21 个交易日),所以只收一一对应的说法,
+# 「近20日」「近两周」「近30天」「本月」一律不换算 —— 和 RS 线「周/月不按 5/21 天换算」同一条理由。
+_PERF_RE = re.compile(
+    r"(?:(?:近|最近|过去|前)\s*)?"
+    r"(?:(\d+|半)\s*(个交易日|交易日|日|天|个星期|星期|周|个月|月|年)"
+    r"|(年初至今|年初以来|今年以来|今年|年内|本年度|本年|上市以来|本周|本月|上周|上月|本季度|本季"
+    r"|当日|今日|今天|当天|日内))"
+    r"\s*(?:内|以来|来|之内)?\s*(?:的)?\s*(涨跌幅|涨幅|跌幅)", re.I)
+_PERF_BY_MONTH = {1: "Perf.1M", 3: "Perf.3M", 6: "Perf.6M", 12: "Perf.Y"}
+_PERF_BY_YEAR = {1: "Perf.Y", 3: "Perf.3Y", 5: "Perf.5Y", 10: "Perf.10Y"}
+_PERF_CHOICES = ("近5日 / 近1周 / 近1个月 / 近3个月 / 近6个月(半年) / 近1年 / 近3年 / 近5年 / 近10年 / "
+                 "年初至今(年内) / 上市以来")
+# 「涨幅」旁边出现、又没被 _PERF_RE 认走的区间说法 —— 一律拒绝,不许退回当日涨跌幅。
+# 数字 + 日/天 后面接 均 / 线 的是均线周期,不算
+_PERIOD_HINT_RE = re.compile(
+    r"(?<![接靠附])近|最近|过去|年内|今年|年初|本年|上市|本周|本月|本季|上周|上月|以来"
+    r"|(?:\d+|半)\s*(?:个交易日|交易日|个星期|星期|周|个月|月|年)"
+    r"|\d+\s*(?:日|天)(?!\s*(?:均|线|ema|ma))", re.I)
+
+
+def _perf_field(n: str | None, unit: str | None, kw: str | None) -> tuple[str | None, str]:
+    """区间 → (字段, 说明)。字段为 None 表示对应不上,说明里写原因。"""
+    if kw:
+        if kw in ("当日", "今日", "今天", "当天", "日内"):
+            return "change", ""
+        if kw in ("年初至今", "年初以来", "今年以来", "今年", "年内", "本年度", "本年"):
+            return "Perf.YTD", ""
+        if kw == "上市以来":
+            return "Perf.All", ""
+        return None, f"「{kw}」是自然周 / 月 / 季,扫描源的区间涨幅是滚动窗口,不换算"
+    unit = unit or ""
+    if n == "半":
+        return ("Perf.6M", "") if unit == "年" else (None, f"「半{unit}」没有对应的区间涨幅")
+    k = int(n)
+    if unit in ("个交易日", "交易日", "日", "天"):
+        if k == 1:
+            return "change", ""
+        if k == 5:
+            return "Perf.5D", ""
+        return None, f"扫描源没有近{k}{unit}涨幅,按天只有近5日;不拿近1个月(自然月)去冒充近{k}{unit}"
+    if unit in ("个星期", "星期", "周"):
+        return ("Perf.W", "") if k == 1 else (None, f"扫描源没有近 {k} 周涨幅,按周只有近1周")
+    if unit in ("个月", "月"):
+        f = _PERF_BY_MONTH.get(k)
+        return (f, "") if f else (None, f"扫描源没有近 {k} 个月涨幅,按月只有 1 / 3 / 6 / 12 个月")
+    if unit == "年":
+        f = _PERF_BY_YEAR.get(k)
+        return (f, "") if f else (None, f"扫描源没有近 {k} 年涨幅,按年只有 1 / 3 / 5 / 10 年")
+    return None, f"「{n}{unit}」对应不上区间涨幅"
+
+
+def _amount_field(n: str | None, unit: str | None, avg: str | None) -> tuple[str | None, str]:
+    """成交额写法 → (字段或表达式, 说明)。"""
+    if not n and not avg:
+        return _AMOUNT_EXPR, ""
+    days = unit in ("个交易日", "交易日", "日", "天")
+    if n and n != "半" and days and avg:
+        k = int(n)
+        if k in _AVG_AMT_DAYS:
+            return f"AvgValue.Traded_{k}d", ""
+        return None, (f"扫描源没有 {k} 日均成交额,只有 10 / 30 / 60 / 90 日;"
+                      f"不拿别的周期冒充")
+    if avg and not n:
+        return None, "没说几天 —— 请写「10日均成交额」「30日均成交额」「60日均成交额」或「90日均成交额」"
+    if not days:
+        return None, "按周 / 月 / 年的成交额扫描源没有,只有当日成交额和 10 / 30 / 60 / 90 日均成交额"
+    if n and not avg:
+        return None, (f"「{n}{unit}成交额」是 {n}{unit}合计还是日均?说不清就不猜 —— "
+                      f"日均请写「30日均成交额」这类(扫描源有 10 / 30 / 60 / 90 日),当天请写「成交额」")
+    return None, "对应不上成交额字段"
 
 
 # 用户直接写的**字段原名**:rs_line_up_days / market_cap_basic / Perf.Y / MACD.hist / close|1W
@@ -334,6 +429,21 @@ class _Vocab:
             err = "" if n in self.sma else \
                 f"「{m.group(0)}」映射不了 —— 扫描源没有 SMA{n}"
             out.append((m.start(), -len(m.group(0)), f"SMA{n}", m.group(0), err))
+        # 成交额 / 区间涨幅(2026-09-18):候选从区间词开始、比里面的「涨幅」「成交额」更长,
+        # 最左最长的规则会让它们顶掉光秃秃的词表命中
+        for m in _AMOUNT_RE.finditer(text):
+            fld, why = _amount_field(m.group(1), m.group(2), m.group(3))
+            if fld and fld != _AMOUNT_EXPR and not self.has_field(fld):
+                fld, why = None, f"当前市场的扫描源没有 {fld}"
+            err = "" if fld else f"「{m.group(0)}」映射不了 —— {why}"
+            out.append((m.start(), -len(m.group(0)), fld or _AMOUNT_EXPR, m.group(0), err))
+        for m in _PERF_RE.finditer(text):
+            fld, why = _perf_field(m.group(1), m.group(2), m.group(3))
+            if fld and not self.has_field(fld):
+                fld, why = None, f"当前市场的扫描源没有 {fld}"
+            err = "" if fld else (f"「{m.group(0)}」映射不了 —— {why}。能用的区间涨幅:{_PERF_CHOICES};"
+                                  f"要按交易日算可以直接写脚本,例如 close / close[20] > 1.1")
+            out.append((m.start(), -len(m.group(0)), fld or "change", m.group(0), err))
 
         for w, fld in self.words:
             if not self.has_field(fld):
@@ -455,6 +565,12 @@ def _unit(fld: str) -> str | None:
         return "价格"
     if fld == "volume" or fld.startswith("average_volume_"):
         return "成交量"
+    # 成交额是金额,和成交量(股数)不能互相比(2026-09-18)
+    if fld == _AMOUNT_EXPR or fld.startswith("AvgValue.Traded_"):
+        return "成交额"
+    # 当日与区间涨幅都是百分数,可以互相比(「近1个月涨幅大于近3个月涨幅」)
+    if fld == "change" or re.fullmatch(r"Perf\.(?:5D|W|1M|3M|6M|YTD|Y|3Y|5Y|10Y|All)", fld):
+        return "涨幅"
     if fld.startswith("MACD."):
         return "MACD"
     if fld.startswith("Stoch."):
@@ -632,6 +748,16 @@ def _rs_line_expr(t: str, vocab: _Vocab) -> str | None:
 
 
 def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) -> str | None:
+    """见 _clause_core。说明先记在本句自己的列表里,**认出来了才并进 notes** ——
+    认不出的句子会被对照表补上,留着这句的说明就成了对另一个表达式的错误解释。"""
+    mine: list[str] = []
+    expr = _clause_core(clause, vocab, mine)
+    if expr is not None and notes is not None:
+        notes.extend(mine)
+    return expr
+
+
+def _clause_core(clause: str, vocab: _Vocab, notes: list[str] | None = None) -> str | None:
     """一小句 → 表达式。认不出来返回 None(**不猜**)。
 
     `notes` 收集"认出来了但有损"的说明(如上穿按"当前在上方"处理),
@@ -698,8 +824,30 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
     outside = "".join(" " if any(a <= i < b for a, b, _f, _w in fs) else ch for i, ch in enumerate(t))
     if re.search(r"\d\s*倍|倍数|百分之", outside):
         return None
+
+    # ── 涨幅 / 成交额(2026-09-18)──────────────────────────────
+    # 「涨幅」认成了当日涨跌幅,但句子里还有没被 _PERF_RE 认走的区间说法(「涨幅近一个月超过10%」
+    # 「过去一段时间涨幅」)—— 用户说的是区间,退回当日就是静默错,拒绝并说清楚能写哪些
+    if any(f[2] == "change" for f in fs):
+        mh = _PERIOD_HINT_RE.search(outside)
+        if mh:
+            raise ScreenError(
+                f"「{t}」里的「{mh.group(0)}」像是在说区间涨幅,但对应不上扫描源的字段 —— "
+                f"能用的区间涨幅:{_PERF_CHOICES}(写在「涨幅」前面,如「近1个月涨幅大于10%」);"
+                f"不写区间就是当日涨跌幅")
+    # 「跌幅」:方向和字段相反。只在「一个字段 + 一个数」的通用句型里翻转(见末尾),
+    # 区间、字段对字段、站上跌破这些句型里翻转规则说不清,一律拒绝
+    drop = any(re.search(r"(?<!涨)跌幅$", f[3]) for f in fs)
+    if drop and len(fs) != 1:
+        return None
+    for f in fs:
+        if f[2] == "change" and f[3] in ("涨幅", "涨跌幅", "跌幅", "change"):
+            notes.append(f"「{f[3]}」按当日涨跌幅理解;区间涨幅请写「近1个月涨幅」「年内涨幅」这类")
+        elif f[2] == _AMOUNT_EXPR:
+            notes.append(f"「{f[3]}」按 收盘价 × 成交量 计算(扫描源没有当日成交额字段,盘中是最新价 × 当日累计量)")
+
     # 区间 / 双边比较骨架完全对得上才认(见 _range_expr);对不上继续往下走,由下面两条拒绝
-    rng = _range_expr(t, fs)
+    rng = None if drop else _range_expr(t, fs)
     if rng:
         return rng
     # 一个字段后面跟着两个阈值数字、区间规则又没认出来 → 一定有一半意思落不进通用分支,拒绝。
@@ -804,6 +952,15 @@ def _clause_to_expr(clause: str, vocab: _Vocab, notes: list[str] | None = None) 
         return None
     if days_field and mnum.group(2):
         return None          # 天数字段带 % / 万 / 亿:单位对不上,不猜
+    if drop:
+        # 「跌幅超过10%」= 跌了 10% 以上 = 涨跌幅 < -10。原来直接产出 change > 10(涨了 10% 以上),方向整个反了。
+        # 「跌幅超过-5%」这种负负得正的写法说不清,不猜
+        v = _parse_number(mnum)
+        if v < 0:
+            return None
+        flip = {">": "<", ">=": "<=", "<": ">", "<=": ">=", "==": "=="}[op[0]]
+        notes.append(f"「{left[3]}{op[1]}{_fmt(v)}%」按「涨跌幅 {flip} -{_fmt(v)}%」理解(跌幅是跌掉的百分比)")
+        return f"{left[2]} {flip} {_fmt(-v)}"
     return f"{left[2]} {op[0]} {_fmt(_parse_number(mnum))}"
 
 
@@ -926,8 +1083,9 @@ def translate(text: str, has_field, sma: list[int], ema: list[int],
 # 「统一」「一致」这类词里的"一"不能碰。
 _CN_DIG = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
            "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+# 「个月」「星期」「个星期」2026-09-18 补:「近一个月涨幅」原来一字不转,区间认不出、退回了当日涨跌幅
 _CN_NUM_RE = re.compile(
-    r"([零〇一二两三四五六七八九十百]+)(?=\s*(?:日|天|周|个交易日|年|月|倍))")
+    r"([零〇一二两三四五六七八九十百]+)(?=\s*(?:日|天|周|个交易日|年|月|倍|个月|个星期|星期))")
 # 「涨幅超过三成」—— 成 = 10%
 _CN_CHENG_RE = re.compile(r"([一二两三四五六七八九十]+)成")
 
