@@ -135,6 +135,22 @@ BASE_FILTER = [
     {"left": "typespecs", "operation": "has", "right": ["common"]},
 ]
 
+# 港股不能用 is_primary(2026-09-18 给小鹿准备港股研究数据时发现)。上游把「主上市地」判在别处的
+# 港股线全标成 is_primary=False:A+H 的 H 股(工行 1398 / 比亚迪 1211 / 宁德 3750 / 中国平安 2318)、
+# 第二上市与双重主要上市(阿里 9988 / 京东 9618 / 网易 9999)、汇丰 0005 …… 实测 255 只,
+# 恒指权重股一大半在里面,原来港股池只有 2398 只、这些一只都没有。
+# 那 255 只里 232 只是港元柜台(真股票),23 只是人民币柜台(80700 / 89988 这类,和港元柜台是同一只股,
+# 必须剔掉,否则 RS 排名池里同一家公司算两次)。所以港股把 is_primary 换成 currency = HKD:
+# 实测 primary 那 2398 只里 2397 只是 HKD(剩 1 只人民币计价),新口径 = 2397 + 232。
+_HK_FILTER = [f for f in BASE_FILTER if f["left"] != "is_primary"] + [
+    {"left": "currency", "operation": "equal", "right": "HKD"},
+]
+
+
+def base_filter(market_key: str) -> list:
+    """按市场取永远下推的过滤。港股见 _HK_FILTER 上面的说明。"""
+    return list(_HK_FILTER if market_key == "hk" else BASE_FILTER)
+
 # 永远带回来的列(不管脚本用不用)。currency 是给跨市场比较兜底的,
 # description 是股票名 —— 只给代码的结果没法看。
 ALWAYS_COLS = ["name", "description", "close", "currency", "volume"]
@@ -350,7 +366,7 @@ def _fetch_upstream(md: MarketDef, market_key: str, cols: list[str], limit_scan:
     with httpx.Client(timeout=_TIMEOUT, headers=_UA) as cli:
         while offset < limit_scan:
             body = {
-                "filter": list(BASE_FILTER) + list(extra_filter or []),
+                "filter": base_filter(md.key) + list(extra_filter or []),
                 "options": {"lang": "en"},   # zh_CN 实测也只回英文名,没有中文名可拿
                 "markets": [md.tv],
                 "symbols": {"query": {"types": []}, "tickers": []},
