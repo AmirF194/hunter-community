@@ -15,7 +15,8 @@
 | **M3 · 第一批模板（Zeabur / Sealos）+ 1Panel** | ✅ 完成（模板就绪，**未上架**） | 2026-09-18 | [M3-成果与测试报告.md](./M3-成果与测试报告.md) | `89cf929` + `fda6c9f` · 子任务 [E · 1Panel](./M3-E-1Panel应用包.md) · **不打新标签**，模板钉 `1.1.0-rc2` |
 | **M4 · 第二批平台（Railway / Coolify / Dokploy）+ 全面验收 + 发布** | ✅ 完成（方案就绪，**五个平台都未上架**） | 2026-09-18 | [M4-成果与测试报告.md](./M4-成果与测试报告.md) | `2f93ed8` + `a26a286` · 标签 **`v1.1.0`** · 1Panel 已在 M3 提前做完 |
 
-**项目已收官** —— 全项目总结（R0～M4 成果、实测数据汇总、偏离设计的决策、遗留待办）见 [`总结.md`](./总结.md)。
+**项目已收官** —— [`v1.1.0`](https://github.com/agentpit-io/hunter-community/releases/tag/v1.1.0) 已发布、里程碑已关闭、公告见 [Discussions #26](https://github.com/agentpit-io/hunter-community/discussions/26)。
+全项目总结（R0～M4 成果、实测数据汇总、偏离设计的决策、遗留待办）见 [`总结.md`](./总结.md)。
 
 ## R0 关键结论速查
 
