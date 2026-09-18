@@ -299,9 +299,9 @@ apps/web/app/setup/
 |---|---|---|---|---|---|---|---|
 | **Zeabur** | `template.yaml`（`kind: Template`），服务类型 `PREBUILT` 镜像或 `GIT` | ✅ 支持 `dependencies` | ✅ 每服务 `volumes`（`id` + `dir`） | ✅ `configs`（`path` + `template`，支持变量替换） | ✅ `${PASSWORD}` 类变量；服务可 `expose` 变量供其他服务引用 | ✅ `domainKey` 绑定域名变量 | CLI 发布到模板市场；按钮格式上线前核实 |
 | **Sealos** | `template/<名>/index.yaml`（Template CR + K8s 资源） | ✅ | ✅（StatefulSet 卷） | ✅ ConfigMap | ✅ `${{ random(8) }}`，输入 `${{ inputs.x }}` | ✅ Ingress | 向 `labring-actions/templates` 提 PR，需 `README.md` / `README_zh.md` / logo / 截图；按钮 `[![](https://sealos.io/Deploy-on-Sealos.svg)](https://sealos.io/products/app-store/<name>)` |
-| **Railway** | 模板编辑器（从项目生成） | ✅ | ✅ 每服务挂卷 | 未查到 | ✅ `${{ secret() }}`、`${{ randomInt() }}` | ✅ | 发布到模板市场（维护者可获佣金） |
+| **Railway** | **没有模板文件**：官方流程是先把项目跑通，再 Settings → Generate Template from Project 反向生成（M4 核实） | ✅ | ⚠️ **一个服务只能挂一个卷**；卷以 **root 属主**挂载，非 root 镜像要 `RAILWAY_RUN_UID=0`（M4 核实） | 无（镜像自带即可） | ✅ `${{secret(length?, alphabet?)}}` 默认 32 字符、`${{randomInt()}}`；引用变量 `${{服务名.变量}}` | ✅ | 控制台 Publish → 模板市场；按钮 `https://railway.com/button.svg` → `https://railway.com/new/template/<CODE>`（维护者可获佣金） |
 | **1Panel** | `apps/<key>/` 下 `data.yml` + 版本目录 `docker-compose.yml` | ✅ 标准 compose | ✅ | ✅ 版本目录可带 `data/` 与 `scripts/` | ✅ **`type: password` + `random: true`**（M3 更正：**没有** `type: random`） | 由面板反代配置 | 向 `1Panel-dev/appstore` 提交 |
-| **Coolify / Dokploy** | 直接用 docker-compose | ✅ | ✅ | 依赖 compose 能力 | 平台变量 | ✅ | 无需上架，文档给步骤 |
+| **Coolify / Dokploy** | 直接用 docker-compose（**可整段粘贴**） | ✅ | ✅ 具名卷原样，平台只读展示 | 依赖 compose 能力 | Coolify：magic 变量 `SERVICE_PASSWORD_<ID>`（32 位）/ `SERVICE_FQDN_<服务>_<端口>`；**Dokploy 没有生成器**，UI 变量写进 `.env`、**不自动注入容器**，靠 compose 的 `${VAR}` 插值（M4 核实） | ✅ Coolify 按 FQDN 变量；Dokploy 在 Domains 页签选服务 + 端口，Traefik 标签由平台自动加 | 无需上架，文档给步骤 |
 
 > Zeabur 按钮 URL、Railway 模板文件格式、Coolify/Dokploy 细节本次未在官方文档中查到原文，**模板开发第一天核实**，不凭印象写进 README。
 
@@ -314,6 +314,10 @@ apps/web/app/setup/
 | 第二批 | **Railway** | 海外开发者主流；支持 `secret()` |
 | 第二批 | **1Panel 应用商店** | 国内自有服务器用户；本质是 compose，改造成本低 |
 | 第三批 | Coolify / Dokploy、宝塔、腾讯云轻量 / 阿里云计算巢 | 文档化或另行立项 |
+
+> **M4 实际执行（2026-09-18）**：1Panel 在 M3 提前做完，所以第二批做的是 **Railway + Coolify / Dokploy**
+> （后两家从第三批提前 —— 它们直接吃 compose，改造成本极低）。宝塔与云厂商市场仍未做。
+> **五个平台一次真实部署都没做、一家都没上架**，见 [`M4-成果与测试报告.md`](./M4-成果与测试报告.md) 第八节。
 
 ### 5.3 模板共用规格（所有平台一致）
 
@@ -454,7 +458,8 @@ spec:
 | 平台 | 要点 |
 |---|---|
 | Sealos | 每个服务一个 StatefulSet（有卷）或 Deployment；密钥用 `${{ random(48) }}` 在 `defaults` 里生成（每处独立求值），**直接以环境变量注入多个工作负载，不需要另建 Secret**；postgres / redis 走 KubeBlocks `Cluster`（与仓库里 100+ 个现有模板一致），凭据取自 KubeBlocks 生成的 `<名>-pg-conn-credential` / `<名>-redis-redis-account-default`；web 配 Ingress（**必须放宽 `proxy-read-timeout` 到 600 并关 `proxy-buffering`**，深度分析是 SSE 流式，实测单次 20～54 秒）；opencode 必须 `fsGroup: 1001`；提交是 `template/<名>/index.yaml` + `README.md` / `README_zh.md` / logo / `website-screenshot.webp` |
-| Railway | 在一个示例项目里配好 6 个服务后「生成模板」；密钥 `${{ secret(48) }}` 定义在 api，其余服务用引用变量取同一个值；内网主机名用 `${{api.RAILWAY_PRIVATE_DOMAIN}}` 这类引用而非写死 |
+| Railway | 在一个示例项目里配好 6 个服务后「生成模板」；密钥 `${{secret(48)}}` 定义在 api，其余服务用引用变量取同一个值；内网主机名用 `${{api.RAILWAY_PRIVATE_DOMAIN}}` 这类引用而非写死。**M4 实测补三条硬性要求**：① postgres 必须设 `PGDATA=<挂载点>/pgdata`（卷是 ext4、根目录带 `lost+found`，`initdb` 拒绝非空目录 → 无限重启）；② postgres / redis / opencode 必须设 `RAILWAY_RUN_UID=0`（卷以 root 属主挂载）；③ **一个服务只能挂一个卷**，api 的两份数据合并进同一个卷的两个子目录，且挂载点**不能选 `/opt/hunter-data`**（那是镜像自带的静态数据目录；Docker 具名卷会拷贝镜像内容所以本机看不出来，Railway 的卷不拷贝） |
+| Coolify / Dokploy | 单机 Docker，**三个容器可以共用 `hunter_secrets` 卷** —— 所以这两份 compose 里根本没有 `JWT_SECRET` / `HUNTER_INTERNAL_KEY`，由 api 首启生成、web 与 opencode 只读挂同一个卷读回。少两个能填错的地方就少两类「服务全绿但一对话 401」的故障。云平台（Zeabur / Sealos / Railway）不能这么做 |
 | 1Panel | `data.yml` 表单：访问端口、`HUNTER_SETUP_TOKEN`、`POSTGRES_PASSWORD`（两者都是 **`type: password` + `random: true`**，M3 更正）；compose 与 3.1 的默认 compose 基本一致，但**六个具名卷改成 `./data/*` 相对挂载**（面板的应用备份只打包安装目录，用具名卷会漏掉对话正文）、服务间一律用 `${CONTAINER_NAME}-<服务>`（`1panel-network` 是全面板共用的外部网络，裸服务名会撞别名）；面板反代由用户在面板内配置 |
 
 ### 5.6 README 入口
@@ -463,6 +468,11 @@ spec:
 
 > M3 状态：三个模板都写完并做了等价验证，但**都没有平台账号、都没上架**，所以
 > **README 本轮不加任何部署按钮**，只在 `docs/deploy/` 下给了三篇用户视角的说明。
+>
+> **M4 最终状态（v1.1.0 发布时）**：平台增加到**五个**（Zeabur / Sealos / Railway / 1Panel / Coolify·Dokploy），
+> 全部做过等价验证，**仍然一个都没上架、一次真实部署都没做**。README 与 README_EN 里加了
+> 「一键部署到云平台」小节，**只有文档链接、没有任何按钮**，并写清了为什么没有按钮、
+> 以及「有账号的朋友帮忙实测一次，验过就加按钮」。
 
 ---
 
