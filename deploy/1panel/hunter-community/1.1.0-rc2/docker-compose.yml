@@ -97,6 +97,13 @@ services:
       HUNTER_USER_SKILLS_DIR: /opt/hunter-user-skills
       # api 写完 user-skills 之后要让 opencode 重扫(它只在启动时扫一次)
       OPENCODE_URL: http://${CONTAINER_NAME}-opencode:3901
+      # ⚠️ **api 也必须知道 llm-shim 在哪** —— 不是只有 opencode 需要。
+      # 向导保存后 api 走 PATCH /global/config 把 provider 的 baseURL 推给 opencode,
+      # 那个值取自 **api 容器的** LLM_SHIM_URL;不设就回落到硬编码的
+      # `http://llm-shim:3999/v1` —— 而这里的容器叫 `${CONTAINER_NAME}-llm-shim`,
+      # 解析不了。M3 在 Sealos 等价栈上实测过这个失败:向导五步全绿、engine-ready
+      # 也返回 true,**但发消息永远收不到回复,日志里一条报错都没有**。
+      LLM_SHIM_URL: http://${CONTAINER_NAME}-llm-shim:3999/v1
     volumes:
       - ./data/user-skills:/opt/hunter-user-skills
       - ./data/packages:/opt/hunter-packages

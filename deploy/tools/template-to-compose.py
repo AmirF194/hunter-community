@@ -427,8 +427,18 @@ def translate_sealos(rng: Rng, web_port: int, debug_ports: bool) -> tuple[dict, 
                     "volumes": [f"{vol}:/mnt/vol"],
                     "command": [
                         "/bin/sh", "-c",
-                        # 先清空 = 模拟全新 PVC，再按 fsGroup 改属主
-                        f"rm -rf /mnt/vol/* /mnt/vol/.[!.]* 2>/dev/null; "
+                        # 模拟 K8s：**只有第一次**是空 PVC，之后每次 Pod 启动
+                        # fsGroup 只改属主、不动内容。
+                        #
+                        # ⚠️ 第一版无条件 `rm -rf`，结果 `docker compose start`
+                        # 会把这个一次性服务也拉起来，每次重启都清一遍卷 ——
+                        # 重启后会话数从 5 变成 0，看着像「数据丢了」，其实是
+                        # 测试脚手架自己删的。K8s 的 fsGroup 从不删数据，
+                        # 照搬那种写法测出来的结论是假的。
+                        "if [ ! -f /mnt/vol/.m3-pvc-init ]; then "
+                        "rm -rf /mnt/vol/* /mnt/vol/.[!.]* 2>/dev/null; "
+                        "touch /mnt/vol/.m3-pvc-init; echo '[init] 全新 PVC：已清空'; "
+                        "else echo '[init] 已有 PVC：只改属主，不动内容'; fi; "
                         f"chown -R 0:{fsgroup} /mnt/vol && chmod -R g+rwX /mnt/vol && ls -la /mnt/vol",
                     ],
                 }
@@ -504,21 +514,28 @@ def translate_1panel(rng: Rng, web_port: int, debug_ports: bool) -> tuple[dict, 
         key = f.get("envKey") or f.get("key")
         if not key:
             continue
-        if str(f.get("type", "")).lower() == "random":
-            length = int(f.get("random") or f.get("length") or 16)
-            values[key] = rng.token(length)
-            notes.append(f"表单字段 {key} · type=random(长度 {length}) → 本次生成 {mask(values[key])}")
+        # ⚠️ 1Panel **没有** `type: random`。随机是 `type: password` 上的
+        # `random: true` 属性（子任务 E 查 1Panel-dev/appstore 真实应用核实，
+        # 设计方案 5.1 / 5.5 原来的写法是错的）。长度由面板决定、未公开，
+        # 这里取 16 —— 真实长度只有装一次看 .env 才知道，已列进待办。
+        if f.get("random") is True:
+            values[key] = rng.token(16)
+            notes.append(f"表单字段 {key} · password + random:true → 本次生成 {mask(values[key])}")
         else:
             values[key] = str(f.get("default", ""))
 
     compose_text = (vdir / "docker-compose.yml").read_text(encoding="utf-8")
     # 1Panel 把表单值写进同目录的 .env，compose 用 ${KEY} 取 —— 这里直接代入
+    # 面板内置变量：容器名前缀。1Panel 用它给每个容器加应用实例前缀，
+    # 避免和面板上别的应用在共享的 1panel-network 上撞网络别名。
+    values.setdefault("CONTAINER_NAME", "hunter1p")
+
     def sub(m):
         key, default = m.group(1), m.group(3)
-        if key in values and values[key] != "":
-            return values[key]
         if key == "PANEL_APP_PORT_HTTP":
             return str(web_port)
+        if key in values and values[key] != "":
+            return values[key]
         return default if default is not None else ""
 
     compose_text = re.sub(r"\$\{([A-Za-z0-9_]+)(:-([^}]*))?\}", sub, compose_text)

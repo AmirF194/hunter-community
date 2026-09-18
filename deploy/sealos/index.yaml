@@ -518,7 +518,8 @@ spec:
     - metadata:
         annotations:
           path: /opt/hunter-user-skills
-          value: ${{ inputs.data_volume_size }}
+          # ⚠️ 必须加引号，理由同上
+          value: '${{ inputs.data_volume_size }}'
         name: userskills
       spec:
         accessModes:
@@ -529,7 +530,8 @@ spec:
     - metadata:
         annotations:
           path: /opt/hunter-packages
-          value: ${{ inputs.data_volume_size }}
+          # ⚠️ 必须加引号，理由同上
+          value: '${{ inputs.data_volume_size }}'
         name: packages
       spec:
         accessModes:
@@ -648,7 +650,8 @@ spec:
     - metadata:
         annotations:
           path: /home/hunter/.local
-          value: ${{ inputs.session_volume_size }}
+          # ⚠️ 必须加引号：annotations 的值只能是字符串，渲染出来的是裸数字会被 API server 拒
+          value: '${{ inputs.session_volume_size }}'
         name: sessions
       spec:
         accessModes:

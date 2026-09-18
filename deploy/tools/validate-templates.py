@@ -245,6 +245,69 @@ def check_sealos() -> None:
         p = ROOT / "deploy/sealos" / asset
         (ok if p.exists() else bad)(f"配套文件 {asset} {'存在' if p.exists() else '缺失'}")
 
+    check_sealos_k8s(docs)
+
+
+def check_sealos_k8s(docs: list) -> None:
+    """把模板渲染成真 K8s YAML，交给 kubeconform 按官方 OpenAPI schema 校验。
+
+    CRD（Template / Cluster / App）没有公开 schema，跳过；其余标准资源必须过。
+    没装 kubeconform 就跳过并说明 —— 这一项抓到过真问题（volumeClaimTemplates
+    的 annotations 值渲染成裸数字，`-strict` 判非法，真集群上 API server 也会拒），
+    所以值得单独装一个二进制来跑。
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    exe = shutil.which("kubeconform") or ("/tmp/kubeconform" if Path("/tmp/kubeconform").exists() else None)
+    if not exe:
+        skip("没找到 kubeconform，跳过 K8s schema 校验（装法："
+             "curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/"
+             "kubeconform-linux-amd64.tar.gz | tar -xz -C /tmp kubeconform）")
+        return
+
+    vals = {
+        "defaults.app_name": "huntercode-abcd1234", "defaults.app_host": "huntercode-abcd1234",
+        "defaults.jwt_secret": "x" * 48, "defaults.internal_key": "y" * 48,
+        "defaults.setup_token_gen": "z" * 16, "inputs.setup_token": "z" * 16,
+        "inputs.session_volume_size": "5", "inputs.data_volume_size": "3",
+        "SEALOS_NAMESPACE": "ns-demo", "SEALOS_CLOUD_DOMAIN": "sealos.io",
+        "SEALOS_CERT_SECRET_NAME": "wildcard-cert", "SEALOS_SERVICE_ACCOUNT": "sa-demo",
+    }
+    std_groups = ("v1", "apps", "networking.k8s.io", "rbac.authorization.k8s.io")
+    std = [d for d in docs if d.get("apiVersion", "").split("/")[0] in std_groups]
+
+    def render(node):
+        if isinstance(node, dict):
+            return {render(k): render(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [render(x) for x in node]
+        if not isinstance(node, str):
+            return node
+
+        def rep(m):
+            e = m.group(1).strip()
+            if e in vals:
+                return vals[e]
+            r = re.fullmatch(r"random\((\d+)\)", e)
+            return "r" * int(r.group(1)) if r else m.group(0)
+
+        return re.sub(r"\$\{\{\s*(.+?)\s*\}\}", rep, node)
+
+    rendered = [render(d) for d in std]
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as f:
+        f.write("\n---\n".join(yaml.safe_dump(d, allow_unicode=True) for d in rendered))
+        path = f.name
+    r = subprocess.run([exe, "-kubernetes-version", "1.30.0", "-strict", "-summary", path],
+                       capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip().splitlines()
+    if r.returncode == 0:
+        ok(f"kubeconform -strict（K8s 1.30 官方 schema）· {len(rendered)} 个标准资源全部通过")
+    else:
+        for line in out[:8]:
+            bad(f"kubeconform: {line[:180]}")
+
 
 # ══════════════════════════════════════════════════════════════════════
 def check_1panel() -> None:
@@ -272,10 +335,23 @@ def check_1panel() -> None:
                 ok(f"{v.name}/docker-compose.yml 六个服务齐全")
             else:
                 bad(f"{v.name}/docker-compose.yml 缺服务：{sorted(want - svcs)}")
-            if "build:" in compose.read_text(encoding="utf-8"):
-                bad(f"{v.name}/docker-compose.yml 出现 build: —— 云/面板环境没有仓库目录")
+            # 只看**真的有 build: 段**的服务，不要拿字符串去 grep 全文 ——
+            # 文件顶上那句「不要写 build:」的中文警告会被误判成违规。
+            builders = [n for n, s in (doc.get("services") or {}).items() if "build" in (s or {})]
+            if builders:
+                bad(f"{v.name}/docker-compose.yml 这些服务有 build: 段：{builders}（云/面板环境没有仓库目录）")
             else:
-                ok(f"{v.name}/docker-compose.yml 没有 build: 段")
+                ok(f"{v.name}/docker-compose.yml 没有服务带 build: 段")
+            # 同理查仓库内文件的 bind mount（相对路径挂到镜像里的代码位置）
+            repo_mounts = [
+                f"{n}:{m}" for n, s in (doc.get("services") or {}).items()
+                for m in ((s or {}).get("volumes") or [])
+                if isinstance(m, str) and m.startswith(("./", "../")) and "/data/" not in m
+            ]
+            if repo_mounts:
+                bad(f"{v.name}/docker-compose.yml 有可疑的相对路径挂载：{repo_mounts}")
+            else:
+                ok(f"{v.name}/docker-compose.yml 的相对挂载都在 ./data/ 下（面板备份打得进去）")
 
 
 def main() -> int:
