@@ -51,6 +51,30 @@ jobs:
           JWT_SECRET: ci-test-secret
           DATABASE_URL: postgresql://placeholder@localhost/placeholder
         run: python -c "import main; print('import ok')"
+      # ── 首启向导的单元测试(M2)· 不连库、不联网 ──────────────────────
+      # 只点名这三个文件:仓库里另外 30+ 个测试文件的通过状态未知,
+      # 给整个 tests/ 加 pytest 会把 CI 搞红,那不是这个 job 该管的事
+      # (同 migrations job 里的 test_migrate.py)。
+      - name: pytest · 首启向导(门禁 / 三项检测 / 路由)
+        working-directory: apps/api
+        env:
+          JWT_SECRET: ci-test-secret-for-setup-wizard-0123456789
+        run: |
+          pip install pytest
+          python -m pytest tests/test_setup_guard.py tests/test_llm_probe.py \
+                           tests/test_setup_router.py -p no:cacheprovider -q
+
+      # llm-shim 与 api 共用同一份 schema_clean.py —— 别让人在 api 里另存副本。
+      # 副本漂了的表现是「向导说能用、实际对话一发就 400」,最难查的那一类。
+      - name: 只能有一份 schema_clean.py
+        run: |
+          set -euo pipefail
+          N=$(find . -name schema_clean.py -not -path './node_modules/*' | wc -l)
+          find . -name schema_clean.py -not -path './node_modules/*'
+          [ "$N" = "1" ] || { echo "❌ schema_clean.py 出现了 $N 份,必须只有 scripts/llm-shim/ 那一份"; exit 1; }
+          grep -q 'scripts/llm-shim/schema_clean.py /opt/hunter-shim/' apps/api/Dockerfile \
+            || { echo "❌ api 镜像没有 COPY schema_clean.py,向导第 3 项检测会退化"; exit 1; }
+
       - name: Export OpenAPI spec (audit diff)
         env:
           HUNTER_MINIMAL_BOOT: '1'

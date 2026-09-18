@@ -53,29 +53,53 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
-> 1. **大模型 key(必需)**:驱动对话本身。推荐 [DeepSeek](https://platform.deepseek.com/api_keys),也支持任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)。
+> 1. **大模型 key(必需)**:驱动对话本身。推荐 [DeepSeek](https://platform.deepseek.com/api_keys),也支持任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)。**不用先写进文件**,向导里粘进去当场检测。
 > 2. **数据从哪来(三选一,可以先不管)**:① 免费开源源,开箱即用;② 接你自己的 MCP / 数据源;③ 平台数据管道,[免费申请 key](https://hunter.agentpit.io/dev/api-keys)。详见 [数据供给三选一](#-数据供给三选一)。
 
-**耗时**:自 v1.1.0 起六个服务**全部走预构建镜像,不再本地构建** —— 首次约 3–5 分钟(全在下镜像),之后 `up -d` 几十秒。
+**耗时**:自 v1.1.0 起六个服务**全部走预构建镜像,不再本地构建** —— 首次约 3–5 分钟(全在下镜像),之后 `up -d` 几十秒。向导本身约 1 分钟。
 
 ```bash
-# 1. 拉代码并启动(不需要先改 .env,JWT_SECRET 会自动生成)
 git clone https://github.com/agentpit-io/hunter-community
 cd hunter-community
 docker compose up -d
-open http://localhost:3100
-
-# 2. 配大模型(**现在还得手动填**,图形化向导在下一个版本交付)
-cp .env.example .env
-# 在 .env 里填这三项(以 DeepSeek 为例),然后再 `docker compose up -d` 一次:
-# LLM_BASE_URL=https://api.deepseek.com/v1
-# LLM_DEFAULT_MODEL=deepseek-v4-pro
-# LLM_API_KEY=sk-xxxxx
-# LLM_SCHEMA_SANITIZE=1                 # DeepSeek 必开
-# HUNTER_API_KEY=hunt_tools_xxxxx       # 可选 · 平台数据管道
+open http://localhost:3100          # 浏览器里完成首启向导,不用改任何文件
 ```
 
-> 不填大模型三项时六个服务照样健康,只是不能对话。
+**没有第二步。** 自 v1.1.0 起 `.env` 一个字都不用改 —— 密钥自动生成、数据库自动迁移、
+六个服务全走预构建镜像;大模型在浏览器里配。
+
+### 浏览器里的首启向导
+
+第一次打开会自动进入向导(没配大模型时),五步:
+
+| 步骤 | 做什么 |
+|---|---|
+| 1 · 环境自检 | 六个服务连通、迁移账本、密钥来源与强度、卷可写、访问方式 —— 逐项真探测 |
+| 2 · 选大模型 | 预设卡片带**实测**的工具调用命中率与耗时(来自 [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)),也可以自己填 |
+| 3 · 填 key 当场测 | 连通 → 对话 → 工具调用三项,失败分类报错,**测不通不让保存**;schema 清洗开关由检测结果自动决定 |
+| 4 · 数据供给 | 免费开源源 / 平台数据管道 / 自接 MCP,三选一,可以跳过 |
+| 5 · 完成 | **不重启任何容器**热生效,给三个示例问题带你进对话 |
+
+<p align="center">
+  <img src="./docs/screenshots/setup-wizard/04-三项检测通过.png" alt="第 3 步 · 三项检测" width="760" />
+</p>
+
+全部截图见 [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/)。
+
+> [!IMPORTANT]
+> **这台实例只要能从公网打开,就先在 `.env` 里设 `HUNTER_SETUP_TOKEN`**(随便一串随机值,
+> `openssl rand -base64 24`),然后 `docker compose up -d`。
+> 不设的话,谁先打开这个页面谁就能配置大模型 —— 向导判断「来源是不是本机」靠的是
+> HTTP 转发头,裸 `docker compose`(前面没有 nginx 之类的反代)时那是访问者可以伪造的。
+> 设了之后向导第 0 步会要这个口令,连错 5 次锁 15 分钟。本机 / 内网使用不需要设。
+
+**想走老路(在 `.env` 里写死)也行**,而且优先级更高:填了 `LLM_BASE_URL` / `LLM_API_KEY` /
+`LLM_DEFAULT_MODEL` 的实例是**锁定**状态,向导只读展示、改不了它(演示站就是这么跑的)。
+要换模型改 `.env` 后 `docker compose up -d`(**不是 restart** —— restart 不重读 `.env`)。
+
+> 不配大模型时六个服务照样健康,只是发消息会收到一句中文的「大模型尚未配置」。
+> 想以后再配,向导最后一步点「先进对话页(稍后再说)」即可;
+> 要重新跑向导:设置 → 大模型 → 「重新运行初始化向导」。
 
 **要改代码的开发者**叠加开发覆盖文件 —— 它带回本地构建与全部源码挂载(改 `apps/web/public` 下的静态文件、`scripts/` 下的 MCP 与插件都立即生效):
 
@@ -483,7 +507,7 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
   - [x] 六个服务全部预构建镜像 + amd64/arm64 双架构(`v1.1.0-rc1`)
   - [x] 数据库迁移改为 api 启动时自动执行;`JWT_SECRET` 等密钥首次启动自动生成
   - [x] 大模型配置可存库(不再只能写 `.env`),改配置热生效、无需重启容器
-  - [ ] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)
+  - [x] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)(`v1.1.0-rc2`)
   - [ ] 一键部署模板(Zeabur / Sealos / Railway / 1Panel)
   - 进度与实测数据:[`docs/setup-wizard/`](./docs/setup-wizard/)
 

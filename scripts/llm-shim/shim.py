@@ -71,11 +71,13 @@ INTERNAL_HOSTS = {
 # 未配置时的占位模型名(见 scripts/opencode/gen-config.py)
 PLACEHOLDER_MODEL = "hunter-unconfigured"
 
-# ⚠️ 措辞以**不撒谎**为准:M1 还没有初始化向导页面,所以不写「打开首页完成向导」。
+# ⚠️ 措辞以**不撒谎**为准:写进去的每一条路都得真的存在。
+# M2 起首启向导(/setup)已经上线,所以这里改成指向它;M1 时期那句
+# 「或等初始化向导上线后在首页完成配置」已经作废。
 UNCONFIGURED_MSG = (
     "大模型尚未配置:这套部署还没有可用的大模型地址。"
-    "请在部署环境里填好 LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL 后重启,"
-    "或等初始化向导上线后在首页完成配置。"
+    "打开浏览器访问这台实例的 /setup 完成首启向导即可(不用改任何文件);"
+    "也可以在 .env 里填好 LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL 后 docker compose up -d。"
 )
 
 
