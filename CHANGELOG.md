@@ -3,6 +3,53 @@
 All notable changes to HunterCode · Community Edition follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0-rc1] - 2026-09-19
+
+### ✨ 新增 · Added
+- **内置模型额度**(`hunter-chat` / `hunter-deep`)· **不用自己去各家申请大模型 key 了**。
+  向导第 2 步第一张卡「使用 HunterCode 内置额度(推荐)」选中即自动填好网关地址与模型名,
+  只要一把免费的 `hunt_tools_` 平台 key —— 那把 key 本来就要申请(它管工具、SKILL 与数据源),
+  现在**同一把 key 也管大模型额度**,不需要第二把。每天有免费 token 额度,
+  用完会在对话里用中文说清什么时候重置、怎么改用自带 key。
+  隐私:网关**只记 token 数与模型名,不记任何 prompt 与回复内容**。
+  用法与隐私声明见 [`docs/builtin-llm/使用说明.md`](docs/builtin-llm/使用说明.md)。
+  A built-in model quota: pick the first card in the wizard and paste one free platform key —
+  no LLM account of your own. The gateway records token counts and model names only, never content.
+- **设置页 → 大模型 → 今日额度**:剩余 / 上限 / 已用 / 进度条 / 重置时间 / 计量口径。
+  数字直接来自网关(新接口 `GET /api/setup/llm/quota`),**前端不换算、不补默认值**;
+  取不到就显示「—」并写明原因。
+- **内置额度路径下向导替你做完两件事**:把深度分析相关的模型变量指向 `hunter-deep`;
+  用同一把 key 解锁数据供给(第 4 步直接显示「已解锁」,不用再填一遍)。
+- `apps/web/scripts/model-error-check.mjs` · 「模型调用失败时用户看到什么」的回归检查,
+  用**真实抓到的**报错对象跑 7 条断言,已接进 CI。
+
+### 🐛 修复 · Fixed
+- **额度用完时页面上是一个永不停止的转圈**。网关原来返 429,而 OpenAI 兼容客户端
+  (opencode 用的 AI SDK)把 429 当「等会儿再来」,按 `Retry-After` **无限重试** ——
+  实测 17 分钟仍在等,那段写清「今天用完了、几点重置、现在能怎么办」的中文引导一个字都没露出来。
+  网关改成返 **402**(`type` 仍是 `insufficient_quota`),前端 1 秒出卡片并**直接显示上游那段中文**,
+  不再套「模型请求太频繁,稍等一会儿再重发」那种方向相反的模板。
+- **深度分析的模型变量在没有 `.env` 时是空串,不是默认值**。`ASSISTANT_MODEL_* /
+  AGENT_SUB_* / AGENT_MODEL_* / SIGNAL_ANALYSIS_MODEL` 在 compose 里写成 `${X:-}`,
+  注进容器的是空字符串,于是 `os.getenv(名, 默认值)` 拿到的是 `""` —— 请求打到上游时
+  `model` 是空的,表现是「工具调用成功、之后的 LLM 汇总整个失败,只能用模板兜底」。
+  **所有没写 `.env` 的部署都中招**,不只是内置额度。现在统一走
+  `runtime_config.agent_model()`:**环境变量非空 → 数据库(向导写入)→ 代码默认值**;
+  调用点全部改成惰性读取(模块级常量在向导热生效之后不会更新)。
+- **`LLM_SCHEMA_SANITIZE` 原来只给了 opencode,api 看不到**。`.env` 里写 `=0` 的锁定实例上,
+  opencode 按 0 直连而 api 退回数据库里的旧值,设置页显示的开关与实际走法不一致。
+- 设置页:额度重置时间原来按**浏览器所在时区**渲染(显示「今天 16:00」,旁边却标着
+  Asia/Shanghai);`Row` 的标签列 90px 装不下 `LLM_DEFAULT_MODEL`,取值叠在标签上面。
+
+### 🔧 变更 · Changed
+- `.env.example` 的 `LLM_BASE_URL` / `LLM_DEFAULT_MODEL` 由预填 OpenAI 地址改为**留空**。
+  `env_locked()` 的语义是「任何一项非空就锁」,预填会让 `cp .env.example .env` 的人
+  反而进不了向导、只看到「这台实例的大模型配置已锁定」。
+- 预设卡片:自带 key 的四张加「高级」标签,DeepSeek 那张的「推荐」改成「自带 key 首推」——
+  一屏里只留一张卡说「推荐」。
+- README ×2 的「5 分钟跑起来」、`docs/01-getting-started.md` 把内置额度写成推荐路径、
+  自带 key 为高级路径。
+
 ## [1.1.0] - 2026-09-18
 
 ### ✨ 新增 · Added

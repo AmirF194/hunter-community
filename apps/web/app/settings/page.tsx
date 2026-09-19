@@ -245,22 +245,26 @@ function SaasTab() {
 function LlmTab() {
   const router = useRouter()
   const [st, setSt] = useState<any>(null)
+  const [quota, setQuota] = useState<any>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     let token = ''
     try { token = localStorage.getItem('hunter_token') || '' } catch { /* 隐私模式 */ }
-    fetch('/api/setup/status', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      cache: 'no-store',
-    })
+    const auth: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
+    fetch('/api/setup/status', { headers: auth, cache: 'no-store' })
       .then(async r => {
         const d = await r.json().catch(() => null)
         if (!r.ok) throw new Error(d?.detail?.message || d?.message || `HTTP ${r.status}`)
         setSt(d)
       })
       .catch(e => setErr(String(e?.message || e)))
+    // 额度单独一条 —— 它要跨公网问网关,不该拖慢这张卡片的其余部分。
+    // **失败不设 err**:一个额度数字取不到,不该把整张卡打成红色报错。
+    fetch('/api/setup/llm/quota', { headers: auth, cache: 'no-store' })
+      .then(async r => setQuota(await r.json().catch(() => null)))
+      .catch(() => setQuota({ builtin: true, ok: false, message: '请求没发出去:连不上这台服务器' }))
   }, [])
 
   const rerun = async () => {
@@ -307,6 +311,7 @@ function LlmTab() {
       <Row label="接口地址" value={llm.base_url || '-'} />
       <Row label="API key" value={llm.api_key_masked || '-'} />
       <Row label="schema 清洗" value={llm.sanitize || '-'} />
+      {(llm.builtin || quota?.builtin) && <QuotaRows q={quota} />}
       {(['base_url', 'model', 'api_key'] as const).map(k => (
         <Row key={k} label={ENV_NAME[k]}
              value={<span style={{ fontSize: 13 }}>{SRC_CN[(llm.locked_items || {})[k]] || '未配置'}</span>} />
@@ -337,6 +342,86 @@ function LlmTab() {
     </Card>
   )
 }
+
+// ── 内置额度 · 今日剩余(P2 · 方案 4.8「设置页显示今日剩余额度」)──────
+//
+// 数字一律来自 `GET /api/setup/llm/quota`(它转发网关的 `/api/saas/llm/quota`),
+// **一个都不在前端算、不补默认值** —— 取不到就显示「—」并说明原因,
+// 免得用户按一个编出来的剩余量去安排今天的用量(仓内铁律:空的比假的好)。
+function QuotaRows({ q }: { q: any }) {
+  if (!q) return <Row label="今日额度" value={<span style={{ color: 'var(--text-muted)' }}>读取中…</span>} />
+  if (q.ok === false) {
+    return (
+      <Row label="今日额度" value={
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          — · 取不到:{q.message || '未知原因'}
+        </span>
+      } />
+    )
+  }
+  const d = q.quota || {}
+  const n = (x: any) => (Number.isFinite(Number(x)) ? Number(x).toLocaleString('en-US') : '—')
+  const pct = (Number.isFinite(Number(d.limit_daily)) && Number(d.limit_daily) > 0
+    && Number.isFinite(Number(d.remaining)))
+    ? Math.max(0, Math.min(100, (Number(d.remaining) / Number(d.limit_daily)) * 100))
+    : null
+  // ⚠️ **按网关给的时区渲染,不按浏览器所在时区**。额度是「北京时间 0 点重置」,
+  // 而服务器 / 海外用户的浏览器常常不在 +08 —— 直接 toLocaleString() 会显示成
+  // 「2026/9/19 16:00」,旁边却标着 Asia/Shanghai,自相矛盾(2026-09-19 截图里看出来的)。
+  let reset = '—'
+  if (typeof d.reset_at === 'string' && d.reset_at) {
+    const t = new Date(d.reset_at)
+    if (Number.isNaN(t.getTime())) {
+      reset = d.reset_at
+    } else {
+      try {
+        reset = t.toLocaleString('zh-CN', { timeZone: d.reset_tz || 'Asia/Shanghai' })
+      } catch {
+        reset = t.toLocaleString('zh-CN')   // 时区名不认识就退回本地,不编一个时间出来
+      }
+    }
+  }
+  return (
+    <>
+      <Row label="今日额度" value={
+        <div>
+          <span style={{ color: d.exhausted ? 'var(--red)' : 'var(--text)' }}>
+            剩余 <strong>{n(d.remaining)}</strong> / 上限 {n(d.limit_daily)} token
+          </span>
+          <span style={{ fontSize: 12.5, color: 'var(--text-muted)', marginLeft: 8 }}>
+            已用 {n(d.used_today)}
+          </span>
+          {pct !== null && (
+            <div style={{ marginTop: 6, height: 6, borderRadius: 3, background: 'var(--bg-panel)' }}>
+              <div style={{
+                width: `${pct}%`, height: '100%', borderRadius: 3,
+                background: d.exhausted ? 'var(--red)' : 'var(--blue)',
+              }} />
+            </div>
+          )}
+          {d.exhausted && (
+            <div style={{ marginTop: 6, fontSize: 12.5, color: 'var(--red)' }}>
+              今天的内置额度已用完。到重置时间自动恢复;等不了就用「重新运行初始化向导」
+              换成你自己的大模型 key(任何 OpenAI 兼容服务都行),之后随时能切回来。
+            </div>
+          )}
+        </div>
+      } />
+      <Row label="重置时间" value={
+        <span>{reset}{d.reset_tz ? <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}> · {d.reset_tz}</span> : null}</span>
+      } />
+      <Row label="计量口径" value={
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          {d.unit || 'token'}
+          {Number.isFinite(Number(d.rate_per_min)) && <> · 每分钟 {d.rate_per_min} 次</>}
+          {Number.isFinite(Number(d.max_concurrency)) && <> · 并发 {d.max_concurrency}</>}
+          <br />网关只记 token 数与模型名,不记任何对话内容。
+        </span>
+      } />
+    </>
+  )
+}
+
 
 function AboutTab() {
   return (
@@ -387,10 +472,15 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  // 标签列 90px 装不下 `LLM_DEFAULT_MODEL` 这类环境变量名,取值会叠在上面
+  // (2026-09-19 截图里看出来的)。加宽 + 不许压缩 + 留出间距。
   return (
     <div style={{ display: 'flex', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-      <div style={{ width: 90, fontSize: 13, color: 'var(--text-muted)' }}>{label}</div>
-      <div style={{ flex: 1, fontSize: 14, color: 'var(--text)' }}>{value}</div>
+      <div style={{
+        width: 148, flexShrink: 0, paddingRight: 10, fontSize: 13,
+        color: 'var(--text-muted)', wordBreak: 'break-all',
+      }}>{label}</div>
+      <div style={{ flex: 1, minWidth: 0, fontSize: 14, color: 'var(--text)' }}>{value}</div>
     </div>
   )
 }

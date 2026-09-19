@@ -35,7 +35,8 @@ def app(monkeypatch):
     G.reset_state()
     state = {"cfg": MemCfg(), "kv": {}, "env_locked": False,
              "item_source": {"base_url": "none", "api_key": "none", "model": "none"},
-             "saved": [], "applied": [], "ready": False}
+             "saved": [], "applied": [], "ready": False,
+             "builtin": False, "agent_models": {}}
 
     monkeypatch.setattr(RC, "llm", lambda: state["cfg"])
     monkeypatch.setattr(RC, "env_locked", lambda: state["env_locked"])
@@ -48,6 +49,13 @@ def app(monkeypatch):
                                "sanitize": cfg.sanitize, "api_key": cfg.api_key})
         state["cfg"] = MemCfg(cfg.base_url, cfg.api_key, cfg.model, cfg.sanitize, "db")
     monkeypatch.setattr(RC, "save_llm", _save)
+
+    # 内置额度标记与 agent 侧模型名(P2)。真实实现会写库,这里记在内存里。
+    def _save_builtin(on, models=None):
+        state["builtin"] = bool(on)
+        state["agent_models"] = dict(models or {}) if on else {}
+    monkeypatch.setattr(RC, "save_builtin", _save_builtin)
+    monkeypatch.setattr(RC, "builtin", lambda: state["builtin"])
 
     from app.services import opencode_admin as OA
     monkeypatch.setattr(OA, "apply_llm", lambda cfg: (state["applied"].append(cfg.model)

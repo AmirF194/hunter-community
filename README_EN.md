@@ -88,8 +88,10 @@ All six images ship for **amd64 and arm64**, so Apple Silicon and arm cloud inst
 
 > [!IMPORTANT]
 > **Only two things to understand before you start**
-> 1. **An LLM key (required)**: powers the chat itself. We recommend [DeepSeek](https://platform.deepseek.com/api_keys); any OpenAI-compatible gateway works (Qwen, Claude, GPT, OpenRouter, OneAPI, AIHubMix, ...).
+> 1. **Where the model comes from.** Recommended: **HunterCode built-in quota** — [get a free `hunt_tools_` platform key](https://hunter.agentpit.io/dev/api-keys) (~30 seconds), pick the first card in wizard step 2, and **you never hunt for an LLM key of your own**. The endpoint and model name are filled in for you, and you get a free daily token allowance. See [the built-in quota guide](./docs/builtin-llm/使用说明.md) (Chinese).
+>    **Advanced: bring your own LLM key** — [DeepSeek](https://platform.deepseek.com/api_keys) or any OpenAI-compatible gateway (Qwen, Claude, GPT, OpenRouter, OneAPI, AIHubMix, ...). You can switch between the two paths at any time.
 > 2. **Where data comes from (pick one, can wait)**: ① free open-source sources (A-share quotes need `DATA_SOURCE_PROVIDER=akshare` in `.env`); ② your own MCP / data sources; ③ the platform data pipeline, [free key](https://hunter.agentpit.io/dev/api-keys). See [Data supply: pick one of three](#-data-supply-pick-one-of-three).
+>    On the built-in-quota path this is **already taken care of** — the same `hunt_tools_` key is the data-supply key, and the wizard tells you it is already unlocked.
 
 **Time**: since v1.1.0 all six services run from **pre-built images — nothing is built locally**. First run is ~3–5 minutes (all of it image downloads); later `up -d` takes seconds.
 
@@ -111,16 +113,17 @@ The first time you open the app (with no LLM configured) it takes you through fi
 | Step | What it does |
 |---|---|
 | 1 · Environment check | Six services, migration ledger, secret origin & strength, volume writability, how you're reaching this instance — every item actually probed |
-| 2 · Pick a model | Preset cards carry **measured** tool-call hit rates and latencies (from [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)); or type your own |
-| 3 · Paste the key, test it now | Reachability → chat → tool call. Failures are classified, and **you cannot save a config that did not pass**. The schema-sanitize switch is decided by the test result |
-| 4 · Data supply | Free open-source sources / platform data pipeline / your own MCP — pick one, or skip |
+| 2 · Pick a model | **The first card is "use the HunterCode built-in quota" (recommended)** — pick it and the endpoint and model name fill themselves in; all you need is one `hunt_tools_` key. The cards below it are the bring-your-own-key path, carrying **measured** tool-call hit rates and latencies (from [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)) |
+| 3 · Paste the key, test it now | Reachability → chat → tool call. Failures are classified, and **you cannot save a config that did not pass**. On the built-in-quota path it also points deep analysis at `hunter-deep` and unlocks data supply with the same key |
+| 4 · Data supply | Free open-source sources / platform data pipeline / your own MCP — pick one, or skip. On the built-in-quota path it just says "already unlocked with the same key" |
 | 5 · Done | Applied live, **without restarting any container**, plus three example questions to get you into the chat |
 
 <p align="center">
-  <img src="./docs/screenshots/setup-wizard/04-三项检测通过.png" alt="Step 3 · the three checks" width="760" />
+  <img src="./docs/screenshots/builtin-llm/02-第2步-内置额度是第一张卡.png" alt="Step 2 · the built-in quota is the first card" width="760" />
 </p>
 
-All screenshots: [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/).
+All screenshots: [`docs/screenshots/builtin-llm/`](./docs/screenshots/builtin-llm/) (built-in quota,
+end to end) and [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/) (bring-your-own-key path).
 
 > [!IMPORTANT]
 > **If this instance is reachable from the public internet, set `HUNTER_SETUP_TOKEN` in `.env` first**
@@ -135,6 +138,14 @@ All screenshots: [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wiz
 `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_DEFAULT_MODEL` set is **locked** — the wizard shows the
 values read-only and cannot change them (that is how the demo site runs). To switch models,
 edit `.env` and run `docker compose up -d` (**not `restart`** — restart does not re-read `.env`).
+The built-in quota can be hard-coded the same way (one-click deploy templates do exactly that):
+
+```bash
+LLM_BASE_URL=https://hunter.agentpit.io/api/saas/llm/v1
+LLM_API_KEY=hunt_tools_xxxxxxxxxxxxxxxx      # the platform key — no second key needed
+LLM_DEFAULT_MODEL=hunter-chat
+LLM_SCHEMA_SANITIZE=0                        # sanitizing happens at the gateway
+```
 
 > Without an LLM configured all six services still come up healthy; sending a message just
 > returns a plain "the LLM is not configured yet" notice. Want to do it later? Click

@@ -87,7 +87,7 @@ REASON: 用2-3句中文说明影响机制和程度，不超过80字"""
 
     try:
         resp = client.chat.completions.create(
-            model=os.getenv("SIGNAL_ANALYSIS_MODEL", "gemini-3.1-pro-preview"),
+            model=runtime_config.agent_model("SIGNAL_ANALYSIS_MODEL", "gemini-3.1-pro-preview"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             tools=[{"type": "google_search"}],
@@ -469,7 +469,8 @@ def _generate_html_report_sync(
         logger.warning("[signal] html report: ONE_API_KEY 未配置")
         return ""
     # 使用 Flash 模型：Pro 模型的 Extended Thinking 会把推理链输出在 HTML 前污染报告
-    _html_model = os.getenv("SIGNAL_ANALYSIS_MODEL", os.getenv("ONE_API_MODEL", "gemini-2.0-flash"))
+    _html_model = runtime_config.agent_model(
+        "SIGNAL_ANALYSIS_MODEL", runtime_config.agent_model("ONE_API_MODEL", "gemini-2.0-flash"))
     client = OpenAI(api_key=_api_key, base_url=_base_url, timeout=120)
     try:
         resp = client.chat.completions.create(
@@ -580,7 +581,8 @@ disclaim区写免责声明；footer含wrap区，brand写"Hermes · 持仓影响�
 所有文字内容全部用中文。英文只允许出现在股票代码中。"""
 
     # 使用 Flash 模型：Pro 模型的 Extended Thinking 会把推理链输出在 HTML 前污染报告
-    _html_model = os.getenv("SIGNAL_ANALYSIS_MODEL", os.getenv("ONE_API_MODEL", "gemini-2.0-flash"))
+    _html_model = runtime_config.agent_model(
+        "SIGNAL_ANALYSIS_MODEL", runtime_config.agent_model("ONE_API_MODEL", "gemini-2.0-flash"))
     client = OpenAI(api_key=_api_key, base_url=_base_url, timeout=120)
     try:
         resp = client.chat.completions.create(

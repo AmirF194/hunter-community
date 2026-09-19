@@ -1254,6 +1254,11 @@ function kcLegend(rows, mark) {
     parts.push('<span title="' + kcEsc(mark.note || '') + '" style="border-bottom:1px dotted currentColor;cursor:help">' +
       mark.unknown + ' 天算不出</span>')
   }
+  // 筛选器:扫描当日按结果表补标(pinNote,有「算不出」的天也照样显示)/ 自家日线没有这只票等说明,常驻显示(不藏 title 里)
+  const showNote = mark.pinNote || (!mark.unknown && mark.noteShow)
+  if (showNote) {
+    parts.push('<span class="kc-note" style="color:var(--muted,#8a8378)">' + kcEsc(showNote) + '</span>')
+  }
   // 小鹿看板的中蓝 / 深蓝两层:给了名字就写天数(0 天也是结论);没给名字(引擎没这层)就不写
   if (n(mark.setup) || mark.setupLabel) {
     parts.push('<i style="background:' + KC_SETUP_LINE + '"></i>' + kcEsc(mark.setupLabel || '形态就绪') + ' ' + n(mark.setup) + ' 天')
