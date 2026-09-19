@@ -174,6 +174,63 @@ def _tokenize(src: str) -> list[_Tok]:
     return toks
 
 
+# ═══════════════════════════════════════════════════════════════
+# 名字不分大小写(2026-09-19 用户:编辑框把 SMA20 > SMA50 改成 sma10 > sma20,报「不认识 'sma10'」)
+#
+# ThinkScript 本身不分大小写。原来只有 close/open/…、函数名、关键字不分,扫描源字段名
+# (SMA20 / RSI / market_cap_basic / MACD.macd / Perf.W)和自己 def 的名字(def Up … plot scan = up)
+# 都是逐字比对,换个大小写就「不认识」。按类别探针实测这两类全中。
+# 做法:编译前把**标识符**按原名改写 —— 先对自己的 def / input / rec 名字,再对扫描源字段(不分大小写
+# 唯一对上才改,对上多个就不动,照旧报不认识)。只改大小写,长度不变,所以 decompose / 编辑框 / 数字框
+# 用的源码位置全都照旧成立。函数调用(后面紧跟 `(`)、价格名、关键字本来就不分大小写,不动。
+# 词法不过(大白话、半截输入)原样返回,交给后面的流程报错或走本地识别。
+def fix_case(src: str, names, extra_src: str = "") -> tuple[str, list[str]]:
+    """→ (改写后的脚本, ["sma10 → SMA10", …])。names = 这个市场扫描源字段名全集。"""
+    try:
+        toks = _tokenize(src)
+    except ScreenError:
+        return src, []
+    try:
+        ctx_toks = _tokenize(extra_src) if extra_src else []
+    except ScreenError:
+        ctx_toks = []
+    defs: dict[str, str] = {}
+    for tl in (ctx_toks, toks):
+        for i, t in enumerate(tl[:-1]):
+            if t.kind in ("def", "input", "rec", "plot") and tl[i + 1].kind == "ident":
+                defs.setdefault(tl[i + 1].val.lower(), tl[i + 1].val)
+    by_low: dict[str, list[str]] = {}
+    for n in names or ():
+        by_low.setdefault(n.lower(), []).append(n)
+    out = list(src)
+    changes: list[str] = []
+    for i, t in enumerate(toks):
+        if t.kind != "ident":
+            continue
+        v = t.val
+        if i + 1 < len(toks) and toks[i + 1].kind == "op" and toks[i + 1].val == "(":
+            continue                       # 函数调用,本来就不分大小写
+        low = v.lower()
+        if low in _PRICE or v in defs.values():
+            continue
+        target = defs.get(low)
+        if target is None:
+            if v in (names or ()):
+                continue
+            cand = by_low.get(low) or []
+            target = cand[0] if len(cand) == 1 else None
+        if not target or target == v or len(target) != len(v):
+            continue
+        out[t.pos:t.pos + len(v)] = list(target)
+        msg = f"{v} → {target}"
+        if msg not in changes:
+            changes.append(msg)
+    return "".join(out), changes
+
+
+CASE_NOTE = "名字不分大小写,已按原名改写:{changes}。"
+
+
 def _line_of(src: str, pos: int) -> int:
     return src.count("\n", 0, pos) + 1
 

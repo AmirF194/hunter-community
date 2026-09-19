@@ -228,6 +228,7 @@ def _hit_days(script: str, market: str, code: str, as_of: date | None, days: int
     def has_field(n: str) -> bool:
         return n in meta.names
 
+    script = screen_dsl.fix_case(script, meta.names)[0]      # 不分大小写,同 parse_script
     c = screen_dsl.compile_script(script, has_field, meta.sma, meta.ema, meta.rsi)
     fields = list(c.fields)
     _rows, perf = _snapshot(market, md.key, has_field)

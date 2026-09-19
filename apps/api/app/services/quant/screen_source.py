@@ -441,6 +441,7 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
     limit = max(1, min(int(100 if limit is None else limit), 500))
 
     meta = get_meta(market_key)
+    script = screen_dsl.fix_case(script, meta.names)[0]      # 不分大小写,同 parse_script
 
     def has_field(n: str) -> bool:
         return n in meta.names
@@ -1006,6 +1007,8 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     def _compile(src: str) -> Compiled:
         return screen_dsl.compile_script(src, has_field, meta.sma, meta.ema, meta.rsi)
 
+    # ThinkScript 不分大小写:字段名 / 自己的 def 名按原名改写(screen_dsl.fix_case,2026-09-19)
+    script, case_changes = screen_dsl.fix_case(script, meta.names, context or "")
     ai = None
     kw = None
     original_text = script
@@ -1146,6 +1149,8 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     d["fields"] = c.fields
     # 界面据此提示「官方示例 · 不计扫描次数」;真正是否扣次数由 /screener/run 再判一次(前端的话不算数)
     d["official_preset"] = official_preset_of(script, md.key)
+    if case_changes:
+        warnings.append(screen_dsl.CASE_NOTE.format(changes="、".join(case_changes[:8])))
     if frag is not None:
         warnings.extend(frag["notes"])
     d["warnings"] = warnings

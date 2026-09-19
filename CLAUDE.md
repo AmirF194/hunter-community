@@ -649,6 +649,18 @@ render_check 的「数据源过滤」会读 `../../../api/app/services/quant/scr
 路由测试挂的是假登录与假额度,**没覆盖真实 auth 中间件与额度 SQL**。
 用例:`test_screen_series.py` G 组 26 条;`render_check.js`「条件宿主」13 条。
 
+## 筛选器 · 名字不分大小写(`screen_dsl.fix_case`,2026-09-19)
+
+用户在编辑框把 `SMA20 > SMA50` 改成 `sma10 > sma20`,报「不认识 'sma10'」,大写就认。ThinkScript 本身不分大小写;
+原来只有价格名、函数名、关键字不分,**扫描源字段名**(SMA20 / RSI / market_cap_basic / MACD.macd / Perf.W)和**自己 def 的名字**
+(`def Up … plot scan = up`)逐字比对。现在 parse_script / run_script / hit-days 编译前统一过 `fix_case`,三条别改坏:
+1. **只改大小写,长度不变**:decompose 的条件原文、编辑框、数字框都靠源码位置,换了长度会全错位。改名必须 `len(新) == len(旧)`。
+2. **先认自己的 def / input / rec(含追加模式的上下文脚本),再认字段**;def 与字段同名不同大小写时引用归 def(ThinkScript 语义)。
+   字段只在不分大小写**唯一**对上时才改,对上多个不猜,照旧报不认识。
+3. 函数调用(后面紧跟 `(`)、价格名、关键字、注释不动;词法不过的大白话原样返回。改写写进 warnings(「名字不分大小写,已按原名改写:sma10 → SMA10」),
+   条件行回来就是原名,用户看得到改了什么。
+用例:`test_screen_series.py` I 组 29 条。
+
 ## 筛选器 · 官方示例「猎杀FOMO做空」(`PRESETS` key=`fomo_short`,2026-09-15)· 五条
 
 用户给了做空规则(连续收阳 · 小盘整体涨 80%~100%+、大市值降低 · 逐日加速 · 几乎无阴线 · 递增放量 + 顶部天量 ·
