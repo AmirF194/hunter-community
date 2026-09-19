@@ -60,6 +60,13 @@ const GATEWAY_CODES: Record<string, string> = {
   input_too_large: '这次发过去的内容太长了',
   hunter_key_required: '这台实例还没填 Hunter 平台 key',
   model_not_allowed: '内置额度不支持这个模型名',
+  // ── P3(2026-09-19)· 对外开放之后的两道全局闸门 ──
+  // 两者的状态码都**不是** 5xx,否则 AI SDK 会判为可重试、无限转圈,
+  // 这段中文又一个字都到不了界面(P2 踩过,见文件头)。
+  //   service_disabled      403 · 我们把内置额度整体关了(运维开关)
+  //   global_quota_exceeded 402 · 全平台当日总量熔断,跟你个人额度无关
+  service_disabled: '内置额度当前已暂停服务',
+  global_quota_exceeded: '内置额度今天整体用满了',
 }
 
 export function describeModelError(err: any): ModelErrorView | null {

@@ -26,9 +26,10 @@
         "向导这三项检测对着它实测 3 次:总耗时 4.87 / 5.16 / 5.16 秒（连通 0.71~0.77 秒、对话 1.98~2.41 秒、工具调用 1.95~2.47 秒）。下面那几张卡的「命中 x/7 · 单次平均 N 秒」是另一套 7 个 golden case 的口径，两者不可比。",
         "每天有免费 token 额度，用完会在对话里用中文说清什么时候重置、怎么改用自带 key；额度不是断服。",
         "深度分析自动走更强的 hunter-deep，不用你手工配模型变量。",
-        "隐私：网关只记 token 数与模型名，不记任何 prompt 与回复内容。见 docs/builtin-llm/使用说明.md。",
+        "隐私：网关只记 token 数与模型名，不记任何 prompt 与回复内容。使用前请读一遍《服务条款与可接受使用政策》（禁止转售、禁止当通用 API 用；额度与服务可能调整或下线）——卡片下方有链接，也见 docs/builtin-llm/服务条款.md。",
         "想完全自给自足随时可以切回下面的「自带 key」，两条路互不影响。"
-      ]
+      ],
+      "terms_url": "https://github.com/agentpit-io/hunter-community/blob/main/docs/builtin-llm/%E6%9C%8D%E5%8A%A1%E6%9D%A1%E6%AC%BE.md"
     },
     {
       "id": "deepseek-v4-pro",

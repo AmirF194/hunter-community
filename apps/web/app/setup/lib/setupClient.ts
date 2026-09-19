@@ -73,6 +73,9 @@ export interface Preset {
   builtin?: boolean
   /** 内置额度的深度分析模型名,只用于卡片上的说明文字。 */
   deep_model?: string
+  /** 服务条款与可接受使用政策。内置额度这张卡必须有 —— 它用的是我们的算力,
+   *  用户有权在点之前知道边界(禁止转售、额度可调整、服务可能下线)。 */
+  terms_url?: string
 }
 
 export interface PresetDoc {

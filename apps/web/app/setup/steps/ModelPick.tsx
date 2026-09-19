@@ -157,6 +157,17 @@ export default function ModelPick({
                   {p.key_hint && <span style={{ color: HUNTER.INK_F }}> · {p.key_hint}</span>}
                 </div>
               )}
+              {/* 用的是我们的算力,点之前得让人能读到边界 —— 不是走完向导才发现 */}
+              {p.terms_url && (
+                <div style={{ marginTop: 4, fontSize: 12.5 }}>
+                  <a href={p.terms_url} target="_blank" rel="noreferrer"
+                     onClick={(e) => e.stopPropagation()}
+                     style={{ color: HUNTER.INK_S, textDecoration: 'underline',
+                              display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    服务条款与可接受使用政策 <ExternalLink size={12} />
+                  </a>
+                </div>
+              )}
             </button>
           )
         })}
