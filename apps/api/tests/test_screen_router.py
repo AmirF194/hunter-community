@@ -328,7 +328,7 @@ check("7 hit-days 没给代码 → 400", r.status_code == 400, r.text)
 PARSE = {"mode": None}
 
 
-def f_parse(script, market, allow_ai, uid, on_ai):
+def f_parse(script, market, allow_ai, uid, on_ai, context=None):   # context:追加模式的当前脚本(2026-09-17)
     m = PARSE["mode"]
     if m == "local":
         return {"conditions": [], "script": script}

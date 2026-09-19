@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useRef, useState, useCallback, KeyboardEvent, DragEvent, ClipboardEvent } from 'react'
+import { fillTemplate, templateSlots } from '../lib/templateFill'
 import { Send, Paperclip, X, Image as ImageIcon, Square } from 'lucide-react'
 import { HUNTER } from '../../lib/hunter-theme'
 import { ModelPicker } from './AgentModelPicker'
@@ -122,6 +123,8 @@ export default function InputBox({
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const autoSentRef = useRef(false)
+  // 当前输入来自哪个模板的占位名(draft 填入时记下,发出 / 换会话时清掉)· 见 lib/templateFill.ts
+  const tplSlotsRef = useRef<string[]>([])
 
   // 换会话:把没发出去的内容丢掉 —— 它是写给上一个会话的(见 clearSeq 的说明)。
   //
@@ -134,6 +137,7 @@ export default function InputBox({
     clearSeqRef.current = clearSeq
     setText('')
     setAttachments([])   // 附件同理,也是给上一个会话准备的
+    tplSlotsRef.current = []
   }, [clearSeq])
 
   // 处理 URL ?q= 首条 · autoText 变化时填入
@@ -160,6 +164,7 @@ export default function InputBox({
   useEffect(() => {
     if (!draft?.text) return
     setText(draft.text)
+    tplSlotsRef.current = templateSlots(draft.text)
     // **填进来就算用掉了**,立刻请父层清掉 draft。
     // draft 的职责只是"把这段文字送进输入框"一次;留着它,等这个组件因为
     // isEmpty 翻转而重新挂载时会被再填一遍(见 onDraftConsumed 的说明),
@@ -263,7 +268,20 @@ export default function InputBox({
     // 允许"仅图片"发送 · BFF 会把图片 OCR 成 text part 塞给 LLM
     if (!trimmed && attachments.length === 0) return
     if (disabled) return
-    onSend(trimmed, attachments.length ? attachments : undefined)
+    // 模板占位符:没填的拦下并重新选中,填过的去掉花括号(`{goog}` → `goog`)
+    const filled = fillTemplate(trimmed, tplSlotsRef.current)
+    if (!filled.ok) {
+      setUploadError(`先把 ${filled.unfilled} 换成具体的股票名称或代码再发送`)
+      const ta = taRef.current
+      if (ta) {
+        const at = text.indexOf(filled.unfilled)
+        ta.focus()
+        if (at >= 0) ta.setSelectionRange(at, at + filled.unfilled.length)
+      }
+      return
+    }
+    onSend(filled.text, attachments.length ? attachments : undefined)
+    tplSlotsRef.current = []
     setText('')
     setAttachments([])
     setUploadError(null)

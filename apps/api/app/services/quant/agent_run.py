@@ -115,7 +115,6 @@ ALTER TABLE agent_trade ADD COLUMN IF NOT EXISTS branch TEXT NOT NULL DEFAULT 'b
 ALTER TABLE agent_trade ADD COLUMN IF NOT EXISTS grade TEXT;
 ALTER TABLE agent_trade ADD COLUMN IF NOT EXISTS grade_detail TEXT;
 CREATE INDEX IF NOT EXISTS agent_trade_date_idx ON agent_trade (branch, trade_date);
-ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS extra TEXT;
 CREATE TABLE IF NOT EXISTS agent_position (
     code         TEXT NOT NULL,
     name         TEXT,
@@ -136,6 +135,9 @@ CREATE TABLE IF NOT EXISTS agent_position (
 ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS branch TEXT NOT NULL DEFAULT 'base';
 ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS stop DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS risk DOUBLE PRECISION NOT NULL DEFAULT 0;
+-- ALTER 必须排在 CREATE 之后:原来 extra 这句在建表前面,线上库表早就有所以不报错,
+-- 全新安装整段 DDL 失败,小鹿智能体所有接口 500(2026-09-17 本地 docker 实测)
+ALTER TABLE agent_position ADD COLUMN IF NOT EXISTS extra TEXT;
 ALTER TABLE agent_position DROP CONSTRAINT IF EXISTS agent_position_pkey;
 CREATE UNIQUE INDEX IF NOT EXISTS agent_position_uq ON agent_position (branch, code);
 """
@@ -187,12 +189,12 @@ def _branch_state(cur, branch: str) -> dict:
 # 数据
 # ═══════════════════════════════════════════════════════════════
 
-def _snapshot():
+def _snapshot(market: str = MARKET):
     """今天的快照:拆股锚点 + 排名池两列 + 名字。→ (rows, perf)"""
     from app.services.quant import screen_source, rs_history, screen_asof
     cols = [x for x in screen_asof.STATIC_COLS if x not in screen_source.ALWAYS_COLS]
     cols += list(rs_history._PERF_COLS) + ["exchange", "market_cap_basic"]
-    rows, _ = screen_source.fetch_rows(MARKET, cols)
+    rows, _ = screen_source.fetch_rows(market, cols)
     return rows, {r["_code"]: r for r in rows}
 
 
@@ -232,11 +234,22 @@ def _pool_days(eng_name: str) -> int:
     return int(getattr(ao.ENGINES[eng_name], "WATCH_POOL_DAYS", av.PARAMS["watch_pool_days"]))
 
 
+def _pool_market(pool: str) -> str:
+    """池子属于哪个市场:声明了这个 POOL 的引擎的 MARKET(A 股线 2026-09-17),默认美股。"""
+    for eng in ao.ENGINES.values():
+        if getattr(eng, "POOL", None) == pool:
+            return getattr(eng, "MARKET", MARKET)
+    return MARKET
+
+
 def _screen(d: date, pool: str = PRESET) -> tuple[list, dict]:
     """回溯到 d 跑池子的筛选脚本 → [[code, name, rs_rating]], 摘要。"""
     from app.services.quant import screen_source
-    r = screen_source.run_script(_pool_script(pool), MARKET, _pool_limit(pool), "rs_rating", True, d)
+    r = screen_source.run_script(_pool_script(pool), _pool_market(pool), _pool_limit(pool), "rs_rating", True, d)
     items = [[x["code"], x.get("name") or x["code"], x["fields"].get("rs_rating")] for x in r["picks"]]
+    if r["matched"] > len(items):
+        # 命中比上限多 = 有票被截掉了,不报错的话回测会静默少买
+        log.warning("[agent] %s 池 %s 命中 %d 只,超过上限 %d,多出的没进观察列表", d, pool, r["matched"], len(items))
     gate = next((w for w in r["warnings"] if "门槛" in w), None)
     # 命中票当天选股器算出的整行字段:落 screen_hit_field(agent_store),以后分析 / 新规则直接查,不再回溯
     hits = [(x["code"], x["fields"]) for x in r["picks"]]
@@ -258,12 +271,18 @@ def _stock_sharpe(bars: list[tuple], since: date) -> tuple[float | None, str | N
 class Ctx:
     """一次运行(当天 / 回填)里跨日期复用的东西:快照、日线缓存、筛选结果、指标缓存。"""
 
-    def __init__(self):
+    def __init__(self, market: str = MARKET):
         from app.services.quant import screen_asof
-        self.rows, self.perf = _snapshot()
+        # 一个 Ctx 只装一个市场的日线(2026-09-17 A 股线起)。run_date 只跑这个市场的方向
+        self.market = market
+        # 引擎声明 WITH_OPEN(涨停三阴线要判阴线)→ 这个市场的日线元组带第 6 个元素开盘价。
+        # 其余引擎只按下标读前 5 个,带不带都一样
+        self.with_open = any(getattr(e, "WITH_OPEN", False) and getattr(e, "MARKET", MARKET) == market
+                             for e in ao.ENGINES.values())
+        self.rows, self.perf = _snapshot(market)
         self.snap = {r["_code"]: r for r in self.rows}
         self.sectors = {c: r.get("sector") for c, r in self.snap.items()}      # 方向 A 的「同板块 ≤2」用
-        self.store = screen_asof.get_store(MARKET, self.perf)
+        self.store = screen_asof.get_store(market, self.perf)
         self.screen_of: dict = {}          # date → [[code, name, score]](默认池「VCP 波段收缩」)
         self.screens: dict = {PRESET: self.screen_of}       # 池 → {date → items};方向 A 的 SEPA 池另存
         self.cache: dict = {k: {} for k in ao.ENGINES}      # 引擎 → {(code, date): 指标}
@@ -288,7 +307,7 @@ class Ctx:
 
     def bars_of(self, code, upto: date | None = None):
         from app.services.quant import screen_asof
-        return screen_asof.bars_upto(self.store, code, upto or self.store["last"])
+        return screen_asof.bars_upto(self.store, code, upto or self.store["last"], self.with_open)
 
     def load_screens(self, cur):
         cur.execute("SELECT trade_date, items FROM agent_watch ORDER BY trade_date")
@@ -409,7 +428,7 @@ def _load_positions(cur, branch: str) -> list[av.Position]:
                         extra=(json.loads(r[13]) if r[13] else {})) for r in cur.fetchall()]
 
 
-def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> dict:
+def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None, market: str | None = None) -> dict:
     """跑 d 这一天(收盘后),**只跑这天还没跑过的方向**。全都跑过 → 直接返回。
 
     2026-09-13 研究台加新方向时改的:原来按「这天的行数够不够方向数」判断,够不上就把全部方向的
@@ -421,13 +440,15 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
     done_b = {r[0] for r in cur.fetchall()}
     # only:研究线回填只跑那条线的方向。2026-09-13 突破买入线要从 2025-09-12 回测,比其他方向的起点
     # (2026-01-02)早四个月 —— 不限定的话 VCP 那几个方向会在 2025 年那些天被跑出行来,对照组就被污染了
-    todo = [b for b in BRANCHES if b not in done_b and (only is None or b in only)]
+    # 一次只跑一个市场的方向:日线、基准、交易日历都按市场分开(A 股线 2026-09-17)
+    market = ctx.market if ctx is not None else (market or (ao.market_of(only[0]) if only else MARKET))
+    todo = [b for b in BRANCHES if b not in done_b and (only is None or b in only) and ao.market_of(b) == market]
     if not todo:
         cur.close()
         conn.close()
         return {"date": str(d), "ran": False, "reason": "这天已经跑过"}
     t0 = time.time()
-    ctx = ctx or Ctx()
+    ctx = ctx or Ctx(market)
     if not ctx.screen_of:
         ctx.load_screens(cur)
     bench = ctx.store["bench"]
@@ -528,7 +549,7 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
         consec = prev[1] if prev else 0
         cash = _meta_get(cur, f"cash:{branch}", None)
         if cash is None:
-            cash = av.GUARDS["initial_capital"]
+            cash = ao.initial_capital(branch)
             if _meta_get(cur, "started") is None:
                 _meta_set(cur, "started", str(d))
         res = eng.run_day(str(d), positions, float(cash), lambda c: [], watch_today, prev_equity, consec, p, av.GUARDS,
@@ -542,11 +563,12 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
         n_buy = sum(1 for f in fills if f["side"] == "buy")
         n_sell = len(fills) - n_buy
         realized = sum(f.get("pnl_abs") or 0 for f in fills if f["side"] == "sell")
+        unit = ao.currency(branch)["unit"]
         execute = {"key": "backtest", "name": "扫描与执行",
                    "status": ("fail" if not scan_ok else "warn" if gated else "ok"), "at": _hm(),
                    "duration_ms": int((time.time() - t1) * 1000),
                    "summary": (f"「{_pool_label(pool_key)}」今天命中 {ws.get('matched')} 只,{'当天' if pool_days[pool_key] <= 1 else '连同近 ' + str(pool_days[pool_key]) + ' 天入选的'}共 {len(watch_today)} 只 → 观察列表;"
-                               f"买入 {n_buy} 笔、卖出 {n_sell} 笔" + (f",已实现 {realized:+.0f} 美元" if n_sell else "")
+                               f"买入 {n_buy} 笔、卖出 {n_sell} 笔" + (f",已实现 {realized:+.0f} {unit}" if n_sell else "")
                                + (f";护栏:{res['halt_reason']}" if res["halt_reason"] else "")
                                + (f";市场:{res['market']['text']}" if res.get("market") else "")
                                + (f"。⚠ 今天筛选为空是因为 RS 评级被门槛挡下(不是没有候选):{ws['gate'][:60]}…" if gated else ""))
@@ -575,7 +597,7 @@ def run_date(d: date, ctx: Ctx | None = None, only: list[str] | None = None) -> 
                          f.get("position_pct"), f.get("pnl_abs"), f.get("pnl_pct"), f.get("hold_days"),
                          f["rule_id"], f["rule_name"], f["rationale"], f.get("entry_date"), f.get("level"), f.get("grade"),
                          f.get("grade_detail")))
-        followups = _backfill_followups(cur, branch, d, lambda c: ctx.bars_of(c, d))
+        followups = _backfill_followups(cur, branch, d, lambda c: ctx.bars_of(c, d), ao.currency(branch)["symbol"])
 
         # 4. 调整策略(优化器)—— 在今天的成交落库之后跑,它只看历史
         t4 = time.time()
@@ -638,7 +660,7 @@ def _hm() -> str:
     return datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
 
 
-def _backfill_followups(cur, branch: str, d: date, bars_of) -> list[dict]:
+def _backfill_followups(cur, branch: str, d: date, bars_of, sym: str = "$") -> list[dict]:
     """卖出 5 个交易日后:那只票又走了多少 → 写进 agent_trade.followup。→ 今天回填的那些。"""
     cur.execute("SELECT id, code, price, trade_date, rule_id, rule_name FROM agent_trade "
                 "WHERE branch=%s AND side='sell' AND followup IS NULL AND trade_date < %s", (branch, d))
@@ -651,7 +673,7 @@ def _backfill_followups(cur, branch: str, d: date, bars_of) -> list[dict]:
         p5 = after[4][1]
         chg = (p5 / price - 1) * 100
         verdict = "卖早了" if chg >= 3 else ("躲过了" if chg <= -3 else "差不多")
-        text = f"事后跟踪 · 卖出后 5 个交易日({after[4][0]})收 ${p5:.2f},较卖出价 {chg:+.1f}% —— {verdict}"
+        text = f"事后跟踪 · 卖出后 5 个交易日({after[4][0]})收 {sym}{p5:.2f},较卖出价 {chg:+.1f}% —— {verdict}"
         cur.execute("UPDATE agent_trade SET followup=%s WHERE id=%s", (text, tid))
         out.append({"code": code, "rule_id": rule, "rule_name": rname, "chg": chg, "verdict": verdict, "sold": str(td)})
     return out
@@ -680,6 +702,8 @@ def _lesson(cur, branch: str, d: date, fills: list[dict], res: dict, ws: dict, f
     sells = [f for f in fills if f["side"] == "sell"]
     buys = [f for f in fills if f["side"] == "buy"]
     realized = sum(f.get("pnl_abs") or 0 for f in sells)
+    ccy = ao.currency(branch)
+    sym, unit = ccy["symbol"], ccy["unit"]
     today = _cum_stats(cur, branch, d)
     yday = _cum_stats(cur, branch, d - timedelta(days=1))
     n_watch = len(res["watch_items"])
@@ -699,16 +723,19 @@ def _lesson(cur, branch: str, d: date, fills: list[dict], res: dict, ws: dict, f
                  else f"持仓不动:{len(res['positions'])} 只都没到出场线,候选 {n_watch} 只没有新突破")
         kind = "validated"
     else:
-        title = f"今日买 {len(buys)} 笔、卖 {len(sells)} 笔" + (f",已实现 {realized:+.0f} 美元" if sells else "")
+        title = f"今日买 {len(buys)} 笔、卖 {len(sells)} 笔" + (f",已实现 {realized:+.0f} {unit}" if sells else "")
         kind = "loss" if realized < 0 else "validated"
     if opt["action"] == "promoted":
         title = "换版:" + opt["text"].split("→", 1)[-1].strip()[:60]
-    what = (f"观察列表 {n_watch} 只(「VCP 波段收缩」今天命中 {ws.get('matched')} 只,其余是近 {av.PARAMS['watch_pool_days']} 天入选的)"
+    pool_key = _pool_of(ao.BRANCHES[branch]["engine"])
+    pdays = _pool_days(ao.BRANCHES[branch]["engine"])
+    what = (f"观察列表 {n_watch} 只(「{_pool_label(pool_key)}」今天命中 {ws.get('matched')} 只"
+            + (f",其余是近 {pdays} 天入选的)" if pdays > 1 else ")")
             + (f",其中 {n_blocked} 只被护栏或上限挡下" if n_blocked else "")
             + f";成交 {len(fills)} 笔" + (";".join(
-                f"{f['symbol']} {'买' if f['side'] == 'buy' else '卖'} {f['shares']} 股 @ ${f['price']:.2f}({f['rule_id']})"
+                f"{f['symbol']} {'买' if f['side'] == 'buy' else '卖'} {f['shares']} 股 @ {sym}{f['price']:.2f}({f['rule_id']})"
                 for f in fills[:6]) if fills else "")
-            + f"。收盘后权益 ${res['equity']:,.0f},现金 ${res['cash']:,.0f},持仓 {len(res['positions'])} 只。")
+            + f"。收盘后权益 {sym}{res['equity']:,.0f},现金 {sym}{res['cash']:,.0f},持仓 {len(res['positions'])} 只。")
     why_parts = []
     if sells:
         by = {}
@@ -775,11 +802,11 @@ def _fmt_sh(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone(timedelta(hours=8))).strftime("%m-%d %H:%M 沪")
 
 
-def _next_run_text() -> str:
+def _next_run_text(market: str = MARKET) -> str:
     d = date.today() + timedelta(days=1)
     while d.weekday() >= 5:
         d += timedelta(days=1)
-    return d.strftime("%m-%d") + " 06:30 沪(美股收盘后)"
+    return d.strftime("%m-%d") + (" 06:30 沪(美股收盘后)" if market == "us" else " 06:30 沪(跑上一个交易日的 A 股收盘)")
 
 
 def _branch_summary(cur, branch: str, active: bool) -> dict:
@@ -792,7 +819,7 @@ def _branch_summary(cur, branch: str, active: bool) -> dict:
            "win_rate": None, "max_dd_pct": None}
     if not rows:
         return out
-    init = av.GUARDS["initial_capital"]
+    init = ao.initial_capital(branch)
     eq = [r[0] for r in rows]
     b0 = next((r[1] for r in rows if r[1]), None)
     pnl_pct = (eq[-1] / init - 1) * 100
@@ -833,10 +860,12 @@ def dashboard(branch: str = "base") -> dict:
         conn.close()
         return {"enabled": False, "state": "never_started", "paper": True, "version": f"v{st['version']}",
                 "branch": branch, "branches": branches, "line": line_block,
-                "strategy": _strategy_block(None, st, branch), "guardrails": _guard_block(None, p),
+                "strategy": _strategy_block(None, st, branch), "guardrails": _guard_block(None, p, branch),
+                "currency": ao.currency(branch),
                 "rules": _rules_block([], [], [], p, None, eng)}
     L = days[-1]
-    init = av.GUARDS["initial_capital"]
+    init = ao.initial_capital(branch)
+    ccy = ao.currency(branch)
     eq = [r[1] for r in days]
     b0 = next((r[3] for r in days if r[3]), None)
     dd_pct, dd_abs, dd_from, dd_to = _max_dd(eq)
@@ -856,7 +885,7 @@ def dashboard(branch: str = "base") -> dict:
     watch_items = list(L[5] or [])
     # 观察列表不足 5 条就补 RS 最强的 —— 补位项带 filler,和真候选不是一回事
     fillers = []
-    if len(watch_items) < WATCH_MIN:
+    if len(watch_items) < WATCH_MIN and ccy["market"] == "us":      # 补位读的是美股 RS 排名,别的市场不补
         try:
             held = {x[0] for x in poss} | {w.get("symbol") for w in watch_items}
             fillers = _rs_fillers(cur, WATCH_MIN - len(watch_items), held)
@@ -875,7 +904,7 @@ def dashboard(branch: str = "base") -> dict:
         log.exception("[agent] 读形态就绪 / 全满足日失败,悬停日K 只画候选池那层,其余照常")
         conn.rollback()
         layers = {}
-    history = _trade_rounds(trades, rule_cond, scan_of, layers)
+    history = _trade_rounds(trades, rule_cond, scan_of, layers, market=ccy["market"])
     cur.close()
     conn.close()
 
@@ -886,7 +915,7 @@ def dashboard(branch: str = "base") -> dict:
                          "pnl_pct": round((x[8] / x[5] - 1) * 100, 2) if x[8] and x[5] else None,
                          "hold_days": x[6], "bench_pct": x[9], "sharpe": x[10], "sharpe_na_reason": x[11],
                          "entry_rule": x[7] or eng.ENTRY_RULE, "entry_rule_text": rule_cond.get(x[7] or eng.ENTRY_RULE)})
-    today_trades = [_trade_item(t) for t in trades if t[0] == L[0]]
+    today_trades = [_trade_item(t, ccy["market"]) for t in trades if t[0] == L[0]]
     lessons = [r[7] for r in reversed(days[-7:]) if r[7]]
     started = days[0][0]
     date_index = {str(r[0]): i for i, r in enumerate(days)}
@@ -895,14 +924,15 @@ def dashboard(branch: str = "base") -> dict:
         "enabled": True, "state": state, "paper": True, "version": f"v{st['version']}",
         "branch": branch, "branches": branches, "line": line_block,
         "day_count": len(days), "iteration_count": st["version"] - 1,
-        "last_run_text": (_fmt_sh(L[9]) or "") + f" · 按 {L[0].strftime('%m-%d')} 美股收盘",
-        "next_run_text": _next_run_text(),
+        "last_run_text": (_fmt_sh(L[9]) or "") + f" · 按 {L[0].strftime('%m-%d')} {ccy['market_label']}收盘",
+        "next_run_text": _next_run_text(ccy["market"]),
+        "currency": ccy,
         "strategy": _strategy_block(len(L[5] or []), st, branch),
-        "guardrails": _guard_block(L[8], p),
+        "guardrails": _guard_block(L[8], p, branch),
         "pipeline": L[6],
         "overview": {
             "pnl_abs": round(L[1] - init, 2), "pnl_pct": round((L[1] / init - 1) * 100, 2), "equity": round(L[1], 2),
-            "benchmark_symbol": BENCH_LABEL,
+            "benchmark_symbol": ccy["bench_label"],
             "benchmark_pct": round((L[3] / b0 - 1) * 100, 2) if (b0 and L[3]) else None,
             "excess_pt": round((L[1] / init - 1) * 100 - (L[3] / b0 - 1) * 100, 2) if (b0 and L[3]) else None,
             "max_dd_pct": round(dd_pct, 2), "max_dd_abs": round(dd_abs, 2),
@@ -915,7 +945,7 @@ def dashboard(branch: str = "base") -> dict:
             "invested_pct": round((L[1] - L[2]) / L[1] * 100, 1) if L[1] else None, "cash": round(L[2], 2),
         },
         "nav": {
-            "benchmark_symbol": BENCH_LABEL,
+            "benchmark_symbol": ccy["bench_label"],
             "points": [{"date": str(r[0]), "agent_pct": round((r[1] / init - 1) * 100, 3),
                         "benchmark_pct": round((r[3] / b0 - 1) * 100, 3) if (b0 and r[3]) else None} for r in days],
             "version_marks": [{"index": date_index[m["date"]], "version": m["version"]} for m in marks if m["date"] in date_index],
@@ -935,9 +965,11 @@ def dashboard(branch: str = "base") -> dict:
             "fee_total": round(sum(r["fee"] for r in history), 2),
             "pnl_gross_total": round(sum(r["pnl_gross"] for r in history), 2),
             "pnl_net_total": round(sum(r["pnl_abs"] for r in history), 2),
-            "fee_note": "手续费按阶梯式(当月累计 ≤30 万股 0.0035 美元/股,更高量级逐档降到 0.0005;"
-                        "每笔最低 0.35 美元、最高为成交金额的 1%)买卖各收一次",
-            "scope_note": "这一列只进这张表 —— 上面的总览、净值曲线、胜率仍是引擎的零费用口径",
+            "fee_note": ("手续费按阶梯式(当月累计 ≤30 万股 0.0035 美元/股,更高量级逐档降到 0.0005;"
+                         "每笔最低 0.35 美元、最高为成交金额的 1%)买卖各收一次" if ccy["market"] == "us" else
+                         "A 股手续费:佣金万 2.5(每笔最低 5 元)+ 过户费 0.001% 买卖各收一次,卖出另收印花税 0.05%"),
+            "scope_note": ("这一列只进这张表 —— 上面的总览、净值曲线、胜率仍是引擎的零费用口径" if ccy["market"] == "us" else
+                           "这条线的引擎已经从现金里扣了手续费:总览和净值曲线是扣费后的;胜率按每笔卖出的扣费前盈亏计"),
         },
         "versions": versions,
         "lessons": lessons,
@@ -959,6 +991,12 @@ _V1 = {
                  "出场同 v5:1 ATR 初始止损(≤ 8%)+ 固定 6% + Base 低点 2% + 5% 保本 + 20% 减半 + 破 EMA10 再减半 / 破 EMA20 清仓",
                  "用户 2026-09-13 给的 Patrick Walker 风格完整脚本逐条移植;v2 枢轴改密集成交区、RS 降到 70(一年 +0.63%、48 笔);"
                  "v3(2026-09-14)缩量门槛 0.9 → 1.0。v1 枢轴 = 前 21 日最高、RS ≥ 80:一年 -4.72%、21 笔;没有开盘价,阳线条件没做"),
+    "limitup": ("涨停后强势整理(A 股)v4 —— 三天整理幅度 ≤ 15%、三天不能每天都比涨停日缩量(v4 加);只做创业板 / 科创板(v3 加);4 个交易日前涨停(主板 10% / 创业板科创板 20%)、之后三天没再涨停且收盘都高于涨停日收盘、"
+                "当天收盘站上 5 日均线且 5 日均线向上(v2 加),"
+                "信号当天收盘买 1 万元、次日收盘卖(跌停 / 停牌顺延),A 股手续费从现金里扣",
+                "用户 2026-09-17 给的规则;立项时问清四个口径:守住 = 收盘高于涨停日收盘、涨停按板块、每个信号独立买 1 万、手续费按 A 股实际扣"),
+    "limitup_yin": ("涨停 + 三根阴线(A 股主板)—— 4 个交易日前涨停,之后连续三天阴线(收盘 < 开盘),信号当天收盘买 1 万元、次日收盘卖",
+                    "用户 2026-09-18 在涨停后强势整理线上新开的迭代方向;只做主板,买卖、手续费、仓位口径与原方向相同"),
 }
 
 
@@ -1095,7 +1133,8 @@ def _scan_layers(cur, branch: str, codes: list[str], setup_rules=None) -> dict:
     return scan_layers(cur.fetchall(), setup_rules)
 
 
-def _trade_rounds(trades, rule_cond: dict, scan_of: dict | None = None, layers: dict | None = None) -> list[dict]:
+def _trade_rounds(trades, rule_cond: dict, scan_of: dict | None = None, layers: dict | None = None,
+                  market: str = MARKET) -> list[dict]:
     """逐笔成交 → 一个持仓周期一条记录(历史交易记录卡片用)。
 
     一个周期 = 同一只票从建仓到清仓的一整段,中间可能有多次买(倒三角加仓 level 1/2/3)
@@ -1119,10 +1158,14 @@ def _trade_rounds(trades, rule_cond: dict, scan_of: dict | None = None, layers: 
       (现金变少会买不起同样股数 → 仓位变 → 整条曲线和每一笔成交都会变)。
       两个口径的差额写在卡片脚注里,不许闷着。
     """
-    fills = []
-    for t in sorted(trades, key=lambda x: (x[0], x[1])):
-        fills.append(((t[0], t[1]), t[0].strftime("%Y-%m"), t[5], t[6]))
-    fee_of = cm.fees_by_month(fills)
+    if market == "a":
+        # A 股按笔算,不分月档位(commission.a_share_fee);引擎已经从现金里扣过同一个数,这里是给成交表看的
+        fee_of = {(t[0], t[1]): cm.a_share_fee(t[2], t[5], t[6]) for t in trades}
+    else:
+        fills = []
+        for t in sorted(trades, key=lambda x: (x[0], x[1])):
+            fills.append(((t[0], t[1]), t[0].strftime("%Y-%m"), t[5], t[6]))
+        fee_of = cm.fees_by_month(fills)
 
     groups: dict = {}
     for t in trades:
@@ -1176,10 +1219,11 @@ def _trade_rounds(trades, rule_cond: dict, scan_of: dict | None = None, layers: 
     return rounds
 
 
-def _trade_item(t) -> dict:
-    it = {"ts_market": "16:00", "ts_market_tz": "ET", "ts_local": "收盘(次日 04:00 沪)",
-          "side": t[2], "symbol": t[3], "name": t[4], "shares": t[5], "price": t[6],
-          "rule_id": t[12], "rule_name": t[13], "rationale": t[14], "followup": None, "adjustment": None}
+def _trade_item(t, market: str = MARKET) -> dict:
+    it = ({"ts_market": "16:00", "ts_market_tz": "ET", "ts_local": "收盘(次日 04:00 沪)"} if market == "us" else
+          {"ts_market": "15:00", "ts_market_tz": "CST", "ts_local": "收盘(15:00 沪)"})
+    it.update({"side": t[2], "symbol": t[3], "name": t[4], "shares": t[5], "price": t[6],
+               "rule_id": t[12], "rule_name": t[13], "rationale": t[14], "followup": None, "adjustment": None})
     if t[2] == "buy":
         it.update({"amount": t[7], "position_pct": t[8]})
         if len(t) > 18 and t[18]:
@@ -1194,24 +1238,28 @@ def _strategy_block(universe_size, st: dict, branch: str = "base") -> dict:
     p = st["params"]
     eng = ao.engine_of(branch)
     names = {"vcp": STRATEGY_NAME, "vcp3": "VCP 三段式(方向 C)", "vcp4": "VCP · SEPA 优化(方向 A)",
-             "donchian": "唐奇安通道突破", "breakout": "突破买入(Patrick Walker 风格)"}
+             "donchian": "唐奇安通道突破", "breakout": "突破买入(Patrick Walker 风格)", "limitup": "涨停后强势整理(A 股)",
+             "limitup_yin": "涨停 + 三根阴线(A 股主板)"}
     days_ = _pool_days(ao.BRANCHES[branch]["engine"])
     span = "当天筛选结果" if days_ <= 1 else f"近 {days_} 天并集"
     return {"name": names.get(ao.BRANCHES[branch]["engine"], STRATEGY_NAME), "version": f"v{st['version']}",
             "summary": eng.summary(p),
-            "market_label": "美股", "market_note": getattr(eng, "EXEC_NOTE", "纸上交易 · 日线收盘价成交"),
+            "market_label": ao.currency(branch)["market_label"], "market_note": getattr(eng, "EXEC_NOTE", "纸上交易 · 日线收盘价成交"),
             "universe": (f"{getattr(eng, 'POOL_LABEL')} · {span}" if getattr(eng, "POOL", None)
                          else f"筛选器「VCP 波段收缩」{span}"), "universe_size": universe_size,
             "rebalance": "每个交易日收盘后跑一次 · 信号当天收盘价成交" + getattr(eng, "REBALANCE_SUFFIX", ""),
-            "data_source": "自家全市场日线(每晚落库,拆股已核对)+ 标普500 基准 · 不含盘中"}
+            "data_source": f"自家全市场日线(每晚落库,拆股已核对)+ {ao.currency(branch)['bench_label']} 基准 · 不含盘中"}
 
 
-def _guard_block(halt_reason, p: dict) -> dict:
+def _guard_block(halt_reason, p: dict, branch: str | None = None) -> dict:
     g = av.GUARDS
-    return {"initial_capital": g["initial_capital"],
+    # 引擎声明 NO_GUARDS(涨停后强势整理线:信号彼此独立)→ 熔断 / 连亏两项给 null 并带 guards_off,
+    # 前端显示「不设」—— 照抄 GUARDS 的 -3% / 3 笔会让人以为这条线有护栏
+    off = bool(branch and getattr(ao.engine_of(branch), "NO_GUARDS", False))
+    return {"initial_capital": ao.initial_capital(branch) if branch else g["initial_capital"],
             "max_position_pct": int(p.get("max_single_stock_pct", p.get("max_pos_pct", 0)) * 100),
-            "max_holdings": p["max_holdings"], "daily_loss_halt_pct": g["daily_loss_halt_pct"],
-            "consecutive_loss_pause": g["consecutive_loss_pause"], "long_only": True,
+            "max_holdings": p["max_holdings"], "daily_loss_halt_pct": None if off else g["daily_loss_halt_pct"],
+            "consecutive_loss_pause": None if off else g["consecutive_loss_pause"], "guards_off": off, "long_only": True,
             "triggered_today": bool(halt_reason) if halt_reason is not None else False,
             "triggered_text": halt_reason}
 
@@ -1313,19 +1361,31 @@ def run_latest() -> dict:
     conn.close()
     if st == "paused":
         return {"ran": False, "reason": "已暂停,先恢复"}
-    ctx = Ctx()
-    if not ctx.store["last"]:
-        return {"ran": False, "reason": "还没有日线"}
-    earn = _ensure_earnings(ctx.store["last"] - timedelta(days=14), ctx.store["last"])
     # 一行都没有的方向不由每晚任务起步,要先 research-backfill(2026-09-15 加「突破买入 · 三年」时加的):
     # 否则回填还没跑 / 中途失败时,每晚任务会让它从今天起步,三年那条的起点就被占了。全都没有行 = 全新安装,照常起步
     started = set(_with_cur(lambda c: (c.execute("SELECT DISTINCT branch FROM agent_day"), [r[0] for r in c.fetchall()])[1]))
     only = [b for b in BRANCHES if b in started] if started else None
     if started and len(only) < len(BRANCHES):
         log.info("[agent] 这些方向还没回填过,每晚任务不替它们起步:%s", [b for b in BRANCHES if b not in started])
+    ctx = Ctx(MARKET)
+    if not ctx.store["last"]:
+        return {"ran": False, "reason": "还没有日线"}
+    earn = _ensure_earnings(ctx.store["last"] - timedelta(days=14), ctx.store["last"])
     out = run_date(ctx.store["last"], ctx, only)
     if earn is not None:
         out["earnings"] = earn
+    # 其他市场的方向(A 股线 2026-09-17):各自装一份日线,跑那个市场最新的交易日。
+    # 全新安装(started 为空)不替它们起步 —— 美股以外的线都要先 research-backfill
+    others = sorted({ao.market_of(b) for b in (only or [])} - {MARKET})
+    for mk in others:
+        try:
+            cx = Ctx(mk)
+            if cx.store["last"]:
+                out.setdefault("markets", {})[mk] = run_date(cx.store["last"], cx, only)
+        except Exception as e:                                # noqa: BLE001
+            # 一个市场失败不挡美股那边已经跑完的结果
+            log.exception("[agent] %s 市场的方向每日运行失败", mk)
+            out.setdefault("markets", {})[mk] = {"ran": False, "error": str(e)[:200]}
     out["research"] = research_evaluate()
     return out
 
@@ -1387,7 +1447,10 @@ def _ensure_earnings(start: date, last: date, only: list[str] | None = None) -> 
 
 
 def backfill(start: date, end: date | None = None, only: list[str] | None = None) -> dict:
-    ctx = Ctx()
+    markets = {ao.market_of(b) for b in (only or BRANCHES)}
+    if len(markets) > 1:
+        raise ValueError(f"一次回填只能跑一个市场的方向,现在混了 {sorted(markets)};用 --line / --branch 分开跑")
+    ctx = Ctx(markets.pop())
     _ensure_earnings(start, ctx.store["last"], only)
     days = sorted(d for d in ctx.store["bench"] if d >= start and (end is None or d <= end))
     out = {"days": 0, "fills": 0}
@@ -1423,7 +1486,7 @@ def backfill_watch_fails(branch: str) -> dict:
     codes = {r[0] for r in cur.fetchall()}
     cur.execute("SELECT trade_date, watchlist FROM agent_day WHERE branch=%s ORDER BY trade_date", (branch,))
     days = cur.fetchall()
-    ctx = Ctx()
+    ctx = Ctx(ao.market_of(branch))
     bb = ctx.store.get("bench_bars") or []
     bdates = [b[0] for b in bb]
     bars_of: dict = {}

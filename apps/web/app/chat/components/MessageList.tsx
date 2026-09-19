@@ -12,6 +12,7 @@ import ReportPreviewButton from './ReportPreviewButton'
 import HomeHero from './HomeHero'
 import { isReportWorthy, getAssistantText } from '../lib/reportDetect'
 import { HUNTER, HUNTER_LOGO } from '../../lib/hunter-theme'
+import { describeModelError, type ModelErrorView } from '../lib/modelError'
 
 function isText(p: MessagePart): p is MessagePartText {
   return p.type === 'text'
@@ -482,6 +483,30 @@ function PlanningBlock({ text }: { text: string }) {
   )
 }
 
+/**
+ * 模型调用失败卡 —— 终态,不带计时器 / 转圈(仓内「工具卡片 completed 后不许假装还在生成」同一条线)。
+ * 上游原话折叠展示,可能是英文,属于外部原始数据。
+ */
+function ModelErrorCard({ view }: { view: ModelErrorView }) {
+  return (
+    <div style={{
+      margin: '6px 0', padding: '10px 14px', borderRadius: 8,
+      background: '#FBF1EE', border: '1px solid #E9C9BF',
+    }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: '#B5462F' }}>{view.title}</div>
+      <div style={{ marginTop: 4, fontSize: 13, color: '#6B6459', lineHeight: 1.7 }}>{view.hint}</div>
+      {view.raw && (
+        <details style={{ marginTop: 6 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 12, color: '#8C857A', userSelect: 'none' }}>
+            上游原始信息
+          </summary>
+          <div style={{ marginTop: 4, fontSize: 12, color: '#8C857A', wordBreak: 'break-word' }}>{view.raw}</div>
+        </details>
+      )}
+    </div>
+  )
+}
+
 function groupTurns(
   messages: Message[],
 ): Array<{ role: 'user' | 'assistant'; msgs: Message[] }> {
@@ -587,8 +612,15 @@ export default function MessageList({ messages, onOpenArtifact, onPickSuggestion
           const hasText = parts.some((p) => isText(p) && (p as MessagePartText).text)
           const reportWorthy = isReportWorthy(anchor, isLastAssistant ? !!busy : false)
 
+          // 这一轮里模型调用失败的那条(402 余额不足等)· 见 lib/modelError.ts
+          const failure = turn.msgs
+            .map((m) => describeModelError(m.error))
+            .filter((v): v is ModelErrorView => !!v)
+            .pop()
           const ts = anchor.time?.updated || anchor.time?.created
-          const modeNote = ts
+          const modeNote = failure
+            ? '回答未完成'
+            : ts
             ? `深度思考完成 · 数据截至 ${new Date(ts).toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })}`
             : undefined
 
@@ -624,6 +656,8 @@ export default function MessageList({ messages, onOpenArtifact, onPickSuggestion
                 if (isTool(part)) return <ToolCallCard key={i} part={part} onOpenArtifact={onOpenArtifact} turnText={turnText} />
                 return null
               })}
+
+              {failure && <ModelErrorCard view={failure} />}
 
               {reportWorthy && onOpenReport && !artMsgId && (
                 <ReportPreviewButton

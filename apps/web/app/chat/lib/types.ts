@@ -40,6 +40,8 @@ export interface Message {
   role: 'user' | 'assistant' | 'system'
   parts: MessagePart[]
   time?: { created: number; updated?: number }
+  /** opencode 在 assistant 消息上记的失败(模型 402 / 401 / 用户中止…),见 lib/modelError.ts */
+  error?: { name?: string; data?: any; message?: string }
 }
 
 // SSE event 常见类型 (opencode 官方 event 系统)

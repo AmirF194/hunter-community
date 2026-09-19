@@ -1,0 +1,101 @@
+{
+  "updated_at": "2026-08-16",
+  "source_doc": "docs/model-testing/model-compat-matrix.md",
+  "note": "所有实测数值抄自 docs/model-testing/model-compat-matrix.md（2026-08-16 · 7 个 golden case）与 docs/env-samples/README.md。这里不写任何没有实测来源的数字：核对不上的字段一律留空，由向导第 3 步当场测出来。命中率是 7 个 case 里工具调用正确的个数，耗时是这 7 个 case 的单次平均延迟。",
+  "presets": [
+    {
+      "id": "deepseek-v4-pro",
+      "title": "DeepSeek v4 pro",
+      "vendor": "DeepSeek（直连）",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-v4-pro",
+      "sanitize": "1",
+      "tags": ["推荐", "国内直连"],
+      "tool_hit": "6/7",
+      "avg_latency_s": 30,
+      "tested_at": "2026-08-15",
+      "apply_url": "https://platform.deepseek.com/api_keys",
+      "key_hint": "以 sk- 开头",
+      "notes": [
+        "必须打开 schema 清洗（LLM_SCHEMA_SANITIZE=1），保存时向导会自动设为开。",
+        "实测 6/7：A2「看 30 天 K 线」会误调重量级的深度分析工具而超时。",
+        "reasoning tokens 会吃掉 max_tokens。"
+      ]
+    },
+    {
+      "id": "qwen3.8-max-aihubmix",
+      "title": "Qwen 3.8 Max",
+      "vendor": "阿里通义 · 经 AIHubMix 网关",
+      "base_url": "https://aihubmix.com/v1",
+      "model": "qwen3.8-max",
+      "sanitize": "1",
+      "tags": ["国内首推", "满分"],
+      "tool_hit": "7/7",
+      "avg_latency_s": 48.1,
+      "tested_at": "2026-08-16",
+      "apply_url": "https://aihubmix.com",
+      "key_hint": "AIHubMix 的一把 key 可以打通 30+ 家上游",
+      "notes": [
+        "7 个 case 全对，无超时、无 <think> 泄漏。",
+        "深度分析 100~120 秒，比别家慢。",
+        "本机实测：Alpine 容器直连 aihubmix 会被按 TLS 指纹拦（SSL UNEXPECTED_EOF），需要在 .env 里配 HTTP_PROXY_UPSTREAM / HTTPS_PROXY_UPSTREAM 走宿主机代理。向导第 3 步会当场测出来。"
+      ]
+    },
+    {
+      "id": "claude-sonnet-5-aihubmix",
+      "title": "Claude Sonnet 5",
+      "vendor": "Anthropic · 经 AIHubMix 网关",
+      "base_url": "https://aihubmix.com/v1",
+      "model": "claude-sonnet-5",
+      "sanitize": "auto",
+      "tags": ["海外首推", "满分", "最快"],
+      "tool_hit": "7/7",
+      "avg_latency_s": 25.7,
+      "tested_at": "2026-08-16",
+      "apply_url": "https://aihubmix.com",
+      "key_hint": "AIHubMix 的一把 key 可以打通 30+ 家上游",
+      "notes": [
+        "7 个 case 全对，无超时、无 <think> 泄漏，B2 编排 4 个工具。",
+        "同样会遇到 aihubmix 的容器 TLS 指纹拦截，需要宿主机代理。",
+        "直连 api.anthropic.com 走的是 Anthropic 原生协议（LLM_PROVIDER=anthropic），和这里的 OpenAI 兼容路径不是一回事，本预设只覆盖经网关的用法。"
+      ]
+    },
+    {
+      "id": "gemini-3.5-flash-aihubmix",
+      "title": "Gemini 3.5 Flash",
+      "vendor": "Google · 经 AIHubMix 网关（任意 OpenAI 兼容网关同理）",
+      "base_url": "https://aihubmix.com/v1",
+      "model": "gemini-3.5-flash",
+      "sanitize": "auto",
+      "tags": ["便宜快"],
+      "tool_hit": "6/7",
+      "avg_latency_s": 62.3,
+      "tested_at": "2026-08-16",
+      "apply_url": "https://aihubmix.com",
+      "key_hint": "AIHubMix 的一把 key 可以打通 30+ 家上游",
+      "notes": [
+        "实测 6/7：C1 边界 case 过度调用工具，触发 240 秒超时。",
+        "Gemini 只认 OpenAPI 子集，必须经 llm-shim 清洗 schema；sanitize=auto 时模型名含 gemini 会自动走 shim。",
+        "换成别的 OneAPI / OpenAI 兼容网关时，地址和模型名要按那个网关的写法改。"
+      ]
+    },
+    {
+      "id": "custom",
+      "title": "自定义",
+      "vendor": "任意 OpenAI 兼容地址",
+      "base_url": "",
+      "model": "",
+      "sanitize": "",
+      "tags": [],
+      "tool_hit": "",
+      "avg_latency_s": null,
+      "tested_at": "",
+      "apply_url": "",
+      "key_hint": "",
+      "notes": [
+        "自己填地址、key 和模型名，下一步会当场检测连通 / 对话 / 工具调用三项。",
+        "schema 清洗开关由检测结果决定，不用自己猜。"
+      ]
+    }
+  ]
+}

@@ -61,3 +61,25 @@ def fees_by_month(fills: list) -> dict:
         out[key] = fee_for(shares, price, before)
         used[ym] = before + (shares or 0)
     return out
+
+
+# ═══════════════════════════════════════════════════════════════
+# A 股(2026-09-17 用户选「按 A 股实际扣」,涨停后强势整理研究线用)
+# ═══════════════════════════════════════════════════════════════
+# 佣金按常见的万 2.5、每笔最低 5 元(券商之间不同,**费率是假设**,改只动这几个常量);
+# 过户费 0.001% 买卖都收(沪深两市 2022 年起统一);印花税 2023-08-28 起减半为 0.05%,只在卖出收。
+A_COMMISSION_RATE = 0.00025
+A_COMMISSION_MIN = 5.0
+A_TRANSFER_RATE = 0.00001
+A_STAMP_RATE_SELL = 0.0005
+
+
+def a_share_fee(side: str, shares: float, price: float) -> float:
+    """A 股一笔成交的全部费用(元)。side = buy / sell。"""
+    if not shares or not price or shares <= 0 or price <= 0:
+        return 0.0
+    value = shares * price
+    fee = max(value * A_COMMISSION_RATE, A_COMMISSION_MIN) + value * A_TRANSFER_RATE
+    if side == "sell":
+        fee += value * A_STAMP_RATE_SELL
+    return round(fee, 2)

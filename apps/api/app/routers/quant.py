@@ -1320,6 +1320,8 @@ class ScreenParseIn(BaseModel):
     # 默认 False:脚本解析和本地关键词匹配都不花钱,AI 要用户点了「AI 识别」才走。
     # 默认打开的话每一次手滑都在烧 token。
     allow_ai: bool = False
+    # 追加模式下当前条件区的完整脚本:让「复制这一条」复制出的片段能引用原脚本的定义与参数(2026-09-17)
+    context: str | None = None
 
 
 @router.post("/screener/parse")
@@ -1343,7 +1345,7 @@ async def screener_parse(body: ScreenParseIn, request: Request):
         # 直接在 async 路由里跑会把整个事件循环卡住,别的用户的请求全在排队。
         # user_id 还用来记「这条对照表是谁用 AI 学出来的」,不影响识别本身。
         d = await asyncio.to_thread(
-            screen_source.parse_script, script, body.market, body.allow_ai, uid, on_ai)
+            screen_source.parse_script, script, body.market, body.allow_ai, uid, on_ai, body.context)
     except screen_quota.QuotaExceeded as e:
         raise _quota_http(e)
     except screen_source.NeedsAI as e:

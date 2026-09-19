@@ -64,6 +64,28 @@ function ChatPageInner() {
     }
     setReady(true)
 
+    // 首启向导(M2 · 设计方案 4.1)· 没配大模型就把人送去 /setup。
+    //
+    // **判据一律由后端给**(`setup.should_run` = 没配大模型 且 没人说过"稍后配置"),
+    // 前端不自己拼条件 —— 环境变量锁定、已完成、已跳过这三种情况的组合在前端很容易漏一种,
+    // 漏了的表现是"每次打开对话页都被弹去向导"。
+    //
+    // 失败一律**不跳转**:status 拿不到的原因多半是 api 还在启动,
+    // 这时候把人送进向导只会让他看到一页报错。
+    void (async () => {
+      try {
+        const r = await fetch('/api/setup/status', {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
+        })
+        if (!r.ok) return
+        const d = await r.json()
+        if (d?.setup?.should_run) router.replace('/setup')
+      } catch {
+        /* api 没起来 —— 对话页照常显示,发消息时会得到"大模型尚未配置"的中文提示 */
+      }
+    })()
+
     const q = searchParams.get('q')
     // 能力库跳过来时会带 `&skill=forecast|debate` —— 标记这一条要走特殊
     // handler(Kronos 出 K 线 artifact / 多空辩论走独立编排)。
@@ -95,7 +117,11 @@ function ChatPageInner() {
       // 等用户替换。这里复用同一条通道,而不是新加一个分支 ——
       // 两条路径各写一份"怎么处理模板"的逻辑,早晚会不一致
       // (这个 bug 本身就是这么来的)。
-      if (/\{[^}]*\}/.test(q)) {
+      //
+      // `&send=0` 是向导最后一步的示例问题用的:**填进输入框但不发送**
+      // (设计方案 4.7 第 3 条)。走的还是 draft 这条通道,不新开分支 ——
+      // 「怎么处理带进来的一句话」只能有一份逻辑。
+      if (/\{[^}]*\}/.test(q) || searchParams.get('send') === '0') {
         setDraft((d) => ({ text: q, seq: (d?.seq ?? 0) + 1 }))
       } else {
         // 没有占位符的模板(如「我的自选股今天怎么样」)是完整的一句话,

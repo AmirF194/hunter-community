@@ -31,6 +31,10 @@ _PASS = os.getenv("OPENCODE_SERVER_PASSWORD", "")
 # 重扫本身很快(实测 <1 秒),但首次会真的读一遍磁盘,给宽一点
 _TIMEOUT = 30.0
 
+# 大模型热生效用(apply_llm)· 与 scripts/opencode/gen-config.py 里的同名常量对齐
+_PROVIDER_ID = "hunter-llm"
+_SHIM_URL = os.getenv("LLM_SHIM_URL", "http://llm-shim:3999/v1").rstrip("/")
+
 
 def _headers() -> dict:
     if not (_USER or _PASS):
@@ -89,3 +93,115 @@ def restart_hint() -> str:
     return ("新能力已保存,但当前 opencode 需要重启才能识别 —— "
             "它只在启动时扫描能力目录。在部署目录执行:"
             "docker compose restart opencode(约 50 秒)")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 大模型配置热生效(M1 · R0 §1.2 / 1.5)
+# ─────────────────────────────────────────────────────────────────────
+def apply_llm(cfg) -> dict:
+    """把大模型配置热推给 opencode,**不重启容器**。cfg 是 runtime_config.LLMConfig。
+
+    返回 {"ok": bool, "reason": str}。**永远不抛异常** —— 与 refresh_skills() 同样
+    的理由:它挂在保存配置的主干上,推送失败不该让保存回滚。
+
+    ## 为什么是 `PATCH /global/config` 而不是 `PATCH /config`
+
+    R0 实测(2026-09-18):`PATCH /config` 返回 200(9 ms)、也确实写出了
+    `<实例目录>/config.json`,但**那个文件根本不在配置加载路径上**,内容永不生效:
+    PATCH 之后 `GET /config` 与新会话仍用旧模型。改用 `PATCH /global/config` 走的是
+    `Config.updateGlobal`:写 `~/.config/opencode/opencode.jsonc`、清掉全局配置缓存
+    (`invalidate()`)、销毁全部实例,所以配置能真正重新加载。
+
+    R0 实测耗时(同一网关来回换两个模型名):
+        PATCH /global/config 返回          34 ms / 48 ms
+        GET /config 反映新模型             0.52 s / 0.53 s
+        GET /mcp(实例重建 + MCP 重连)     3.44 s / 3.60 s · 均 6/6 connected
+        新会话首个请求                     3.42 s / 3.69 s
+        **PATCH → 新对话可用 总计          7.42 s / 7.87 s**
+    旧会话可读、可续聊,会话不丢。
+
+    ## ⚠️ 两个调用方必须知道的坑
+
+    1. **这是同步函数,async 里必须 `await run_in_threadpool(apply_llm, cfg)`。**
+       api 的入口是单 worker 的 uvicorn,直接在 `async def` 里调同步 httpx 会把
+       事件循环整个堵住。子任务 D 已经踩过一次(`/skill/refresh` 卡满 30 秒超时,
+       而文件其实早写好了、opencode 也活着)。写成同步是为了与 refresh_skills()
+       风格一致,代价就是调用方要包一层。
+    2. **PATCH 本身不会撞上那个闭环,但紧接着的「就绪探测」会。**
+       `PATCH /global/config` 的实例销毁发生在**响应之后**,所以 PATCH 这一下是安全的;
+       可是**下一个**打到 opencode 的请求会触发实例重建,重建时要走完整的配置加载 +
+       SKILL 发现流程,而 SKILL 发现里有 `skills.urls` → **回头来拉 api 的
+       /api/internal/skills/...**。如果 api 这一侧正被一个同步调用堵着事件循环,
+       就是死锁:opencode 拉不到清单,api 等到超时。
+       所以 M2 的「保存后轮询 `GET /config/providers` 判断就绪」同样必须
+       `run_in_threadpool`,不能在事件循环里同步等。
+
+    M1 只提供这个服务函数,**不暴露 HTTP 接口** —— 接口是 M2 向导的事。
+    """
+    model = (getattr(cfg, "model", "") or "").strip()
+    base_url = (getattr(cfg, "base_url", "") or "").strip().rstrip("/")
+    api_key = getattr(cfg, "api_key", "") or ""
+    sanitize = (getattr(cfg, "sanitize", "") or "auto").strip().lower()
+    if not model:
+        return {"ok": False, "reason": "大模型尚未配置(没有模型名),不推送"}
+
+    # 与 scripts/opencode/gen-config.py 的 _use_shim() 保持一致:
+    # sanitize=0 直连用户地址、不经 shim;1 强制经 shim;auto 只有 gemini 才经。
+    # **两处逻辑必须同口径** —— 不然重启一次容器,provider 就换了一副样子。
+    if sanitize in ("0", "false", "no", "off"):
+        via_shim = False
+    elif sanitize in ("1", "true", "yes", "on"):
+        via_shim = True
+    else:
+        via_shim = "gemini" in model.lower()
+
+    options = {"baseURL": _SHIM_URL if via_shim else base_url, "apiKey": api_key}
+    if via_shim and base_url:
+        # 真正的上游走请求头给 shim —— 配置存数据库时 shim 容器的 LLM_BASE_URL 是空的
+        options["headers"] = {"X-Hunter-Upstream": base_url}
+
+    body = {
+        "provider": {
+            _PROVIDER_ID: {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Hunter LLM",
+                "options": options,
+                "models": {model: {"name": model}},
+            }
+        },
+        "model": f"{_PROVIDER_ID}/{model}",
+    }
+
+    try:
+        r = httpx.patch(f"{_URL}/global/config", headers=_headers(), json=body,
+                        timeout=_TIMEOUT)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[opencode_admin] apply_llm 请求失败: {}", e)
+        return {"ok": False, "reason": f"连不上 opencode({type(e).__name__})"}
+
+    if r.status_code == 404:
+        logger.info("[opencode_admin] /global/config 不存在(镜像较旧)· 需重启 opencode")
+        return {"ok": False, "reason": "当前 opencode 镜像不支持热更新配置(需重启容器)"}
+    if r.status_code != 200:
+        logger.warning("[opencode_admin] apply_llm 返回 {}: {}", r.status_code, r.text[:120])
+        return {"ok": False, "reason": f"opencode 返回 HTTP {r.status_code}"}
+
+    # ⚠️ **状态码 200 不等于端点存在**(与 refresh_skills 同一个坑):
+    # opencode 对未知路由返回 200 + SPA 的 HTML。只看状态码的话,旧镜像上会被判成
+    # 「已生效」,而模型其实一点没变 —— 用户下一条对话还是老模型,却看不到任何提示。
+    # 所以以**能不能解析出一个 JSON 对象**为准(HTML 解析必然失败)。
+    try:
+        payload = r.json()
+    except Exception:  # noqa: BLE001
+        logger.info("[opencode_admin] /global/config 返回的不是 JSON"
+                    "(content-type={})· 判定为镜像不支持,需重启容器",
+                    r.headers.get("content-type", "?"))
+        return {"ok": False, "reason": "当前 opencode 镜像不支持热更新配置(未知路由被 SPA 接管)"}
+    if not isinstance(payload, dict):
+        return {"ok": False, "reason": "opencode 返回的配置格式不对(需重启容器)"}
+
+    # 日志只说模型名和走不走 shim,**不打印 apiKey**
+    logger.info("[opencode_admin] 已热推大模型配置 · model={} · 经 shim={} · "
+                "按 R0 实测约 7.4~7.9 秒后新对话生效(MCP 重连 3.4~3.6 秒)",
+                model, via_shim)
+    return {"ok": True, "reason": ""}

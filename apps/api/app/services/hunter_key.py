@@ -39,10 +39,32 @@ from app.utils.crypto import decrypt, encrypt
 #   · UPSTREAM 非空(指向官方或自建) · APPLY_URL 拼在其后
 _ENV_UPSTREAM = (os.getenv("HUNTER_UPSTREAM_URL") or "").rstrip("/")
 UPSTREAM = _ENV_UPSTREAM  # 数据请求 URL · 空表示"没有官方上游"
+# 官方平台 —— 平台 key 就是从这里申请的
+_OFFICIAL = "https://hunter.agentpit.io"
 APPLY_URL = (
     f"{_ENV_UPSTREAM}/dev/api-keys" if _ENV_UPSTREAM
-    else "https://hunter.agentpit.io/dev/api-keys"   # 兜底:独立模式仍需能申请 key
+    else f"{_OFFICIAL}/dev/api-keys"   # 兜底:独立模式仍需能申请 key
 )
+
+
+def manifest_base() -> str:
+    """校验平台 key 该问哪个地址（M2 · 向导第 4 步实测踩到）。
+
+    M1 把 compose 里 `HUNTER_UPSTREAM_URL` 的兜底改成空(3.7),于是全新安装的
+    `UPSTREAM` 是空串,`manifest()` 拼出来的 URL 是 `/api/saas/tools/manifest`，
+    httpx 直接抛「missing an 'http://' or 'https://' protocol」，用户在向导第 4 步
+    粘一把好 key 会看到「连不上 Hunter 服务器,检查网络后重试」——
+    **原因说反了**,网络没问题,是这台部署压根没有上游地址。
+
+    为什么这里可以回落到官方,而 `LLM_BASE_URL` 不行(M1 3.4):
+      · `LLM_BASE_URL` 回落 = 用户没配就把他的**对话内容**发给我们,他并不知情;
+      · 这里只在用户**主动粘一把 `hunt_tools_` key** 时才发请求,而那把 key 只能
+        从官方申请 —— 问「这把 key 有效吗」除了官方没有第二个地方可问。
+        没有 key 时 `manifest()` 一个请求都不发(见那边的前置判断)。
+    数据请求那条路(`providers/data_source/hunter_tools.py` 读 `UPSTREAM`)
+    **不受影响**,独立模式下仍然不指回官方。
+    """
+    return _ENV_UPSTREAM or _OFFICIAL
 
 _ENV_KEY = (os.getenv("HUNTER_API_KEY") or "").strip()
 
@@ -144,10 +166,20 @@ async def manifest(key: str = "") -> dict:
     of silently claiming everything is fine.
     """
     k = key or resolve()
-    headers = {"Authorization": f"Bearer {k}"} if k else {}
+    if not k:
+        # 没有 key 就**一个请求都不发**:独立运行模式下不该因为打开一个页面
+        # 就去连官方。返回诚实的"未配置",UI 照常显示工具清单与申请入口。
+        return {
+            "unlocked": False,
+            "apply_url": APPLY_URL,
+            "message": "尚未配置平台 key。免费申请后填进来即可解锁全部工具与数据。",
+            "tools": [],
+            "upstream_error": False,
+        }
+    headers = {"Authorization": f"Bearer {k}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(f"{UPSTREAM}/api/saas/tools/manifest", headers=headers)
+            r = await c.get(f"{manifest_base()}/api/saas/tools/manifest", headers=headers)
         if r.status_code >= 500:
             raise RuntimeError(f"upstream {r.status_code}")
         return r.json()

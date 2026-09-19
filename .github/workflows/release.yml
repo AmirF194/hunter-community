@@ -31,9 +31,14 @@ jobs:
             echo "See CHANGELOG.md for the full log." > release_notes.md
           fi
           echo '---' >> release_notes.md
-          echo "Container images:" >> release_notes.md
-          echo '- `ghcr.io/agentpit-io/hunter-community-api:'"$tag"'`' >> release_notes.md
-          echo '- `ghcr.io/agentpit-io/hunter-community-web:'"$tag"'`' >> release_notes.md
+          # 四个自家镜像都要列全 —— v1.1.0 起 opencode 与 llm-shim 也是我们发的,
+          # 只列 api/web 会让人以为另外两个还要自己构建(它们恰恰是最大的那两个)。
+          # 标签形式与 docker-publish 的 `type=ref,event=tag` 一致(带 v);
+          # 同一个 manifest 上还有一个不带 v 的 `${tag#v}`,compose 默认用的是后者。
+          echo "Container images（amd64 + arm64 · 匿名可拉）:" >> release_notes.md
+          for img in api web opencode llm-shim; do
+            echo '- `ghcr.io/agentpit-io/hunter-community-'"$img"':'"$tag"'`' >> release_notes.md
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

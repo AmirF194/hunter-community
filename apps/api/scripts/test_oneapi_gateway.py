@@ -31,7 +31,7 @@ if os.path.exists(_env_path):
 
 from openai import OpenAI
 
-BASE_URL = os.environ.get("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+BASE_URL = os.environ.get("ONE_API_BASE_URL", "")  # 调试脚本 · 不给默认地址(别指向别人的网关)
 API_KEY  = os.environ.get("ONE_API_KEY", "")
 MODEL    = os.environ.get("ONE_API_MODEL", "gemini-3.5-flash")
 

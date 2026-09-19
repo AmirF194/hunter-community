@@ -13,13 +13,14 @@ export default function ComplianceAckModal() {
   const [checked, setChecked] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
+  // 登录页 / 注册页 / 首启向导 / 法务页 不弹
+  const muted = (path: string) =>
+    path === '/login' || path === '/register' ||
+    path.startsWith('/setup') || path.startsWith('/legal/')
+
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const path = window.location.pathname
-    // 登录页/注册页/setup 页 不弹
-    if (path === '/login' || path === '/register' || path.startsWith('/setup')) return
-    // /legal/* 页面里不弹(用户可能是从弹层链接过来看完整版的)
-    if (path.startsWith('/legal/')) return
+    if (muted(window.location.pathname)) return
 
     // 延迟 2.5s · 等 AuthGuard 拿到 token
     const timer = setTimeout(async () => {
@@ -31,6 +32,13 @@ export default function ComplianceAckModal() {
         })
         if (!r.ok) return
         const d = await r.json()
+        // ⚠️ **落地时再判一次路径**。上面那次判的是挂载时的地址,而全新安装的用户
+        // 落在 `/`、由首页在客户端 replace 到 `/setup` —— 2.5 秒之后这个回调
+        // 才跑完,那时人已经在向导里了,弹层却照弹,而且是 `fixed inset-0 z-50`
+        // 的全屏遮罩,把「下一步」整个挡住(M4 实测:playwright 重试 60 次全部被
+        // intercept pointer events 拦掉;真人要先勾选再确认才能继续)。
+        // 开箱第一屏应该是向导,不是合规弹层。
+        if (muted(window.location.pathname)) return
         if (!d.acked) setNeed(true)
       } catch { /* 静默失败 · 不打扰 */ }
     }, 2500)
