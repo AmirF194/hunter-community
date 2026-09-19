@@ -13,6 +13,13 @@ import { testLlm, saveLlm, isFail, type TestResult } from '../lib/setupClient'
 import { Box, Tag, btn } from '../lib/ui'
 import { Field, type Draft } from './ModelPick'
 
+/** 只露头尾,中间打码 —— 界面上永远不回显完整 key。 */
+function maskKey(k: string): string {
+  const v = (k || '').trim()
+  if (v.length <= 12) return v ? `${v.slice(0, 2)}****${v.slice(-2)}` : ''
+  return `${v.slice(0, 11)}****${v.slice(-4)}`
+}
+
 export default function ModelTest({
   draft, onChange, testToken, onTested, onSaved, onBack,
 }: {
@@ -24,10 +31,14 @@ export default function ModelTest({
   onBack: () => void
 }) {
   const [result, setResult] = useState<TestResult | null>(null)
+  const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
   const builtin = !!draft.builtin
+  // 「验证过」= 三项全过且凭证还在。凭证过期时 testToken 会被清掉,
+  // 界面自动退回输入状态 —— 那时候确实需要重测,不能再说"已验证"。
+  const verified = !!(result?.ok && testToken)
 
   const canTest = !!(draft.base_url.trim() && draft.model.trim() && draft.api_key.trim()) && !testing
 
@@ -61,6 +72,7 @@ export default function ModelTest({
       if (r.data?.reason) onTested('')
       return
     }
+    setSaved(true)
     await onSaved()
   }
 
@@ -85,10 +97,31 @@ export default function ModelTest({
           <Field label="模型名" value={draft.model} onChange={(v) => { onChange({ ...draft, model: v }); onTested('') }} />
         </>
       )}
-      <Field label={builtin ? 'Hunter 平台 key(hunt_tools_ 开头)' : 'API key'}
-             type="password" placeholder={builtin ? 'hunt_tools_…' : '粘贴你的 key'}
-             value={draft.api_key} onChange={(v) => { onChange({ ...draft, api_key: v }); onTested('') }} />
-      {builtin && draft.preset?.apply_url && (
+      {verified ? (
+        // 检测通过后**不再显示输入框** —— 密码框回显成一片空白的圆点,用户会以为
+        // 自己填的东西没存上,于是重填一遍、再测一遍。这里换成一句「这把 key 已验证」
+        // 加一个明确的「换一把」入口,想换的人点一下就能回到输入状态。
+        <div style={{
+          marginTop: 10, padding: '10px 12px', borderRadius: HUNTER.R_SM,
+          border: `1px solid ${HUNTER.SUCCESS}`, background: HUNTER.PAPER,
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+        }}>
+          <CheckCircle2 size={15} color={HUNTER.SUCCESS} />
+          <span style={{ fontSize: 13.5, color: HUNTER.INK }}>
+            {builtin ? 'Hunter 平台 key' : 'API key'} 已验证:<code>{maskKey(draft.api_key)}</code>
+          </span>
+          <button onClick={() => { onChange({ ...draft, api_key: '' }); onTested(''); setResult(null) }}
+                  style={{
+                    marginLeft: 'auto', border: 'none', background: 'none', padding: 0,
+                    color: HUNTER.THEME, fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline',
+                  }}>换一把 key</button>
+        </div>
+      ) : (
+        <Field label={builtin ? 'Hunter 平台 key(hunt_tools_ 开头)' : 'API key'}
+               type="password" placeholder={builtin ? 'hunt_tools_…' : '粘贴你的 key'}
+               value={draft.api_key} onChange={(v) => { onChange({ ...draft, api_key: v }); onTested('') }} />
+      )}
+      {builtin && !verified && draft.preset?.apply_url && (
         <div style={{ marginTop: 6, fontSize: 12.5 }}>
           还没有?<a href={draft.preset.apply_url} target="_blank" rel="noreferrer"
                     style={{ color: HUNTER.THEME, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -103,11 +136,13 @@ export default function ModelTest({
         {builtin && '网关只记 token 数与模型名,不记任何对话内容。'}
       </div>
 
+      {!verified && (
       <button onClick={() => void runTest()} disabled={!canTest} style={btn('primary', !canTest)}>
         {testing ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <Loader2 size={14} style={{ animation: 'hspin 1s linear infinite' }} /> 检测中…(最长约 85 秒)
         </span> : '开始检测'}
       </button>
+      )}
 
       {err && <div style={{ marginTop: 12, color: HUNTER.UP, fontSize: 13.5 }}>{err}</div>}
 
@@ -164,7 +199,23 @@ export default function ModelTest({
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 10 }}>
+      {verified && (
+        // 红字。用户反馈:检测通过之后不确定"到底存没存",容易重填重测。
+        // 这句话要把状态说死:测过了、还没存、下一步点哪个按钮。
+        <div style={{
+          marginTop: 14, padding: '10px 12px', borderRadius: HUNTER.R_SM,
+          border: `1px solid ${HUNTER.UP}`, background: HUNTER.PAPER,
+          color: HUNTER.UP, fontSize: 13.5, fontWeight: 600, lineHeight: 1.7,
+        }}>
+          检测成功,这把 key 可用 —— 不用再输入一次。
+          <span style={{ fontWeight: 400 }}>
+            {' '}现在点下面的「保存并继续」才算存进这台实例
+            {saved ? '(已保存)' : '(尚未保存)'}。
+          </span>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
         <button onClick={onBack} style={btn('ghost')}>上一步</button>
         <button onClick={() => void save()} disabled={!testToken || saving}
                 style={btn('primary', !testToken || saving)}>

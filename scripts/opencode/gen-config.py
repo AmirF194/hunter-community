@@ -252,6 +252,30 @@ def _use_shim(cfg: dict, source: str) -> bool:
     return "gemini" in cfg["model"].lower()
 
 
+def _model_label(cfg: dict) -> str:
+    """问网关要这个模型的展示名(内置额度下别名背后的真实模型),拿不到就用模型名。
+
+    与 api 侧 opencode_admin.model_label() **必须同口径** —— 不然重启一次容器,
+    选择器里的名字就换了一副样子。超时 3 秒、失败即回退,标签不值得卡住启动。
+    """
+    model = cfg.get("model") or ""
+    base = (cfg.get("base_url") or "").rstrip("/")
+    if not base or not model or model == PLACEHOLDER_MODEL:
+        return model
+    req = urllib.request.Request(f"{base}/models", method="GET")
+    if cfg.get("api_key"):
+        req.add_header("Authorization", f"Bearer {cfg['api_key']}")
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as r:
+            data = json.loads(r.read().decode("utf-8") or "{}")
+        for m in data.get("data") or []:
+            if m.get("id") == model:
+                return (m.get("display_name") or "").strip() or model
+    except Exception as e:  # noqa: BLE001
+        _log(f"取模型展示名失败(不影响功能): {type(e).__name__}")
+    return model
+
+
 def provider_block(cfg: dict, source: str) -> dict:
     """provider + model 两个键。与 opencode_admin.apply_llm() 写的结构保持一致。"""
     via_shim = _use_shim(cfg, source)
@@ -272,7 +296,7 @@ def provider_block(cfg: dict, source: str) -> dict:
                 "options": options,
                 # 只声明配置里的那一个模型。opencode 要求每个模型显式声明,
                 # 多列网关未必提供的模型会在选择器里留下一堆死条目。
-                "models": {cfg["model"]: {"name": cfg["model"]}},
+                "models": {cfg["model"]: {"name": _model_label(cfg)}},
             }
         },
         "model": f"{PROVIDER_ID}/{cfg['model']}",

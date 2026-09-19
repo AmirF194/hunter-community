@@ -98,6 +98,32 @@ def restart_hint() -> str:
 # ─────────────────────────────────────────────────────────────────────
 # 大模型配置热生效(M1 · R0 §1.2 / 1.5)
 # ─────────────────────────────────────────────────────────────────────
+def model_label(base_url: str, api_key: str, model: str) -> str:
+    """问上游要这个模型的展示名,拿不到就用模型名本身。
+
+    为什么要问:内置额度下用户配的是别名(hunter-chat),而他在对话框里想知道的是
+    「我现在用的是哪个模型」。别名换上游时用户无感,展示名跟着上游走 —— 所以展示名
+    只能问网关要,不能在客户端写死一张表(写死的那天起就开始过期)。
+
+    自带 key 的地址一般没有这个字段,返回模型名本身,行为与改动前一致。
+    超时 3 秒、失败即回退:这只是个标签,不值得为它卡住启动或保存。
+    """
+    if not base_url or not model:
+        return model
+    try:
+        r = httpx.get(f"{base_url.rstrip('/')}/models",
+                      headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                      timeout=3.0)
+        if r.status_code != 200:
+            return model
+        for m in (r.json() or {}).get("data") or []:
+            if m.get("id") == model:
+                return (m.get("display_name") or "").strip() or model
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[opencode_admin] 取模型展示名失败(不影响功能): {}", e)
+    return model
+
+
 def apply_llm(cfg) -> dict:
     """把大模型配置热推给 opencode,**不重启容器**。cfg 是 runtime_config.LLMConfig。
 
@@ -166,7 +192,7 @@ def apply_llm(cfg) -> dict:
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Hunter LLM",
                 "options": options,
-                "models": {model: {"name": model}},
+                "models": {model: {"name": model_label(base_url, api_key, model)}},
             }
         },
         "model": f"{_PROVIDER_ID}/{model}",
