@@ -3,7 +3,50 @@
 All notable changes to HunterCode · Community Edition follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0-rc1] - 2026-09-19
+## [1.2.0] - 2026-09-19
+
+> 1.2.0-rc1 已在测试服务器全流程验证过（见 `docs/builtin-llm/P2-成果与测试报告.md`）。
+> 正式版相对 rc1 的增量只有下面「对外开放」这一段 —— 内置额度从灰度转为**对外开放**，
+> 配套的服务条款、条款链接、以及两道全局闸门的错误卡。发正式版而不是继续挂 rc 的理由：
+> 公告已经让所有人按 `docker compose up -d` 起，而 compose 的默认标签就是这里写的那个，
+> 让新用户装一个 rc 不合适。
+
+### 🛡️ 对外开放 · Public availability (P3)
+
+- **服务条款与可接受使用政策**（[中文](docs/builtin-llm/服务条款.md) ·
+  [English](docs/builtin-llm/terms-of-service.md)）· 中英各一份、十节一一对应。
+  写明：仅限自部署用户的研究用途；禁止转售、禁止当通用 API 用、禁止脚本化刷量；
+  额度与服务可能调整或下线；我们只记 token 数与模型名不记内容；滥用会停用单个 key；
+  **没有 SLA**。第 5.3 节如实写了「你的问题文本确实会经过我们的服务器」——
+  只说「不记录」是不够的，不接受「经过」的人应该去走自带 key 或本地模型。
+  Terms of Service & AUP, in Chinese and English, section-by-section aligned.
+- 条款链接接进用户真会看到的地方：向导第 2 步卡片、第 3 步说明、README 中英的
+  「5 分钟跑起来」、`docs/builtin-llm/使用说明.md`。README 里同时写明了额度数字
+  （每把 key 每天 30 万 token）与隐私一行。
+- **认得出网关的两道全局闸门**：`global_quota_exceeded`（402 · 全平台当日总量熔断）与
+  `service_disabled`（403 · 内置额度整体暂停）。两个都**不用 5xx** —— AI SDK 把
+  `408/409/429/>=500` 判为可重试，用 503 的话用户看到的是永不停止的转圈、
+  那段中文一个字都到不了界面（这正是 rc1 里把 429 改成 402 的同一个坑）。
+  不加这两条 code 的话：402 会被说成「模型账户余额不足，请管理员充值」、
+  403 会被说成「模型密钥无效，请检查 LLM_API_KEY」——两句都会把用户带到错误的方向。
+- `apps/web/scripts/model-error-check.mjs` 的断言从 7 条加到 **10 条**，
+  新增的 3 条用的是**从生产网关真抓下来的**报错对象。
+- 使用说明补了用户真会遇到的另外两种拒绝（熔断 / 停用），并写明两者都跟个人额度无关，
+  工具、数据供给、SKILL、已有会话与数据都不受影响。
+
+### ⚠️ 已知限制 · Known limitation
+
+- **四个一键部署模板（1Panel / Railway / Sealos / Zeabur）仍钉在 `1.1.0`**，
+  从它们装出来的实例**没有内置额度那张卡**。它们是各自版本化的独立包
+  （如 `deploy/1panel/hunter-community/1.1.0/`），重切一版并在四个平台上各验一遍
+  是单独的一件活，本轮没做 —— 没验过就推上去比慢一版更糟。
+  想用内置额度请走 `git clone` + `docker compose up -d`（README 的「5 分钟跑起来」），
+  或者把模板里的镜像标签手工改成 `1.2.0`。
+  The four one-click deploy templates still pin `1.1.0` and therefore ship without
+  the built-in-quota card; use the `git clone` path, or bump the tag by hand.
+
+<a id="120-rc1"></a>
+### 以下为 1.2.0-rc1（2026-09-19）的内容
 
 ### ✨ 新增 · Added
 - **内置模型额度**(`hunter-chat` / `hunter-deep`)· **不用自己去各家申请大模型 key 了**。

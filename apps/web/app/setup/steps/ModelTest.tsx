@@ -134,6 +134,16 @@ export default function ModelTest({
         key 会用 AES-256-GCM 加密后存进这台实例自己的数据库,界面上只回显末 4 位,
         日志里一个字都不打。它只发给{builtin ? '上面这个 HunterCode 网关地址' : '你填的这个地址'}。
         {builtin && '网关只记 token 数与模型名,不记任何对话内容。'}
+        {builtin && draft.preset?.terms_url && (
+          <>
+            {' '}使用前请读一遍{' '}
+            <a href={draft.preset.terms_url} target="_blank" rel="noreferrer"
+               style={{ color: HUNTER.INK_S, textDecoration: 'underline' }}>
+              服务条款与可接受使用政策
+            </a>
+            (禁止转售、禁止当通用 API 用;额度与服务可能调整或下线)。
+          </>
+        )}
       </div>
 
       {!verified && (
