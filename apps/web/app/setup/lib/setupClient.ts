@@ -36,6 +36,8 @@ export interface LlmStatus {
   env_locked: boolean
   locked_items: Record<string, string>
   tested_at: string
+  /** 走不走 HunterCode 内置额度。设置页据此显示今日剩余额度。 */
+  builtin?: boolean
 }
 
 export interface SetupStatus {
@@ -67,6 +69,10 @@ export interface Preset {
   apply_url: string
   key_hint: string
   notes: string[]
+  /** true = 这是「HunterCode 内置额度」那张卡(地址与模型名由它带,用户只填 key)。 */
+  builtin?: boolean
+  /** 内置额度的深度分析模型名,只用于卡片上的说明文字。 */
+  deep_model?: string
 }
 
 export interface PresetDoc {
@@ -173,7 +179,30 @@ export const testLlm = (base_url: string, api_key: string, model: string) =>
 
 export const saveLlm = (p: {
   base_url: string; api_key: string; model: string; sanitize: string; test_token: string
-}) => call<{ ok: true; saved: any }>('/llm', { method: 'PUT', body: JSON.stringify(p) })
+  builtin?: boolean
+}) => call<{ ok: true; saved: any; data_supply?: { adopted: boolean; reason: string; masked?: string } }>(
+  '/llm', { method: 'PUT', body: JSON.stringify(p) })
+
+/** 内置额度今日剩余额度。`builtin:false` = 这台实例没走内置额度,不显示这一块。 */
+export interface QuotaView {
+  builtin: boolean
+  ok?: boolean
+  code?: string
+  message?: string
+  quota?: {
+    used_today: number
+    limit_daily: number
+    remaining: number
+    exhausted: boolean
+    reset_at: string
+    reset_tz?: string
+    rate_per_min?: number
+    max_concurrency?: number
+    unit?: string
+  }
+}
+
+export const getQuota = () => call<QuotaView>('/llm/quota')
 
 export const applyLlm = () =>
   call<{ ok: boolean; reason: string; model: string; expect_ready_seconds: number }>(

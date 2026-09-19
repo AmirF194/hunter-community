@@ -16,6 +16,7 @@
 
 键:
     llm.base_url · llm.api_key(加密) · llm.model · llm.sanitize · llm.tested_at
+    llm.builtin · llm.agent_models
     setup.completed_at
 
 **数据库不可用时不抛异常**(迁移还没跑完、库挂了、密钥变过导致解不开):
@@ -24,6 +25,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -41,8 +43,13 @@ K_MODEL = "llm.model"
 K_SANITIZE = "llm.sanitize"
 K_TESTED_AT = "llm.tested_at"
 K_SETUP_DONE = "setup.completed_at"
+# 内置额度模式的标记与随它一起写下的 agent 侧模型名(P2 · 方案 4.5 / 4.8)
+K_BUILTIN = "llm.builtin"            # "1" = 这台实例走 HunterCode 内置额度
+K_AGENT_MODELS = "llm.agent_models"  # JSON:{"ASSISTANT_MODEL_CHAT": "hunter-chat", ...}
 
 _LLM_KEYS = (K_BASE_URL, K_API_KEY, K_MODEL, K_SANITIZE)
+# 同一次查库顺手把这两项也捞出来,省一次往返(它们和大模型配置总是一起读)
+_READ_KEYS = _LLM_KEYS + (K_BUILTIN, K_AGENT_MODELS)
 
 # 单项 → (环境变量名, 数据库键)
 _ITEMS = {
@@ -111,7 +118,7 @@ def _read_db() -> dict:
     _ensure_table()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT k, v FROM hunter_config WHERE k = ANY(%s)", (list(_LLM_KEYS),))
+    cur.execute("SELECT k, v FROM hunter_config WHERE k = ANY(%s)", (list(_READ_KEYS),))
     rows = {k: (v or "") for k, v in (cur.fetchall() or [])}
     conn.close()
     enc = rows.get(K_API_KEY) or ""
@@ -203,6 +210,106 @@ def env_locked() -> bool:
     return any(_env(i) for i in ("base_url", "api_key", "model"))
 
 
+# ── 内置额度模式(P2 · 方案 4.8)────────────────────────────────────
+# 官方内置额度网关的地址。用户在向导里选「使用 HunterCode 内置额度」时由向导
+# 填进来,**不是**代码里的兜底默认值 —— 没选这条路的部署,一个字节都不会发到
+# 这个地址(M1 3.4 那条铁律:`LLM_BASE_URL` 不许有指回我们服务器的默认值)。
+BUILTIN_BASE_URL = "https://hunter.agentpit.io/api/saas/llm/v1"
+BUILTIN_CHAT_MODEL = "hunter-chat"
+BUILTIN_DEEP_MODEL = "hunter-deep"
+#: 网关额度接口。base_url 去掉末尾的 /v1 再接这个。
+BUILTIN_QUOTA_PATH = "/quota"
+
+#: 内置额度路径下写给 agent 侧的模型名(方案 4.5「向导把这些变量一并指向 hunter-deep」)。
+#: 长任务(深度分析 / 深度研究)走 `hunter-deep`,其余走 `hunter-chat` ——
+#: deep 的输出单价是 chat 的几倍,不该让路由分类、摘要压缩这些短任务也吃它。
+BUILTIN_AGENT_MODELS = {
+    # 对话 / 路由 / 摘要 / 子智能体
+    "ASSISTANT_MODEL_ROUTE": BUILTIN_CHAT_MODEL,
+    "ASSISTANT_MODEL_CHAT": BUILTIN_CHAT_MODEL,
+    "ASSISTANT_MODEL_COMPRESS": BUILTIN_CHAT_MODEL,
+    "AGENT_MODEL_ROUTER": BUILTIN_CHAT_MODEL,
+    "AGENT_MODEL_ROUTE_LITE": BUILTIN_CHAT_MODEL,
+    "AGENT_MODEL_GENERAL_FINANCE": BUILTIN_CHAT_MODEL,
+    "AGENT_SUB_WL_MODEL": BUILTIN_CHAT_MODEL,
+    "AGENT_SUB_PORT_MODEL": BUILTIN_CHAT_MODEL,
+    "AGENT_SUB_EVENT_MODEL": BUILTIN_CHAT_MODEL,
+    "SIGNAL_ANALYSIS_MODEL": BUILTIN_CHAT_MODEL,
+    # 长任务
+    "AGENT_SUB_RESEARCH_MODEL": BUILTIN_DEEP_MODEL,
+    "AGENT_SUB_UZI_MODEL": BUILTIN_DEEP_MODEL,
+}
+
+
+def builtin_quota_url(base_url: str) -> str:
+    """把 `.../api/saas/llm/v1` 换成 `.../api/saas/llm/quota`。不是网关地址就返回空串。"""
+    b = (base_url or "").rstrip("/")
+    if not is_builtin_base(b):
+        return ""
+    return b[: -len("/v1")] + BUILTIN_QUOTA_PATH
+
+
+def is_builtin_base(url: str) -> bool:
+    """这个地址是不是内置额度网关。
+
+    判据是**路径**而不是域名:自建一套 hermes 的人(以及我们自己的测试环境)
+    用的是同一套路由 `/api/saas/llm/v1`,额度接口也在同一个地方,该认。
+    """
+    return (url or "").rstrip("/").lower().endswith("/api/saas/llm/v1")
+
+
+def builtin() -> bool:
+    """这台实例当前是不是走内置额度。
+
+    两条判据取或:
+      · 向导保存时写下的 `llm.builtin` 标记(正常路径);
+      · 当前生效地址就是内置额度网关 —— 覆盖「.env 里写死网关地址」的锁定实例,
+        那种情况下向导从没写过标记,但额度展示与错误引导照样应该生效。
+    """
+    if is_builtin_base(llm().base_url):
+        return True
+    return (_db().get(K_BUILTIN) or "").strip() == "1"
+
+
+# ── agent 侧模型名(深度分析 / 子智能体)──────────────────────────────
+# 这些变量在 `docker-compose.yml` 里写成 `${X:-}`,**没有 .env 时注进容器的是
+# 空串**,于是 `os.getenv("X", "默认值")` 拿到的是 `""` 而不是默认值 ——
+# 请求打到上游时 `model` 是空的。P1 在测试机上实测到这个坑(P1 报告第 9 节第 1 条):
+# 表现是「工具调用成功,但之后的 LLM 汇总整个失败,只能用模板兜底」。
+#
+# 这里统一成和大模型三件套一样的优先级:**环境变量非空 → 数据库 → 代码默认值**。
+# 内置额度路径下向导会把这一批写进数据库(chat 类 → hunter-chat,长任务 → hunter-deep),
+# 用户不用手工配;自带 key 的实例什么都不写,行为回到「代码默认值」——
+# 也就是这个坑被踩之前本来就该有的样子。
+def agent_models() -> dict:
+    """数据库里存着的一批 agent 侧模型名。读不出来就是空字典。"""
+    raw = (_db().get(K_AGENT_MODELS) or "").strip()
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[runtime_config] llm.agent_models 不是合法 JSON(按未配置处理): {}", e)
+        return {}
+    if not isinstance(d, dict):
+        logger.warning("[runtime_config] llm.agent_models 不是对象(按未配置处理)")
+        return {}
+    return {str(k): str(v).strip() for k, v in d.items() if v and isinstance(v, str)}
+
+
+def agent_model(env_name: str, default: str = "") -> str:
+    """一个 agent 侧模型名的当前取值。
+
+    **调用点必须是惰性的**(在函数体里调,不要 `X = agent_model(...)` 写成模块级
+    常量)—— 向导热生效之后不重启容器,模块级常量会一直是旧值。
+    """
+    v = (os.environ.get(env_name) or "").strip()
+    if v:
+        return v
+    v = (agent_models().get(env_name) or "").strip()
+    return v or default
+
+
 # ── 写 ──────────────────────────────────────────────────────────────
 def _set(conn, k: str, v: str) -> None:
     cur = conn.cursor()
@@ -272,6 +379,27 @@ def set_str(k: str, v: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def save_builtin(on: bool, models: Optional[dict] = None) -> None:
+    """记下「这台实例走不走内置额度」,顺带写下 agent 侧的一批模型名。
+
+    `on=False` 时把两项都清空 —— 用户从内置额度切回自带 key 时,那批指向
+    `hunter-chat` / `hunter-deep` 的模型名必须一起消失,否则深度分析会拿着
+    只有我们网关认识的模型名去打他自己的上游,400 到底。
+    """
+    payload = json.dumps(models or {}, ensure_ascii=False, sort_keys=True) if on else ""
+    _ensure_table()
+    conn = get_conn()
+    try:
+        _set(conn, K_BUILTIN, "1" if on else "")
+        _set(conn, K_AGENT_MODELS, payload)
+        conn.commit()
+    finally:
+        conn.close()
+    invalidate()
+    logger.info("[runtime_config] 内置额度标记 = {} · agent 模型 {} 项",
+                "1" if on else "(空)", len(models or {}) if on else 0)
 
 
 # ─────────────────────────────────────────────────────────────────────

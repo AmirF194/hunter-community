@@ -190,6 +190,32 @@ for label, script in CONSIST.items():
     check(f"⭐ 扫描与命中日同口径 · {label}(25 天 × 5 只:命中 {n_hit} / 算不出 {n_unk})", not bad, bad[:4])
     check(f"对照用例确实测到了东西 · {label}(有命中也有不命中)", n_hit > 0 and n_hit < 25 * 5, n_hit)
 
+# ═══ 第 4 组 · 扫描当日以结果表为准(2026-09-19 用户:「蓝线一定是基于当前筛选器配置命中的」)═══
+from datetime import date as _d  # noqa: E402
+
+check("snapshot_day:daily-bar.time 是 UTC 零点", sh.snapshot_day({sh.BAR_TIME: 1789689600}) == _d(2026, 9, 18))
+check("snapshot_day:缺字段 / 非数字 → None", sh.snapshot_day({}) is None and sh.snapshot_day({sh.BAR_TIME: "x"}) is None
+      and sh.snapshot_day(None) is None)
+base = {"hits": ["2026-09-11"], "evaluated": 250, "unknown": 0, "note": None}
+o = sh._pin_scan_day(dict(base), _d(2026, 9, 18), _d(2026, 9, 18))
+check("回算没命中扫描当日 → 补标并写明口径差", o["hits"] == ["2026-09-11", "2026-09-18"] and "细微差别" in o["note"]
+      and o["scan_day"] == "2026-09-18")
+o = sh._pin_scan_day(dict(base, hits=["2026-09-18"]), _d(2026, 9, 18), _d(2026, 9, 18))
+check("回算已命中 → 不动、不加说明", o["hits"] == ["2026-09-18"] and o["note"] is None)
+check("回算已命中 → 不标 scan_pinned(前端不能挪走真命中)", "scan_pinned" not in o and "scan_note" not in o)
+o = sh._pin_scan_day(dict(base), _d(2026, 9, 18), _d(2026, 9, 18))
+check("补标 → scan_pinned + scan_note 是补标那句", o.get("scan_pinned") is True and o["scan_note"].startswith("扫描当日 2026-09-18"))
+o = sh._pin_scan_day(dict(base), _d(2026, 9, 18), _d(2026, 9, 17))
+check("自家日线落后于快照 → 补标并写明日线最新到哪天", "2026-09-18" in o["hits"] and "还没进自家日线库" in o["note"]
+      and "2026-09-17" in o["note"])
+o = sh._pin_scan_day({"hits": [], "evaluated": 0, "unknown": 0, "note": "自家全市场日线里没有这只票"}, _d(2026, 9, 18), _d(2026, 9, 18))
+check("日线里没有这只票 → 只标扫描当日,原说明保留", o["hits"] == ["2026-09-18"] and o["note"].startswith("自家全市场日线里没有")
+      and "只能标出扫描当日" in o["note"])
+o = sh._pin_scan_day(dict(base), None, _d(2026, 9, 18))
+check("快照日期拿不到 → 原样返回", o == base)
+check("补标后命中日升序", sh._pin_scan_day(dict(base, hits=["2026-09-19"]), _d(2026, 9, 18), _d(2026, 9, 19))["hits"]
+      == ["2026-09-18", "2026-09-19"])
+
 print(f"{passed} passed, {len(fails)} failed")
 for x in fails:
     print("FAIL", x)

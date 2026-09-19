@@ -35,13 +35,17 @@ def _model() -> str:
     (`runtime_config.llm()`:环境变量非空 → 数据库),否则用户配了 DeepSeek 却在
     这里请求 gemini-3.5-flash 会直接 502 UnknownModel。
 
+    取值优先级与别的 agent 侧模型名一致:**环境变量非空 → 数据库 → 当前生效模型**。
+    中间那层是内置额度路径下向导写的(`hunter-deep`),P2 加。
+
     ⚠️ **必须是函数,不能是模块级常量** —— 配置可以由初始化向导在运行时改,
     常量的话得重启容器才生效。没配时返回空串,调用方在 get_client() 那一步就已经
     被挡住了(**不猜模型名**:猜出来的 404 比「尚未配置」更难懂)。
     """
-    env = (os.getenv("AGENT_SUB_UZI_MODEL") or "").strip()
-    if env:
-        return env
+    from app.services import runtime_config
+    picked = runtime_config.agent_model("AGENT_SUB_UZI_MODEL")
+    if picked:
+        return picked
     from app.services.online_analysis.llm_client import default_model
     return default_model()
 

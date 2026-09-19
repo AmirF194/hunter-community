@@ -51,9 +51,10 @@ jobs:
           JWT_SECRET: ci-test-secret
           DATABASE_URL: postgresql://placeholder@localhost/placeholder
         run: python -c "import main; print('import ok')"
-      # 全部后端用例,含首启向导的 test_setup_guard / test_llm_probe / test_setup_router
-      # (原来单独一步点名跑这三份,现已并进这里)。脚本式用例由 conftest 放进子进程跑;
-      # test_migrate.py 的真库用例在这里没有 TEST_DATABASE_URL 会跳过,由下面的 migrations job 跑。
+      # 全部后端用例,含首启向导与内置额度的 test_setup_guard / test_llm_probe / test_setup_router /
+      # test_runtime_config / test_setup_builtin(原来单独一步点名跑这几份,现已并进这里)。
+      # 脚本式用例由 conftest 放进子进程跑;test_migrate.py 的真库用例在这里没有 TEST_DATABASE_URL
+      # 会跳过,由下面的 migrations job 跑。
       - name: Backend tests (pytest · apps/api/tests)
         working-directory: apps/api
         env:
@@ -317,6 +318,11 @@ jobs:
       - name: Typecheck
         working-directory: apps/web
         run: npx tsc --noEmit
+      # 「模型调用失败时用户看到什么」的唯一出口。坏掉的表现是界面一片空白或者
+      # 一句看不懂的英文,而 tsc 与 next build 全绿 —— 所以单独跑一遍真断言。
+      - name: 错误卡回归(真实抓到的报错对象)
+        working-directory: apps/web
+        run: node scripts/model-error-check.mjs
       - name: Strategy pages self-check (render_check.js)
         working-directory: apps/web/public/strategies
         run: node render_check.js

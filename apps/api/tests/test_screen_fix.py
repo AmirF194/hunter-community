@@ -204,5 +204,60 @@ try:
 except dsl.ScreenError as e:
     check("没配 key 明说", "LLM" in str(e))
 
+# ── 模型调用失败的中文说明(2026-09-19:DeepSeek 余额 0 时报错条原样显示英文 402)──
+class APIStatusError(Exception):
+    def __init__(self, msg, status_code):
+        super().__init__(msg)
+        self.status_code = status_code
+
+
+class APITimeoutError(Exception):
+    pass
+
+
+class APIConnectionError(Exception):
+    pass
+
+
+RAW402 = "Error code: 402 - {'error': {'message': 'Insufficient Balance', 'type': 'unknown_error'}}"
+cases = {
+    "402 余额不足": (APIStatusError(RAW402, 402), "余额不足"),
+    "401 密钥": (APIStatusError("Error code: 401 - invalid key", 401), "密钥"),
+    "403 权限": (APIStatusError("forbidden", 403), "权限"),
+    "404 模型名": (APIStatusError("model not found", 404), "LLM_DEFAULT_MODEL"),
+    "429 限流": (APIStatusError("rate limited", 429), "限流"),
+    "502 暂时出错": (APIStatusError("bad gateway", 502), "暂时出错"),
+    "超时": (APITimeoutError("Request timed out."), "超时"),
+    "连不上": (APIConnectionError("Connection error."), "连不上"),
+    "418 认不出的状态码如实写": (APIStatusError("teapot", 418), "HTTP 418"),
+    "没有状态码的异常": (RuntimeError("boom"), "没有正常返回"),
+}
+for label, (exc, want) in cases.items():
+    t = nl.model_error_text(exc)
+    check("模型报错 · " + label + " → 中文说明", want in t)
+    check("模型报错 · " + label + " · 以「调用模型失败」开头(路由靠它退回 AI 次数)", t.startswith("调用模型失败"))
+    check("模型报错 · " + label + " · 不带上游英文原话", "Insufficient" not in t and "Error code" not in t
+          and "boom" not in t and "teapot" not in t and "timed out" not in t)
+
+
+class RaisingClient:
+    def __init__(self, exc):
+        self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self._create))
+        self.exc = exc
+
+    def _create(self, **kw):
+        raise self.exc
+
+
+for fn, call in (("fix_script", lambda: nl.fix_script(ORIG, ERR, "美股", SMA, SMA, [14], validate=compile_)),
+                 ("translate", lambda: nl.translate("收盘价大于20", "美股", SMA, SMA, [14], validate=compile_))):
+    with_client(RaisingClient(APIStatusError(RAW402, 402)))
+    try:
+        call()
+        check(fn + " · 402 应当报错", False)
+    except dsl.ScreenError as e:
+        check(fn + " · 402 走中文说明", str(e).startswith("调用模型失败") and "余额不足" in str(e)
+              and "Insufficient" not in str(e))
+
 print("\nALL OK" if not FAILS else f"\n{len(FAILS)} FAILED")
 sys.exit(1 if FAILS else 0)

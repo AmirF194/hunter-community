@@ -1241,6 +1241,7 @@ class HitDaysIn(BaseModel):
     market: str = "us"
     code: str = ""
     as_of: str | None = None       # 截到哪天(结果是回溯出来的就传回溯日),空 = 日线最新一天
+    in_result: bool = False        # 这只票在这次实时扫描的结果表里 → 扫描当日以结果表为准(screen_hits 文件头)
 
 
 @router.post("/screener/hit-days")
@@ -1260,7 +1261,8 @@ async def screener_hit_days(body: HitDaysIn, request: Request):
     from app.services.quant import screen_hits
     try:
         # 首次要拉快照(1~3s)+ 整窗日线(冷启动约 10s),同步代码,不能占着事件循环
-        return await asyncio.to_thread(screen_hits.hit_days, body.script, body.market, code, as_of)
+        return await asyncio.to_thread(screen_hits.hit_days, body.script, body.market, code, as_of,
+                                       screen_hits.DAYS, bool(body.in_result))
     except ScreenError as e:
         raise HTTPException(400, str(e))
 

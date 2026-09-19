@@ -81,8 +81,10 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
-> 1. **大模型 key(必需)**:驱动对话本身。推荐 [DeepSeek](https://platform.deepseek.com/api_keys),也支持任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)。**不用先写进文件**,向导里粘进去当场检测。
+> 1. **模型从哪来**。推荐走 **HunterCode 内置额度**:[免费申请一把 `hunt_tools_` 平台 key](https://hunter.agentpit.io/dev/api-keys)(约 30 秒),在向导第 2 步选第一张卡,**不用自己去各家申请大模型 key**,地址和模型名向导自动填好,每天有免费 token 额度。详见 [内置额度使用说明](./docs/builtin-llm/使用说明.md)。
+>    **高级路径:自带大模型 key** —— [DeepSeek](https://platform.deepseek.com/api_keys) 或任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)都行,向导里粘进去当场检测。两条路随时互相切换。
 > 2. **数据从哪来(三选一,可以先不管)**:① 免费开源源,开箱即用;② 接你自己的 MCP / 数据源;③ 平台数据管道,[免费申请 key](https://hunter.agentpit.io/dev/api-keys)。详见 [数据供给三选一](#-数据供给三选一)。
+>    走内置额度的话这一步**已经顺带解决了** —— 同一把 `hunt_tools_` key 也是数据供给的 key,向导会直接告诉你已解锁。
 
 **耗时**:自 v1.1.0 起六个服务**全部走预构建镜像,不再本地构建** —— 首次约 3–5 分钟(全在下镜像),之后 `up -d` 几十秒。向导本身约 1 分钟。
 
@@ -103,16 +105,17 @@ open http://localhost:3100          # 浏览器里完成首启向导,不用改�
 | 步骤 | 做什么 |
 |---|---|
 | 1 · 环境自检 | 六个服务连通、迁移账本、密钥来源与强度、卷可写、访问方式 —— 逐项真探测 |
-| 2 · 选大模型 | 预设卡片带**实测**的工具调用命中率与耗时(来自 [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)),也可以自己填 |
-| 3 · 填 key 当场测 | 连通 → 对话 → 工具调用三项,失败分类报错,**测不通不让保存**;schema 清洗开关由检测结果自动决定 |
-| 4 · 数据供给 | 免费开源源 / 平台数据管道 / 自接 MCP,三选一,可以跳过 |
+| 2 · 选大模型 | **第一张卡是「使用 HunterCode 内置额度」(推荐)**:选中即自动填好地址与模型名,你只要一把 `hunt_tools_` key。下面几张是自带 key 的高级路径,带**实测**的工具调用命中率与耗时(来自 [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)) |
+| 3 · 填 key 当场测 | 连通 → 对话 → 工具调用三项,失败分类报错,**测不通不让保存**;内置额度路径下还会顺带把深度分析指向 `hunter-deep`、用同一把 key 解锁数据供给 |
+| 4 · 数据供给 | 免费开源源 / 平台数据管道 / 自接 MCP,三选一,可以跳过。走内置额度的话这里会直接显示「同一把 key 已解锁」 |
 | 5 · 完成 | **不重启任何容器**热生效,给三个示例问题带你进对话 |
 
 <p align="center">
-  <img src="./docs/screenshots/setup-wizard/04-三项检测通过.png" alt="第 3 步 · 三项检测" width="760" />
+  <img src="./docs/screenshots/builtin-llm/02-第2步-内置额度是第一张卡.png" alt="第 2 步 · 内置额度是第一张卡" width="760" />
 </p>
 
-全部截图见 [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/)。
+全部截图见 [`docs/screenshots/builtin-llm/`](./docs/screenshots/builtin-llm/)(内置额度全流程)
+与 [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/)(自带 key 路径)。
 
 > [!IMPORTANT]
 > **这台实例只要能从公网打开,就先在 `.env` 里设 `HUNTER_SETUP_TOKEN`**(随便一串随机值,
@@ -124,6 +127,8 @@ open http://localhost:3100          # 浏览器里完成首启向导,不用改�
 **想走老路(在 `.env` 里写死)也行**,而且优先级更高:填了 `LLM_BASE_URL` / `LLM_API_KEY` /
 `LLM_DEFAULT_MODEL` 的实例是**锁定**状态,向导只读展示、改不了它(演示站就是这么跑的)。
 要换模型改 `.env` 后 `docker compose up -d`(**不是 restart** —— restart 不重读 `.env`)。
+内置额度也能写死(一键部署模板会这么预填),写法见
+[内置额度使用说明 · 第六节](./docs/builtin-llm/使用说明.md#六想在-env-里写死一键部署模板)。
 
 > 不配大模型时六个服务照样健康,只是发消息会收到一句中文的「大模型尚未配置」。
 > 想以后再配,向导最后一步点「先进对话页(稍后再说)」即可;

@@ -667,6 +667,45 @@ try {
   console.log('FAIL 迭代方向定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 小鹿 · 「启动智能体」与「立即跑一次」同时出现时两个都要能点(2026-09-19 用户报点了没反应)──
+// 原来 bindOps 写成 getElementById('ag-run') || getElementById('ag-start'),方向没跑过时两个按钮同屏,
+// 只有「立即跑一次」绑上了,提示条里的「启动智能体」是死按钮。
+try {
+  const ctx = vm.createContext(makeContext('agent.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const ag = inlineScripts(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))
+  ag.forEach((src, i) => vm.runInContext(src, ctx, { filename: `agent#${i + 1}` }))
+  vm.runInContext(`
+    var BTN = {}
+    ;['ag-run', 'ag-start'].forEach(function (id) {
+      BTN[id] = { id: id, textContent: id, disabled: false, style: {}, handlers: [],
+        addEventListener: function (t, f) { if (t === 'click') this.handlers.push(f) } }
+    })
+    var _gidStart = document.getElementById
+    document.getElementById = function (id) { return BTN[id] || _gidStart(id) }
+    var RUN_URLS = []
+    fetch = function (url) { RUN_URLS.push(String(url)); return Promise.reject(new Error('render_check: 不联网')) }
+    bindOps()
+    var START_BOUND = BTN['ag-start'].handlers.length
+    var RUN_BOUND = BTN['ag-run'].handlers.length
+    BTN['ag-start'].handlers.forEach(function (f) { f() })
+    document.getElementById = _gidStart
+  `, ctx, { filename: 'assert-agent-start' })
+  const checks = [
+    ['两个按钮同屏时「启动智能体」绑上了点击', ctx.START_BOUND === 1],
+    ['「立即跑一次」也还绑着', ctx.RUN_BOUND === 1],
+    ['点「启动智能体」发 POST /api/quant/agent/run', ctx.RUN_URLS[0] === '/api/quant/agent/run'],
+    ['源码里不再有 ag-run || ag-start 这种只绑一个的写法', !/getElementById\('ag-run'\)\s*\|\|/.test(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 启动按钮 ·', name)
+    else { failed++; console.log('FAIL 启动按钮 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 启动按钮断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 小鹿智能体 · 研究台(2026-09-13 · docs/agent-research-plan.md)──────────────
 // 要钉住的:
 //   ① 两列(2026-09-18 起):运行中(待写引擎 / 回测 / 纸上跑都在这里)· 封存;卡片进对的列,淘汰的单独一块;
@@ -1487,9 +1526,9 @@ try {
   const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
   const hk = [
     // 2026-09-14 起 market / asOf 在发请求那一刻就取下来(等 5 秒的这段时间里用户可能切了市场)
-    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: market, asOf: asOf \}/.test(sc)],
+    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: market, asOf: asOf, runAt: Date\.now\(\) \}/.test(sc)],
     ['筛选器把命中日来源挂到悬停日K 上', /KC\.markOf = hitDaysOf/.test(sc)],
-    ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf \}\)/.test(sc)],
+    ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf, in_result: inResult \}\)/.test(sc)],
     ['app.js:等标记之后再比一次 seq(防止画到别的票上)', /await KC\.markOf\(code, td\)[\s\S]{0,160}if \(seq !== KC\.seq\) return/.test(appJs)],
     ['app.js:0 天命中也写进图例', /mark\.alwaysScan/.test(appJs)],
     ['app.js:算不出的天数单独写', /天算不出/.test(appJs)],
@@ -2287,6 +2326,63 @@ try {
   failed++
   console.log('FAIL 小鹿货币 · 断言脚本本身出错 ·', e && e.stack ? e.stack.split('\n')[0] : e)
 }
+
+// ─── 筛选器 · 扫描当日以结果表为准(2026-09-19)──────────────────────────
+// 悬停日K 取命中日时要带 in_result(票在这次实时结果表里)、缓存键带 runAt(重扫就重取);有 note 的常驻显示
+try {
+  const src = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')
+  const checks = [
+    ['hit-days 请求带 in_result', /in_result:\s*inResult/.test(src)],
+    ['回溯结果不传 in_result(同一份日线本来一致)', /const inResult = !sc\.asOf/.test(src)],
+    ['HITS 缓存键带 runAt', /sc\.runAt/.test(src) && /runAt: Date\.now\(\)/.test(src)],
+    ['有扫描当日可标时不当成算不出', /!\(Array\.isArray\(d\.hits\) && d\.hits\.length\)/.test(src)],
+    ['图例常驻显示 noteShow', /mark\.noteShow/.test(appSrc)],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 扫描当日蓝线 ·', name)
+    else { failed++; console.log('FAIL 扫描当日蓝线 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 扫描当日蓝线 · 断言脚本出错 ·', e && e.message)
+}
+
+// ─── 筛选器 · 结果表里的票日K 最后一根一定是蓝的(2026-09-19 用户)──────────────
+// 从页面源码里抠出 pinLastBar,用假日K 真跑:快照日早于最后一根时补标挪到最后一根,真命中不挪,日K 落后时如实写明
+;(async () => {
+  try {
+    const src = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+    const i = src.indexOf('async function pinLastBar')
+    const j = src.indexOf('// 单独测试一条', i)
+    const body = src.slice(i, j)
+    const mk = (tsList) => new Function('kcFetch', body + '; return pinLastBar')(
+      async () => ({ rows: tsList.map(function (t) { return { ts: t } }) }))
+    const res = []
+    let out = { scan: ['2026-09-11', '2026-09-17'] }
+    await mk(['2026-09-17', '2026-09-18'])(out, { scan_day: '2026-09-17', scan_pinned: true, scan_note: 'x' }, 'LPCV')
+    res.push(['快照日早于最后一根且是补标 → 挪到最后一根', out.scan.join() === '2026-09-11,2026-09-18' && /2026-09-18/.test(out.pinNote)])
+    out = { scan: ['2026-09-17'] }
+    await mk(['2026-09-17', '2026-09-18'])(out, { scan_day: '2026-09-17' }, 'X')
+    res.push(['快照日是回算真命中 → 保留,最后一根另加', out.scan.join() === '2026-09-17,2026-09-18'])
+    out = { scan: ['2026-09-18'] }
+    await mk(['2026-09-18'])(out, { scan_day: '2026-09-18', scan_pinned: true, scan_note: '扫描当日 2026-09-18 按扫描结果标为命中' }, 'X')
+    res.push(['快照日 = 最后一根 → 不动,补标说明常驻', out.scan.join() === '2026-09-18' && /按扫描结果/.test(out.pinNote)])
+    out = { scan: ['2026-09-18'] }
+    await mk(['2026-09-17'])(out, { scan_day: '2026-09-18', scan_pinned: true }, 'X')
+    res.push(['日K 落后于快照日 → 不乱标,写明日K 只到哪天', out.scan.join() === '2026-09-18' && /只到 2026-09-17/.test(out.pinNote)])
+    res.push(['hitDaysOf 对结果表里的票调 pinLastBar', /inResult && d\.scan_day\) await pinLastBar/.test(src)])
+    const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')
+    res.push(['图例有「算不出」时照样显示补标说明', /mark\.pinNote \|\| \(!mark\.unknown && mark\.noteShow\)/.test(appSrc)])
+    for (const [name, ok] of res) {
+      if (ok) console.log('PASS 最后一根蓝线 ·', name)
+      else { failed++; console.log('FAIL 最后一根蓝线 ·', name) }
+    }
+  } catch (e) {
+    failed++
+    console.log('FAIL 最后一根蓝线 · 断言脚本出错 ·', e && e.message)
+  }
+})()
 
 // setImmediate:上面有一组断言挂在 async 函数的 await 链上(微任务),同步退出会跳过它们
 setImmediate(() => {

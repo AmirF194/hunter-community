@@ -60,7 +60,7 @@ services:
   api:
     # HUNTER_VERSION / HUNTER_REGISTRY 见 .env.example。**钉具体版本,别用 latest** ——
     # 浮动标签意味着某次 pull 会无声换掉运行的代码,排查时连「什么时候变的」都查不出来。
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-api:${HUNTER_VERSION:-1.1.0}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-api:${HUNTER_VERSION:-1.2.0-rc1}
     <<: *restart
     depends_on:
       postgres:
@@ -137,9 +137,22 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-}
-      # Sub-agent 独立 env · 代码里 20+ 处硬编码 fallback = gemini-3.5-flash
-      # 换基座 LLM 时必须一并透传,否则 DeepSeek/Anthropic 会 400 拒绝 gemini 模型名
-      # → tool 累计重试 > 45s → MCP ReadTimeout → 前端"hermes-api call failed"。
+      # ⚠️ **api 也要看得到这一项**。它原来只给了 opencode(见那边的 `:-auto`),
+      # 于是 .env 里写了 `LLM_SCHEMA_SANITIZE=0` 的锁定实例上,opencode 按 0 直连、
+      # 而 api 这边读不到、退回数据库里的旧值 —— 设置页显示的开关与实际走法不一致
+      # (2026-09-19 P2 在测试机上实测到:.env 写 0、设置页显示 1)。
+      # 这里**兜底留空**、不写 auto:runtime_config 的规矩是「空串 = 没配」,
+      # 写 auto 会让向导存进数据库的值永远轮不到生效。
+      LLM_SCHEMA_SANITIZE: ${LLM_SCHEMA_SANITIZE:-}
+      # Sub-agent 独立 env · 换基座 LLM 时可以一并透传,否则 DeepSeek/Anthropic 会
+      # 400 拒绝 gemini 模型名 → tool 累计重试 > 45s → MCP ReadTimeout →
+      # 前端"hermes-api call failed"。
+      #
+      # ⚠️ 下面这些 `${X:-}` 注进容器的是**空串,不是「未设置」**。代码侧现在统一走
+      # `runtime_config.agent_model()`:**环境变量非空 → 数据库(向导写入)→ 代码默认值**,
+      # 所以留空是安全的(回到代码默认值)。
+      # 走「内置额度」的实例由向导把这一批写进数据库(chat 类 → hunter-chat,
+      # 深度分析 → hunter-deep),**用户不用在这里填**;这里填了优先级更高,会盖过向导。
       ONE_API_MODEL: ${ONE_API_MODEL:-}
       AGENT_SUB_WL_MODEL: ${AGENT_SUB_WL_MODEL:-}
       AGENT_SUB_PORT_MODEL: ${AGENT_SUB_PORT_MODEL:-}
@@ -209,7 +222,7 @@ services:
       - "${API_HOST_PORT:-8100}:8000"
 
   web:
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-web:${HUNTER_VERSION:-1.1.0}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-web:${HUNTER_VERSION:-1.2.0-rc1}
     <<: *restart
     depends_on:
       - api
@@ -253,7 +266,7 @@ services:
     # 原来是裸 python:3.12-alpine + 挂 ./scripts/llm-shim。现在源码打进镜像
     # (deploy/llm-shim.Dockerfile),command 与 healthcheck 也在镜像里,
     # 这样不写 compose 的平台(K8s / 云平台表单)拿到的是同一套行为。
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-llm-shim:${HUNTER_VERSION:-1.1.0}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-llm-shim:${HUNTER_VERSION:-1.2.0-rc1}
     <<: *restart
     environment:
       # 监听地址。默认 0.0.0.0;Railway 的老环境私有网络是 IPv6-only,那里设 `::`。
@@ -275,7 +288,7 @@ services:
     # 所以这个服务不再需要任何 bind mount。
     #
     # 换源(自建 registry / 国内镜像)改 HUNTER_REGISTRY,见 .env.example。
-    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-opencode:${HUNTER_VERSION:-1.1.0}
+    image: ${HUNTER_REGISTRY:-ghcr.io/agentpit-io}/hunter-community-opencode:${HUNTER_VERSION:-1.2.0-rc1}
     <<: *restart
     depends_on:
       api:

@@ -148,6 +148,7 @@ export default function SetupPage() {
         {step === 4 && (
           <DataSupply
             status={status}
+            builtin={!!draft.builtin}
             onNext={() => go(5)}
             onBack={() => go(3)}
             onRefresh={refresh}
