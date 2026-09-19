@@ -848,6 +848,11 @@ def _run_series(c: Compiled, md: MarketDef, market_key: str, has_field, limit: i
     warnings = []
     pool = ("RS 排名池:交易所上市、不含 OTC、市值 ≥5000 万美元" if md.key == "us"
             else "RS 排名池:市值约 5000 万美元以上")
+    if as_of is None and c.fields:
+        # 5540bce 删「求值截至」那条时把同一句里的这半句一起删了。这句不是「怎么算」的说明,是口径声明:
+        # 市值 / PE / 财务没有历史,整段 K 线都拿今天的值比,不说用户会以为是逐日历史值(空的比假的好的同一类诚实问题)
+        names = "、".join(screen_dsl.field_label_cn(f) or f for f in c.fields)
+        warnings.append(f"这些字段只有当天快照、没有历史:{names}。脚本里它们按今天的值当常量参与每一根 K 线的计算,不是当时的历史值。")
     if as_of is not None:
         warnings.append(
             f"时间回溯:按 {as_of_actual} 收盘的自家日线逐根求值。股票池是{pool}的 {len(codes)} 只(当天有收盘)。"
