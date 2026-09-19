@@ -2348,6 +2348,42 @@ try {
   console.log('FAIL 扫描当日蓝线 · 断言脚本出错 ·', e && e.message)
 }
 
+// ─── 筛选器 · 结果表里的票日K 最后一根一定是蓝的(2026-09-19 用户)──────────────
+// 从页面源码里抠出 pinLastBar,用假日K 真跑:快照日早于最后一根时补标挪到最后一根,真命中不挪,日K 落后时如实写明
+;(async () => {
+  try {
+    const src = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+    const i = src.indexOf('async function pinLastBar')
+    const j = src.indexOf('// 单独测试一条', i)
+    const body = src.slice(i, j)
+    const mk = (tsList) => new Function('kcFetch', body + '; return pinLastBar')(
+      async () => ({ rows: tsList.map(function (t) { return { ts: t } }) }))
+    const res = []
+    let out = { scan: ['2026-09-11', '2026-09-17'] }
+    await mk(['2026-09-17', '2026-09-18'])(out, { scan_day: '2026-09-17', scan_pinned: true, scan_note: 'x' }, 'LPCV')
+    res.push(['快照日早于最后一根且是补标 → 挪到最后一根', out.scan.join() === '2026-09-11,2026-09-18' && /2026-09-18/.test(out.pinNote)])
+    out = { scan: ['2026-09-17'] }
+    await mk(['2026-09-17', '2026-09-18'])(out, { scan_day: '2026-09-17' }, 'X')
+    res.push(['快照日是回算真命中 → 保留,最后一根另加', out.scan.join() === '2026-09-17,2026-09-18'])
+    out = { scan: ['2026-09-18'] }
+    await mk(['2026-09-18'])(out, { scan_day: '2026-09-18', scan_pinned: true, scan_note: '扫描当日 2026-09-18 按扫描结果标为命中' }, 'X')
+    res.push(['快照日 = 最后一根 → 不动,补标说明常驻', out.scan.join() === '2026-09-18' && /按扫描结果/.test(out.pinNote)])
+    out = { scan: ['2026-09-18'] }
+    await mk(['2026-09-17'])(out, { scan_day: '2026-09-18', scan_pinned: true }, 'X')
+    res.push(['日K 落后于快照日 → 不乱标,写明日K 只到哪天', out.scan.join() === '2026-09-18' && /只到 2026-09-17/.test(out.pinNote)])
+    res.push(['hitDaysOf 对结果表里的票调 pinLastBar', /inResult && d\.scan_day\) await pinLastBar/.test(src)])
+    const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')
+    res.push(['图例有「算不出」时照样显示补标说明', /mark\.pinNote \|\| \(!mark\.unknown && mark\.noteShow\)/.test(appSrc)])
+    for (const [name, ok] of res) {
+      if (ok) console.log('PASS 最后一根蓝线 ·', name)
+      else { failed++; console.log('FAIL 最后一根蓝线 ·', name) }
+    }
+  } catch (e) {
+    failed++
+    console.log('FAIL 最后一根蓝线 · 断言脚本出错 ·', e && e.message)
+  }
+})()
+
 // setImmediate:上面有一组断言挂在 async 函数的 await 链上(微任务),同步退出会跳过它们
 setImmediate(() => {
   console.log(failed ? `SOME FAILED (${failed})` : 'ALL OK')

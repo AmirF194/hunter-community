@@ -202,6 +202,9 @@ check("回算没命中扫描当日 → 补标并写明口径差", o["hits"] == [
       and o["scan_day"] == "2026-09-18")
 o = sh._pin_scan_day(dict(base, hits=["2026-09-18"]), _d(2026, 9, 18), _d(2026, 9, 18))
 check("回算已命中 → 不动、不加说明", o["hits"] == ["2026-09-18"] and o["note"] is None)
+check("回算已命中 → 不标 scan_pinned(前端不能挪走真命中)", "scan_pinned" not in o and "scan_note" not in o)
+o = sh._pin_scan_day(dict(base), _d(2026, 9, 18), _d(2026, 9, 18))
+check("补标 → scan_pinned + scan_note 是补标那句", o.get("scan_pinned") is True and o["scan_note"].startswith("扫描当日 2026-09-18"))
 o = sh._pin_scan_day(dict(base), _d(2026, 9, 18), _d(2026, 9, 17))
 check("自家日线落后于快照 → 补标并写明日线最新到哪天", "2026-09-18" in o["hits"] and "还没进自家日线库" in o["note"]
       and "2026-09-17" in o["note"])

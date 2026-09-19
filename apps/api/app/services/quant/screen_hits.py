@@ -127,6 +127,8 @@ def _pin_scan_day(out: dict, scan_day: date | None, store_last) -> dict:
         notes.append(f"只能标出扫描当日 {d}(按扫描结果),更早的日子算不出")
     hits.append(d)
     out["hits"] = sorted(hits)
+    out["scan_pinned"] = True          # 这一天是按结果表补标的(不是回算命中),前端可按日K 最后一根挪位
+    out["scan_note"] = notes[-1]       # 补标说明单独给,前端常驻显示
     out["note"] = ";".join(notes)
     return out
 
