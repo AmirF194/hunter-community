@@ -18,11 +18,12 @@
       "deep_model": "hunter-deep",
       "tool_hit": "",
       "avg_latency_s": null,
-      "tested_at": "",
+      "tested_at": "2026-09-19",
       "apply_url": "https://hunter.agentpit.io/dev/api-keys",
       "key_hint": "就是 hunt_tools_ 开头的平台 key —— 和工具、数据源共用同一把，不需要第二把",
       "notes": [
         "只要一把免费的 Hunter 平台 key（约 30 秒申请），地址和模型名向导会自动填好。",
+        "向导这三项检测对着它实测 3 次:总耗时 4.87 / 5.16 / 5.16 秒（连通 0.71~0.77 秒、对话 1.98~2.41 秒、工具调用 1.95~2.47 秒）。下面那几张卡的「命中 x/7 · 单次平均 N 秒」是另一套 7 个 golden case 的口径，两者不可比。",
         "每天有免费 token 额度，用完会在对话里用中文说清什么时候重置、怎么改用自带 key；额度不是断服。",
         "深度分析自动走更强的 hunter-deep，不用你手工配模型变量。",
         "隐私：网关只记 token 数与模型名，不记任何 prompt 与回复内容。见 docs/builtin-llm/使用说明.md。",

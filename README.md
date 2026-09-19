@@ -111,10 +111,11 @@ open http://localhost:3100          # 浏览器里完成首启向导,不用改�
 | 5 · 完成 | **不重启任何容器**热生效,给三个示例问题带你进对话 |
 
 <p align="center">
-  <img src="./docs/screenshots/setup-wizard/04-三项检测通过.png" alt="第 3 步 · 三项检测" width="760" />
+  <img src="./docs/screenshots/builtin-llm/02-第2步-内置额度是第一张卡.png" alt="第 2 步 · 内置额度是第一张卡" width="760" />
 </p>
 
-全部截图见 [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/)。
+全部截图见 [`docs/screenshots/builtin-llm/`](./docs/screenshots/builtin-llm/)(内置额度全流程)
+与 [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/)(自带 key 路径)。
 
 > [!IMPORTANT]
 > **这台实例只要能从公网打开,就先在 `.env` 里设 `HUNTER_SETUP_TOKEN`**(随便一串随机值,
