@@ -137,6 +137,13 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-}
+      # ⚠️ **api 也要看得到这一项**。它原来只给了 opencode(见那边的 `:-auto`),
+      # 于是 .env 里写了 `LLM_SCHEMA_SANITIZE=0` 的锁定实例上,opencode 按 0 直连、
+      # 而 api 这边读不到、退回数据库里的旧值 —— 设置页显示的开关与实际走法不一致
+      # (2026-09-19 P2 在测试机上实测到:.env 写 0、设置页显示 1)。
+      # 这里**兜底留空**、不写 auto:runtime_config 的规矩是「空串 = 没配」,
+      # 写 auto 会让向导存进数据库的值永远轮不到生效。
+      LLM_SCHEMA_SANITIZE: ${LLM_SCHEMA_SANITIZE:-}
       # Sub-agent 独立 env · 换基座 LLM 时可以一并透传,否则 DeepSeek/Anthropic 会
       # 400 拒绝 gemini 模型名 → tool 累计重试 > 45s → MCP ReadTimeout →
       # 前端"hermes-api call failed"。

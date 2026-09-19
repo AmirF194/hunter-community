@@ -77,10 +77,16 @@ export function describeModelError(err: any): ModelErrorView | null {
   if (up.code && GATEWAY_CODES[up.code] && up.message) {
     return { title: `${GATEWAY_CODES[up.code]},这次没有生成内容`, hint: up.message }
   }
-  // ② 认不出 code,但 message 已经是中文且足够长 —— 同样直接用,别套模板。
+  // ② 认不出 code,但已经拿到一段中文且足够长 —— 同样直接用,别套模板。
   //    判据只看「有没有中文」,不猜是哪家网关:能写中文引导的上游就该让用户看到原话。
-  if (up.message && /[\u4e00-\u9fa5]/.test(up.message) && up.message.length >= 12) {
-    return { title: '模型调用失败,这次没有生成内容', hint: up.message }
+  //    `up.message` 为空时退回 `raw` —— 有的客户端只把上游的 error.message 放进
+  //    `data.message`,不带 responseBody,那时整段中文引导全在 raw 里。
+  const zh = up.message || (raw && !raw.trim().startsWith('{') ? raw : '')
+  if (zh && /[\u4e00-\u9fa5]/.test(zh) && zh.length >= 12) {
+    const title = up.code && GATEWAY_CODES[up.code]
+      ? `${GATEWAY_CODES[up.code]},这次没有生成内容`
+      : '模型调用失败,这次没有生成内容'
+    return { title, hint: zh }
   }
 
   if (status === 402 || /insufficient.?balance|quota|余额/.test(low)) {

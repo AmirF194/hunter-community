@@ -318,6 +318,11 @@ jobs:
       - name: Typecheck
         working-directory: apps/web
         run: npx tsc --noEmit || true   # non-blocking until we clean up types
+      # 「模型调用失败时用户看到什么」的唯一出口。坏掉的表现是界面一片空白或者
+      # 一句看不懂的英文,而 tsc 与 next build 全绿 —— 所以单独跑一遍真断言。
+      - name: 错误卡回归(真实抓到的报错对象)
+        working-directory: apps/web
+        run: node scripts/model-error-check.mjs
       - name: Build
         working-directory: apps/web
         env:
