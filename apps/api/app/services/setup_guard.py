@@ -319,35 +319,56 @@ def config_digest(base_url: str, model: str, api_key: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
-def issue_test_token(base_url: str, model: str, api_key: str) -> str:
+def issue_test_token(base_url: str, model: str, api_key: str,
+                     sanitize_suggest: str = "") -> str:
+    """凭证里带上检测得出的 schema 清洗建议。
+
+    为什么要带:检测报文里写着「这个模型需要打开 schema 清洗(保存时会自动设为开)」,
+    而保存接口原来只看调用方传的 `sanitize`——网页端会把建议回传,直接调接口的人
+    不会,于是落到默认 `auto`,与那句承诺不符。建议签在凭证里,保存时就不必再信任
+    调用方,也不用在服务端另存一张表。
+    """
     exp = int(time.time()) + TEST_TOKEN_SECONDS
     dig = config_digest(base_url, model, api_key)
-    return f"{dig}.{exp}.{_sign(f'{dig}.{exp}')}"
+    sug = sanitize_suggest if sanitize_suggest in ("0", "1", "auto") else "-"
+    return f"{dig}.{exp}.{sug}.{_sign(f'{dig}.{exp}.{sug}')}"
 
 
 def verify_test_token(token: str, base_url: str, model: str, api_key: str) -> dict:
-    """返回 {"ok", "reason"}。reason 区分「过期」和「配置被改过」——
-    两者的下一步动作不一样（重测 vs 检查你改了什么）。"""
+    """返回 {"ok", "reason", "sanitize_suggest"}。reason 区分「过期」和「配置被改过」——
+    两者的下一步动作不一样（重测 vs 检查你改了什么）。
+
+    兼容旧版三段式凭证(没有清洗建议那一段):滚动升级时手里握着旧凭证的人照样能保存,
+    只是拿不到建议、按调用方给的值走。"""
     if not token:
-        return {"ok": False, "reason": "missing",
+        return {"ok": False, "reason": "missing", "sanitize_suggest": "",
                 "message": "这份配置还没有通过检测，请先点「开始检测」"}
     parts = token.split(".")
-    if len(parts) != 3:
-        return {"ok": False, "reason": "malformed", "message": "检测凭证格式不对，请重新检测"}
-    dig, exp_s, sig = parts
+    if len(parts) == 3:
+        dig, exp_s, sig = parts
+        sug, signed = "-", f"{dig}.{exp_s}"
+    elif len(parts) == 4:
+        dig, exp_s, sug, sig = parts
+        signed = f"{dig}.{exp_s}.{sug}"
+    else:
+        return {"ok": False, "reason": "malformed", "sanitize_suggest": "",
+                "message": "检测凭证格式不对，请重新检测"}
     try:
         exp = int(exp_s)
     except ValueError:
-        return {"ok": False, "reason": "malformed", "message": "检测凭证格式不对，请重新检测"}
-    if not hmac.compare_digest(sig, _sign(f"{dig}.{exp}")):
-        return {"ok": False, "reason": "bad_signature", "message": "检测凭证无效，请重新检测"}
+        return {"ok": False, "reason": "malformed", "sanitize_suggest": "",
+                "message": "检测凭证格式不对，请重新检测"}
+    if not hmac.compare_digest(sig, _sign(signed)):
+        return {"ok": False, "reason": "bad_signature", "sanitize_suggest": "",
+                "message": "检测凭证无效，请重新检测"}
     if exp <= time.time():
-        return {"ok": False, "reason": "expired",
+        return {"ok": False, "reason": "expired", "sanitize_suggest": "",
                 "message": f"检测结果已超过 {TEST_TOKEN_SECONDS // 60} 分钟，请重新检测后再保存"}
     if not hmac.compare_digest(dig, config_digest(base_url, model, api_key)):
-        return {"ok": False, "reason": "mismatch",
+        return {"ok": False, "reason": "mismatch", "sanitize_suggest": "",
                 "message": "要保存的配置和刚才检测的不是同一份，请重新检测"}
-    return {"ok": True, "reason": "", "message": ""}
+    return {"ok": True, "reason": "", "message": "",
+            "sanitize_suggest": sug if sug in ("0", "1", "auto") else ""}
 
 
 # ── 限流 ────────────────────────────────────────────────────────────

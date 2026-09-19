@@ -202,9 +202,37 @@ def test_test_token_expired():
 def test_test_token_forged_signature():
     """把有效期往后推、签名照抄 —— 必须被签名校验挡住。"""
     t = g.issue_test_token(*CFG)
-    dig, exp, sig = t.split(".")
-    forged = f"{dig}.{int(exp) + 86400}.{sig}"
+    dig, exp, sug, sig = t.split(".")
+    forged = f"{dig}.{int(exp) + 86400}.{sug}.{sig}"
     assert g.verify_test_token(forged, *CFG)["reason"] == "bad_signature"
+
+
+def test_test_token_carries_sanitize_suggest():
+    """检测建议签在凭证里 —— 保存接口据此兜底,不必信任调用方。"""
+    t = g.issue_test_token(*CFG, sanitize_suggest="1")
+    r = g.verify_test_token(t, *CFG)
+    assert r["ok"] is True and r["sanitize_suggest"] == "1"
+    # 没有建议时是空的,保存接口会退回默认值
+    assert g.verify_test_token(g.issue_test_token(*CFG), *CFG)["sanitize_suggest"] == ""
+    # 非法取值不进凭证
+    assert g.verify_test_token(
+        g.issue_test_token(*CFG, sanitize_suggest="yes"), *CFG)["sanitize_suggest"] == ""
+
+
+def test_test_token_forged_sanitize_suggest():
+    """改建议那一段 = 改了被签名的内容,必须被挡。否则谁都能把清洗开关篡改掉。"""
+    t = g.issue_test_token(*CFG, sanitize_suggest="1")
+    dig, exp, _sug, sig = t.split(".")
+    assert g.verify_test_token(f"{dig}.{exp}.0.{sig}", *CFG)["reason"] == "bad_signature"
+
+
+def test_legacy_three_part_token_still_valid():
+    """滚动升级时旧版签发的三段式凭证照样能用,只是没有建议。"""
+    dig = g.config_digest(*CFG)
+    exp = int(time.time()) + 600
+    legacy = f"{dig}.{exp}.{g._sign(f'{dig}.{exp}')}"
+    r = g.verify_test_token(legacy, *CFG)
+    assert r["ok"] is True and r["sanitize_suggest"] == ""
 
 
 def test_test_token_malformed():

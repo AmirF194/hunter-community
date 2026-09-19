@@ -247,8 +247,8 @@ async def llm_test(body: TestIn, request: Request):
             raise HTTPException(400, {"message": "请填写 API key"})
 
     res = await run_in_threadpool(llm_probe.run_all, base_url, api_key, model)
-    res["test_token"] = (setup_guard.issue_test_token(base_url, model, api_key)
-                         if res["ok"] else "")
+    res["test_token"] = (setup_guard.issue_test_token(
+        base_url, model, api_key, res.get("sanitize_suggest") or "") if res["ok"] else "")
     res["test_token_ttl"] = setup_guard.TEST_TOKEN_SECONDS if res["ok"] else 0
     logger.info("[setup] 检测完成 · ok={} · 共 {} ms · base={} model={}",
                 res["ok"], res["elapsed_ms"], base_url, model)
@@ -286,7 +286,11 @@ async def llm_save(body: SaveIn, request: Request):
     if not chk["ok"]:
         raise HTTPException(400, {"message": chk["message"], "reason": chk["reason"]})
 
-    sanitize = (body.sanitize or "").strip().lower() or runtime_config.SANITIZE_DEFAULT
+    # 优先级:调用方明确指定 > 检测得出的建议(签在凭证里) > 默认。
+    # 中间这一层是给「直接调接口」的人兜底的 —— 检测报文承诺「保存时会自动设为开」,
+    # 网页端靠前端回传做到了,接口调用方不该因为少传一个字段就拿到相反的结果。
+    sanitize = ((body.sanitize or "").strip().lower()
+                or chk.get("sanitize_suggest") or runtime_config.SANITIZE_DEFAULT)
     if sanitize not in ("0", "1", "auto"):
         raise HTTPException(400, {"message": "schema 清洗开关只能是 0 / 1 / auto"})
 

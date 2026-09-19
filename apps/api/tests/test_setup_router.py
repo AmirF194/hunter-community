@@ -184,8 +184,33 @@ def test_status_should_run(client, monkeypatch):
 
 
 # ── 保存 ────────────────────────────────────────────────────────────
-def _ok_token(base="https://x/v1", model="m", key="k"):
-    return G.issue_test_token(base, model, key)
+def _ok_token(base="https://x/v1", model="m", key="k", sanitize_suggest=""):
+    return G.issue_test_token(base, model, key, sanitize_suggest)
+
+
+def test_save_uses_sanitize_suggest_from_token(client, monkeypatch):
+    """检测说「这个模型必须开清洗」时,调用方不传 sanitize 也要按建议存。
+
+    网页端会把建议回传,直接调接口的人不会 —— 原来这种情况下会落到默认 auto,
+    而 auto 只对名字里含 gemini 的模型开清洗,于是检测报文承诺的「保存时会自动
+    设为开」对其他模型就是假的,症状是回复空白。
+    """
+    monkeypatch.delenv("HUNTER_SETUP_TOKEN", raising=False)
+    body = {"base_url": "https://x/v1", "api_key": "k", "model": "m",
+            "test_token": _ok_token(sanitize_suggest="1")}
+    r = client.put("/api/setup/llm", json=body, headers=LOCAL)
+    assert r.status_code == 200 and r.json()["saved"]["sanitize"] == "1"
+    assert client.app.state.mem["saved"][-1]["sanitize"] == "1"
+
+    # 调用方明确指定时以它为准
+    body2 = dict(body, sanitize="0", test_token=_ok_token(sanitize_suggest="1"))
+    assert client.put("/api/setup/llm", json=body2,
+                      headers=LOCAL).json()["saved"]["sanitize"] == "0"
+
+    # 没有建议就退回默认
+    body3 = dict(body, test_token=_ok_token())
+    assert client.put("/api/setup/llm", json=body3,
+                      headers=LOCAL).json()["saved"]["sanitize"] == RC.SANITIZE_DEFAULT
 
 
 def test_save_requires_valid_test_token(client, monkeypatch):
