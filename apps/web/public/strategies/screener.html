@@ -2095,7 +2095,8 @@ async function runScan() {
   S.result = d
   // 悬停日K 要标「这份脚本过去一年哪些天命中」—— 用的必须是**跑出这张结果表的那份脚本**,
   // 不是条件区此刻的样子(用户跑完可能又改了条件还没重跑)
-  S.resultScan = { script: script, market: market, asOf: asOf }
+  // runAt 进 HITS 的缓存键:同一份脚本重新扫描一次(日线可能已经更新)就重新取命中日,不拿上一轮的旧结论
+  S.resultScan = { script: script, market: market, asOf: asOf, runAt: Date.now() }
   render()
   watchLastHit()
 }
@@ -2147,16 +2148,21 @@ const HITS = new Map()
 async function hitDaysOf(code) {
   const sc = S.resultScan
   if (!sc || !sc.script || !code) return null
-  const key = [sc.market, sc.asOf || '', code, sc.script].join('|')
+  const key = [sc.market, sc.asOf || '', code, sc.script, sc.runAt || ''].join('|')
   if (HITS.has(key)) return HITS.get(key)
-  const r = await post(HITS_API, { script: sc.script, market: sc.market, code: code, as_of: sc.asOf })
+  // in_result:悬停的票就在这张结果表里 → 扫描当日以结果表为准(2026-09-19 用户:「蓝线一定是基于当前筛选器配置命中的」)。
+  // 回溯结果本来就和蓝线同一份日线,不传
+  const inResult = !sc.asOf && !!(S.result && (S.result.picks || []).some(function (p) { return p.code === code }))
+  const r = await post(HITS_API, { script: sc.script, market: sc.market, code: code, as_of: sc.asOf, in_result: inResult })
   let out
   if (r.ok && r.data) {
     const d = r.data
     out = { scan: Array.isArray(d.hits) ? d.hits : [], scanLabel: '这份脚本命中',
             scanWindow: Number.isFinite(d.evaluated) ? d.evaluated : null, alwaysScan: true,
             unknown: Number.isFinite(d.unknown) ? d.unknown : 0, note: d.note || null }
-    if (d.note && !d.evaluated) out = { error: d.note }
+    // 一天都没回算、也没有扫描当日可标 → 才是「算不出」;有扫描当日就照常画(note 进悬停说明)
+    if (d.note && !d.evaluated && !(Array.isArray(d.hits) && d.hits.length)) out = { error: d.note }
+    else if (d.note) out.noteShow = d.note
   } else {
     out = { error: r.status === 401 ? '登录后才能看这份脚本的历史命中日'
       : '命中日没算出来:' + errOf(r, 'HTTP ' + r.status) }

@@ -1526,9 +1526,9 @@ try {
   const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
   const hk = [
     // 2026-09-14 起 market / asOf 在发请求那一刻就取下来(等 5 秒的这段时间里用户可能切了市场)
-    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: market, asOf: asOf \}/.test(sc)],
+    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: market, asOf: asOf, runAt: Date\.now\(\) \}/.test(sc)],
     ['筛选器把命中日来源挂到悬停日K 上', /KC\.markOf = hitDaysOf/.test(sc)],
-    ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf \}\)/.test(sc)],
+    ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf, in_result: inResult \}\)/.test(sc)],
     ['app.js:等标记之后再比一次 seq(防止画到别的票上)', /await KC\.markOf\(code, td\)[\s\S]{0,160}if \(seq !== KC\.seq\) return/.test(appJs)],
     ['app.js:0 天命中也写进图例', /mark\.alwaysScan/.test(appJs)],
     ['app.js:算不出的天数单独写', /天算不出/.test(appJs)],
@@ -2325,6 +2325,27 @@ try {
 } catch (e) {
   failed++
   console.log('FAIL 小鹿货币 · 断言脚本本身出错 ·', e && e.stack ? e.stack.split('\n')[0] : e)
+}
+
+// ─── 筛选器 · 扫描当日以结果表为准(2026-09-19)──────────────────────────
+// 悬停日K 取命中日时要带 in_result(票在这次实时结果表里)、缓存键带 runAt(重扫就重取);有 note 的常驻显示
+try {
+  const src = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')
+  const checks = [
+    ['hit-days 请求带 in_result', /in_result:\s*inResult/.test(src)],
+    ['回溯结果不传 in_result(同一份日线本来一致)', /const inResult = !sc\.asOf/.test(src)],
+    ['HITS 缓存键带 runAt', /sc\.runAt/.test(src) && /runAt: Date\.now\(\)/.test(src)],
+    ['有扫描当日可标时不当成算不出', /!\(Array\.isArray\(d\.hits\) && d\.hits\.length\)/.test(src)],
+    ['图例常驻显示 noteShow', /mark\.noteShow/.test(appSrc)],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 扫描当日蓝线 ·', name)
+    else { failed++; console.log('FAIL 扫描当日蓝线 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 扫描当日蓝线 · 断言脚本出错 ·', e && e.message)
 }
 
 // setImmediate:上面有一组断言挂在 async 函数的 await 链上(微任务),同步退出会跳过它们
