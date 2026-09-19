@@ -37,9 +37,27 @@ export default function ModelPick({
       const r = await getPresets()
       if (isFail(r)) { setErr(r.message); return }
       setDoc(r)
-      // 已经配过的话,默认停在当前配置上(换模型的场景),不强迫重选
+      // 已经配过的话,默认停在当前配置上(换模型的场景),不强迫重选。
+      //
+      // ⚠️ **必须把对应的那张卡也选中**,不能只填地址和模型名。
+      // 只填字段的话 `draft.preset` 是空的、`draft.builtin` 也是 false,而
+      // 「下一步」按钮只看地址与模型名非空 —— 于是「重新运行初始化向导」的用户
+      // 一路点到底、保存,后端收到 `builtin:false`,**把那批指向 hunter-deep 的
+      // 模型名清掉了**:对话照常、深度分析悄悄坏掉(正是 P1 踩过的那个组合)。
       if (!draft.base_url && llm.configured) {
-        onChange({ ...draft, base_url: llm.base_url, model: llm.model, sanitize: llm.sanitize })
+        const cur = (llm.base_url || '').replace(/\/+$/, '')
+        const hit = (r.presets || []).find(
+          (p) => p.base_url.replace(/\/+$/, '') === cur && p.model === llm.model)
+        if (hit) {
+          pick(hit)
+        } else {
+          onChange({
+            ...draft, base_url: llm.base_url, model: llm.model, sanitize: llm.sanitize,
+            // 预设里没有对得上的(用户手填过地址),也要把标记带过来,
+            // 否则一次「什么都没改的重跑」会把内置额度关掉。
+            builtin: !!llm.builtin,
+          })
+        }
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -57,7 +75,11 @@ export default function ModelPick({
   }
 
   const chosen = draft.preset?.id
-  const canNext = !!(draft.base_url.trim() && draft.model.trim()) || chosen === 'custom'
+  // 必须**选过一张卡**才能往下走。只看「地址和模型名非空」的话,已配过的实例上
+  // 用户什么都不点就能点下一步,而那时 `draft.builtin` 是 false —— 见上面 useEffect
+  // 里的说明。自定义卡允许字段为空(下一步再填)。
+  const canNext = chosen === 'custom'
+    || (!!chosen && !!draft.base_url.trim() && !!draft.model.trim())
 
   return (
     <Box icon={<Cpu size={16} />} title="第 2 步 · 选大模型">
