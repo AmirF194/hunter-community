@@ -137,9 +137,15 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_DEFAULT_MODEL: ${LLM_DEFAULT_MODEL:-}
-      # Sub-agent 独立 env · 代码里 20+ 处硬编码 fallback = gemini-3.5-flash
-      # 换基座 LLM 时必须一并透传,否则 DeepSeek/Anthropic 会 400 拒绝 gemini 模型名
-      # → tool 累计重试 > 45s → MCP ReadTimeout → 前端"hermes-api call failed"。
+      # Sub-agent 独立 env · 换基座 LLM 时可以一并透传,否则 DeepSeek/Anthropic 会
+      # 400 拒绝 gemini 模型名 → tool 累计重试 > 45s → MCP ReadTimeout →
+      # 前端"hermes-api call failed"。
+      #
+      # ⚠️ 下面这些 `${X:-}` 注进容器的是**空串,不是「未设置」**。代码侧现在统一走
+      # `runtime_config.agent_model()`:**环境变量非空 → 数据库(向导写入)→ 代码默认值**,
+      # 所以留空是安全的(回到代码默认值)。
+      # 走「内置额度」的实例由向导把这一批写进数据库(chat 类 → hunter-chat,
+      # 深度分析 → hunter-deep),**用户不用在这里填**;这里填了优先级更高,会盖过向导。
       ONE_API_MODEL: ${ONE_API_MODEL:-}
       AGENT_SUB_WL_MODEL: ${AGENT_SUB_WL_MODEL:-}
       AGENT_SUB_PORT_MODEL: ${AGENT_SUB_PORT_MODEL:-}

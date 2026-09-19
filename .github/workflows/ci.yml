@@ -55,14 +55,15 @@ jobs:
       # 只点名这三个文件:仓库里另外 30+ 个测试文件的通过状态未知,
       # 给整个 tests/ 加 pytest 会把 CI 搞红,那不是这个 job 该管的事
       # (同 migrations job 里的 test_migrate.py)。
-      - name: pytest · 首启向导(门禁 / 三项检测 / 路由)
+      - name: pytest · 首启向导(门禁 / 三项检测 / 路由 / 内置额度)
         working-directory: apps/api
         env:
           JWT_SECRET: ci-test-secret-for-setup-wizard-0123456789
         run: |
           pip install pytest
           python -m pytest tests/test_setup_guard.py tests/test_llm_probe.py \
-                           tests/test_setup_router.py -p no:cacheprovider -q
+                           tests/test_setup_router.py tests/test_runtime_config.py \
+                           tests/test_setup_builtin.py -p no:cacheprovider -q
 
       # llm-shim 与 api 共用同一份 schema_clean.py —— 别让人在 api 里另存副本。
       # 副本漂了的表现是「向导说能用、实际对话一发就 400」,最难查的那一类。

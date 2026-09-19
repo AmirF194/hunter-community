@@ -1,8 +1,34 @@
 {
-  "updated_at": "2026-08-16",
-  "source_doc": "docs/model-testing/model-compat-matrix.md",
-  "note": "所有实测数值抄自 docs/model-testing/model-compat-matrix.md（2026-08-16 · 7 个 golden case）与 docs/env-samples/README.md。这里不写任何没有实测来源的数字：核对不上的字段一律留空，由向导第 3 步当场测出来。命中率是 7 个 case 里工具调用正确的个数，耗时是这 7 个 case 的单次平均延迟。",
+  "updated_at": "2026-09-19",
+  "source_doc": "docs/model-testing/model-compat-matrix.md · docs/builtin-llm/使用说明.md",
+  "note": "所有实测数值抄自 docs/model-testing/model-compat-matrix.md（2026-08-16 · 7 个 golden case）与 docs/env-samples/README.md；内置额度那张卡的数值抄自 docs/builtin-llm/P2-成果与测试报告.md（2026-09-19 · 测试服务器全新实例实测）。这里不写任何没有实测来源的数字：核对不上的字段一律留空，由向导第 3 步当场测出来。命中率是 7 个 case 里工具调用正确的个数，耗时是这 7 个 case 的单次平均延迟；内置额度那张卡的耗时口径不同（向导第 3 步三项检测的实测值），卡片上写明了。",
   "presets": [
+    {
+      "id": "hunter-builtin",
+      "title": "使用 HunterCode 内置额度",
+      "vendor": "HunterCode 官方网关 · 不用自己找大模型 key",
+      "base_url": "https://hunter.agentpit.io/api/saas/llm/v1",
+      "model": "hunter-chat",
+      "sanitize": "0",
+      "tags": [
+        "推荐",
+        "不用自己找 key"
+      ],
+      "builtin": true,
+      "deep_model": "hunter-deep",
+      "tool_hit": "",
+      "avg_latency_s": null,
+      "tested_at": "",
+      "apply_url": "https://hunter.agentpit.io/dev/api-keys",
+      "key_hint": "就是 hunt_tools_ 开头的平台 key —— 和工具、数据源共用同一把，不需要第二把",
+      "notes": [
+        "只要一把免费的 Hunter 平台 key（约 30 秒申请），地址和模型名向导会自动填好。",
+        "每天有免费 token 额度，用完会在对话里用中文说清什么时候重置、怎么改用自带 key；额度不是断服。",
+        "深度分析自动走更强的 hunter-deep，不用你手工配模型变量。",
+        "隐私：网关只记 token 数与模型名，**不记任何 prompt 与回复内容**。见 docs/builtin-llm/使用说明.md。",
+        "想完全自给自足随时可以切回下面的「自带 key」，两条路互不影响。"
+      ]
+    },
     {
       "id": "deepseek-v4-pro",
       "title": "DeepSeek v4 pro",
@@ -10,7 +36,11 @@
       "base_url": "https://api.deepseek.com/v1",
       "model": "deepseek-v4-pro",
       "sanitize": "1",
-      "tags": ["推荐", "国内直连"],
+      "tags": [
+        "推荐",
+        "国内直连",
+        "高级"
+      ],
       "tool_hit": "6/7",
       "avg_latency_s": 30,
       "tested_at": "2026-08-15",
@@ -29,7 +59,11 @@
       "base_url": "https://aihubmix.com/v1",
       "model": "qwen3.8-max",
       "sanitize": "1",
-      "tags": ["国内首推", "满分"],
+      "tags": [
+        "国内首推",
+        "满分",
+        "高级"
+      ],
       "tool_hit": "7/7",
       "avg_latency_s": 48.1,
       "tested_at": "2026-08-16",
@@ -48,7 +82,12 @@
       "base_url": "https://aihubmix.com/v1",
       "model": "claude-sonnet-5",
       "sanitize": "auto",
-      "tags": ["海外首推", "满分", "最快"],
+      "tags": [
+        "海外首推",
+        "满分",
+        "最快",
+        "高级"
+      ],
       "tool_hit": "7/7",
       "avg_latency_s": 25.7,
       "tested_at": "2026-08-16",
@@ -67,7 +106,10 @@
       "base_url": "https://aihubmix.com/v1",
       "model": "gemini-3.5-flash",
       "sanitize": "auto",
-      "tags": ["便宜快"],
+      "tags": [
+        "便宜快",
+        "高级"
+      ],
       "tool_hit": "6/7",
       "avg_latency_s": 62.3,
       "tested_at": "2026-08-16",

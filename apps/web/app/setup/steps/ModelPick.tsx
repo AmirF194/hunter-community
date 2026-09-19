@@ -16,6 +16,8 @@ export interface Draft {
   model: string
   sanitize: string
   preset?: Preset
+  /** 选中的是「HunterCode 内置额度」那张卡。保存时会一路传到后端。 */
+  builtin?: boolean
 }
 
 export default function ModelPick({
@@ -50,6 +52,7 @@ export default function ModelPick({
       sanitize: p.sanitize,
       api_key: draft.api_key,
       preset: p,
+      builtin: !!p.builtin,
     })
   }
 
@@ -59,10 +62,11 @@ export default function ModelPick({
   return (
     <Box icon={<Cpu size={16} />} title="第 2 步 · 选大模型">
       <div style={{ color: HUNTER.INK_F, fontSize: 13.5 }}>
-        猎鹿人自己不训练模型,对话和分析都靠你自己的大模型账号。
-        下面的命中率和耗时是我们实测出来的
+        猎鹿人自己不训练模型。<strong style={{ color: HUNTER.INK }}>第一张卡是推荐路径</strong>:
+        用 HunterCode 的内置额度,不用自己去各家申请大模型 key;
+        下面几张是自带 key 的高级路径,它们的命中率和耗时是我们实测出来的
         {doc?.updated_at ? `(${doc.updated_at},7 个 golden case)` : ''},
-        不是厂商宣传值。
+        不是厂商宣传值。两条路随时可以互相切换。
       </div>
 
       {err && <div style={{ marginTop: 12, color: HUNTER.UP, fontSize: 13.5 }}>{err}</div>}
@@ -88,16 +92,27 @@ export default function ModelPick({
         {(doc?.presets || []).map((p) => {
           const on = chosen === p.id
           return (
-            <button key={p.id} onClick={() => pick(p)} style={{
+            <button key={p.id} onClick={() => pick(p)} data-preset={p.id} style={{
               textAlign: 'left', cursor: 'pointer', padding: 13,
               borderRadius: HUNTER.R_MD, background: on ? HUNTER.BRAND_PALE : HUNTER.PAPER,
-              border: `1.5px solid ${on ? HUNTER.THEME : HUNTER.LINE}`,
+              // 内置额度是推荐路径 —— 没选中时也比别的卡片重一点,免得它看起来只是「第一条」
+              border: `${p.builtin ? 2 : 1.5}px solid ${
+                on ? HUNTER.THEME : p.builtin ? HUNTER.COPPER3 : HUNTER.LINE}`,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <strong style={{ fontSize: 14.5, color: HUNTER.INK }}>{p.title}</strong>
-                {p.tags.map((t) => <Tag key={t} tone={t === '不推荐' ? 'fail' : 'ok'}>{t}</Tag>)}
+                {p.tags.map((t) => (
+                  <Tag key={t} tone={t === '不推荐' ? 'fail' : t === '高级' ? 'plain' : 'ok'}>{t}</Tag>
+                ))}
               </div>
               <div style={{ fontSize: 12.5, color: HUNTER.INK_F, marginTop: 3 }}>{p.vendor}</div>
+              {p.builtin && (
+                <div style={{ fontSize: 12.5, color: HUNTER.COPPER3, marginTop: 6 }}>
+                  地址与模型名自动填好(<code>{p.model}</code>
+                  {p.deep_model ? <>,深度分析走 <code>{p.deep_model}</code></> : null}),
+                  <strong>你只需要填一把 Hunter 平台 key</strong>。
+                </div>
+              )}
               {(p.tool_hit || p.avg_latency_s != null) && (
                 <div style={{ fontSize: 12.5, color: HUNTER.INK_S, marginTop: 6 }}>
                   工具调用命中 <strong>{p.tool_hit || '—'}</strong>
@@ -128,13 +143,15 @@ export default function ModelPick({
       {chosen && (
         <div style={{ marginTop: 14 }}>
           <Field label="接口地址(OpenAI 兼容)" value={draft.base_url}
-                 placeholder="https://your-gateway/v1"
+                 placeholder="https://your-gateway/v1" disabled={!!draft.builtin}
                  onChange={(v) => onChange({ ...draft, base_url: v })} />
           <Field label="模型名" value={draft.model}
-                 placeholder="例如 deepseek-v4-pro"
+                 placeholder="例如 deepseek-v4-pro" disabled={!!draft.builtin}
                  onChange={(v) => onChange({ ...draft, model: v })} />
           <div style={{ fontSize: 12.5, color: HUNTER.INK_F, marginTop: 6 }}>
-            这两项可以在这里改。key 在下一步填,填完当场检测三项。
+            {draft.builtin
+              ? '内置额度的地址与模型名是固定的,改了就不是内置额度了 —— 想自己填请选下面的高级卡片。下一步只要粘一把 key。'
+              : '这两项可以在这里改。key 在下一步填,填完当场检测三项。'}
           </div>
         </div>
       )}

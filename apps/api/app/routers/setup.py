@@ -168,6 +168,9 @@ async def status(request: Request):
             "locked_items": {k: runtime_config.source(k)
                              for k in ("base_url", "api_key", "model")},
             "tested_at": runtime_config.get_str(runtime_config.K_TESTED_AT),
+            # 走不走内置额度。设置页据此显示今日剩余额度,向导据此选中第一张卡片。
+            # **这里不查额度** —— status 要快,额度是一次跨公网的请求,单独一条接口。
+            "builtin": runtime_config.builtin(),
         },
         "data_supply": hunter_key_state,
         "setup": {
@@ -262,6 +265,10 @@ class SaveIn(BaseModel):
     model: str
     sanitize: str = ""
     test_token: str = ""
+    #: 走「HunterCode 内置额度」那张卡片时为 true(向导第 2 步第一张卡)。
+    #: 它决定三件事:sanitize 强制 0(清洗在网关做)、把 agent 侧模型名一并写好、
+    #: 顺手用同一把 key 解锁数据供给。地址不是网关时这个标记会被忽略。
+    builtin: bool = False
 
 
 @router.put("/llm")
@@ -286,11 +293,20 @@ async def llm_save(body: SaveIn, request: Request):
     if not chk["ok"]:
         raise HTTPException(400, {"message": chk["message"], "reason": chk["reason"]})
 
-    # 优先级:调用方明确指定 > 检测得出的建议(签在凭证里) > 默认。
+    # 「内置额度」只在地址真的是网关时才算数 —— 前端传什么都不能让别的地址
+    # 顶着内置额度的名义去写 hunter-chat / hunter-deep 那批模型名。
+    builtin = bool(body.builtin) and runtime_config.is_builtin_base(base_url)
+
+    # 优先级:内置额度强制 0 > 调用方明确指定 > 检测得出的建议(签在凭证里) > 默认。
     # 中间这一层是给「直接调接口」的人兜底的 —— 检测报文承诺「保存时会自动设为开」,
     # 网页端靠前端回传做到了,接口调用方不该因为少传一个字段就拿到相反的结果。
-    sanitize = ((body.sanitize or "").strip().lower()
-                or chk.get("sanitize_suggest") or runtime_config.SANITIZE_DEFAULT)
+    #
+    # ⚠️ 内置额度为什么是 **0** 而不是 auto:schema 清洗在网关做(方案 4.5),
+    # 本地再走一遍 llm-shim 只是多一跳。别改成 auto —— 现在 auto 恰好也不走 shim
+    # (模型名 hunter-chat 里没有 gemini),但那是巧合,哪天别名改了就悄悄变了。
+    sanitize = ("0" if builtin else
+                ((body.sanitize or "").strip().lower()
+                 or chk.get("sanitize_suggest") or runtime_config.SANITIZE_DEFAULT))
     if sanitize not in ("0", "1", "auto"):
         raise HTTPException(400, {"message": "schema 清洗开关只能是 0 / 1 / auto"})
 
@@ -299,8 +315,112 @@ async def llm_save(body: SaveIn, request: Request):
     cfg = _Cfg()
     cfg.base_url, cfg.api_key, cfg.model, cfg.sanitize = base_url, api_key, model, sanitize
     await run_in_threadpool(runtime_config.save_llm, cfg, body.test_token)
+
+    # 内置额度:把深度分析那批模型名一并写好(方案 4.5 / P1 报告第 9 节第 1 条)。
+    # 不写的话「对话能用、深度分析是坏的」—— P1 在测试机上实测过这个组合。
+    # 切回自带 key 时必须把它们清掉,否则会拿着只有我们网关认识的模型名去打别家上游。
+    await run_in_threadpool(runtime_config.save_builtin, builtin,
+                            runtime_config.BUILTIN_AGENT_MODELS if builtin else None)
+
+    # 内置额度:同一把 `hunt_tools_` key 也是数据供给的 key,顺手解锁,别让用户填两遍。
+    # **失败不影响保存** —— 大模型配置已经写好了,数据供给第 4 步还能补。
+    data_supply = await _adopt_llm_key_for_data(api_key) if builtin else {"adopted": False}
+
     return {"ok": True, "saved": {"base_url": base_url, "model": model,
-                                  "sanitize": sanitize, "api_key_masked": mask(api_key)}}
+                                  "sanitize": sanitize, "api_key_masked": mask(api_key),
+                                  "builtin": builtin},
+            "data_supply": data_supply}
+
+
+async def _adopt_llm_key_for_data(api_key: str) -> dict:
+    """内置额度路径下,把同一把 key 也存成平台 key(方案 4.8 向导第 4 步)。
+
+    为什么可以直接存:这把 key 刚刚在第 3 步通过了对我们网关的三项检测,
+    网关认的就是 `saas_key.verify()` —— 和数据供给是同一套校验,不存在
+    「大模型能用、数据供给不认」的情况。这里仍然再问一次 manifest,
+    **拿不准就不存**(连不上上游 / key 被吊销都按没解锁处理)。
+
+    三种情况不动它:环境变量锁定、已经配过、key 不是 `hunt_tools_` 开头。
+    """
+    try:
+        from app.services import hunter_key
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[setup] 读不到 hunter_key 模块: {}", e)
+        return {"adopted": False, "reason": "module_missing"}
+
+    if hunter_key.env_locked():
+        return {"adopted": False, "reason": "env_locked"}
+    if hunter_key.resolve():
+        return {"adopted": False, "reason": "already_configured"}
+    if not api_key.startswith("hunt_tools_"):
+        return {"adopted": False, "reason": "not_platform_key"}
+
+    try:
+        m = await hunter_key.manifest(api_key)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[setup] 内置额度顺带解锁数据供给失败(不影响保存): {}", e)
+        return {"adopted": False, "reason": "upstream_error"}
+    if not m.get("unlocked"):
+        return {"adopted": False,
+                "reason": "upstream_error" if m.get("upstream_error") else "not_unlocked"}
+
+    try:
+        await run_in_threadpool(hunter_key.save, api_key)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[setup] 写平台 key 失败(不影响保存): {}", e)
+        return {"adopted": False, "reason": "save_failed"}
+    logger.info("[setup] 内置额度 · 同一把 key 已同时解锁数据供给")
+    return {"adopted": True, "reason": "", "masked": hunter_key.masked(api_key)}
+
+
+# ── 6b. 今日额度(内置额度专用)──────────────────────────────────────
+@router.get("/llm/quota")
+async def llm_quota(request: Request):
+    """问内置额度网关「这把 key 今天还剩多少」(方案 4.6 的 `GET /api/saas/llm/quota`)。
+
+    **为什么要 api 代理一下**:key 加密存在这台实例自己的库里,前端拿不到明文,
+    也不该拿到 —— 浏览器直连网关就得把 key 发给浏览器。
+
+    返回形状固定,前端不用区分失败原因:
+        {"builtin": false}                            这台实例不走内置额度
+        {"builtin": true, "ok": true,  "quota": {…}}  网关原样的那张表
+        {"builtin": true, "ok": false, "message": …}  连不上 / key 被拒,如实说
+    """
+    _guard(request)
+    cfg = runtime_config.llm()
+    url = runtime_config.builtin_quota_url(cfg.base_url)
+    if not url or not cfg.api_key:
+        return {"builtin": False}
+    return await run_in_threadpool(_fetch_quota, url, cfg.api_key)
+
+
+def _fetch_quota(url: str, api_key: str) -> dict:
+    """同步 httpx,调用方负责丢线程池。**永远不抛异常** —— 设置页上一个额度
+    数字取不到,不该把整张「大模型」卡片打成红色报错。"""
+    import httpx
+    try:
+        r = httpx.get(url, headers={"Authorization": f"Bearer {api_key}"}, timeout=10.0)
+    except Exception as e:  # noqa: BLE001
+        code, msg = llm_probe.classify_transport(e)
+        return {"builtin": True, "ok": False, "code": code, "message": msg}
+    if r.status_code in (401, 403):
+        return {"builtin": True, "ok": False, "code": "bad_key",
+                "message": f"网关不认这把 key（HTTP {r.status_code}）。"
+                           "到设置里重新跑一遍初始化向导,把 key 填对。"}
+    if r.status_code >= 400:
+        return {"builtin": True, "ok": False, "code": "http_error",
+                "message": f"额度接口返回 HTTP {r.status_code}：{(r.text or '')[:200]}"}
+    try:
+        d = r.json()
+    except Exception:  # noqa: BLE001
+        return {"builtin": True, "ok": False, "code": "bad_payload",
+                "message": "额度接口返回的不是 JSON（这台实例的地址可能不是内置额度网关）"}
+    if not isinstance(d, dict):
+        return {"builtin": True, "ok": False, "code": "bad_payload",
+                "message": "额度接口返回的不是一张表"}
+    # 网关的字段原样带上,**不在这里换算、不补默认值** —— 少算的额度比看不到更糟。
+    quota = {k: v for k, v in d.items() if k != "ok"}
+    return {"builtin": True, "ok": True, "quota": quota}
 
 
 # ── 7. 热生效 ───────────────────────────────────────────────────────
