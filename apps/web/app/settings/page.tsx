@@ -365,10 +365,21 @@ function QuotaRows({ q }: { q: any }) {
     && Number.isFinite(Number(d.remaining)))
     ? Math.max(0, Math.min(100, (Number(d.remaining) / Number(d.limit_daily)) * 100))
     : null
+  // ⚠️ **按网关给的时区渲染,不按浏览器所在时区**。额度是「北京时间 0 点重置」,
+  // 而服务器 / 海外用户的浏览器常常不在 +08 —— 直接 toLocaleString() 会显示成
+  // 「2026/9/19 16:00」,旁边却标着 Asia/Shanghai,自相矛盾(2026-09-19 截图里看出来的)。
   let reset = '—'
   if (typeof d.reset_at === 'string' && d.reset_at) {
     const t = new Date(d.reset_at)
-    reset = Number.isNaN(t.getTime()) ? d.reset_at : t.toLocaleString('zh-CN')
+    if (Number.isNaN(t.getTime())) {
+      reset = d.reset_at
+    } else {
+      try {
+        reset = t.toLocaleString('zh-CN', { timeZone: d.reset_tz || 'Asia/Shanghai' })
+      } catch {
+        reset = t.toLocaleString('zh-CN')   // 时区名不认识就退回本地,不编一个时间出来
+      }
+    }
   }
   return (
     <>
@@ -461,10 +472,15 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  // 标签列 90px 装不下 `LLM_DEFAULT_MODEL` 这类环境变量名,取值会叠在上面
+  // (2026-09-19 截图里看出来的)。加宽 + 不许压缩 + 留出间距。
   return (
     <div style={{ display: 'flex', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-      <div style={{ width: 90, fontSize: 13, color: 'var(--text-muted)' }}>{label}</div>
-      <div style={{ flex: 1, fontSize: 14, color: 'var(--text)' }}>{value}</div>
+      <div style={{
+        width: 148, flexShrink: 0, paddingRight: 10, fontSize: 13,
+        color: 'var(--text-muted)', wordBreak: 'break-all',
+      }}>{label}</div>
+      <div style={{ flex: 1, minWidth: 0, fontSize: 14, color: 'var(--text)' }}>{value}</div>
     </div>
   )
 }
