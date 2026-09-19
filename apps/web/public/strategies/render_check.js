@@ -667,6 +667,45 @@ try {
   console.log('FAIL 迭代方向定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 小鹿 · 「启动智能体」与「立即跑一次」同时出现时两个都要能点(2026-09-19 用户报点了没反应)──
+// 原来 bindOps 写成 getElementById('ag-run') || getElementById('ag-start'),方向没跑过时两个按钮同屏,
+// 只有「立即跑一次」绑上了,提示条里的「启动智能体」是死按钮。
+try {
+  const ctx = vm.createContext(makeContext('agent.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const ag = inlineScripts(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))
+  ag.forEach((src, i) => vm.runInContext(src, ctx, { filename: `agent#${i + 1}` }))
+  vm.runInContext(`
+    var BTN = {}
+    ;['ag-run', 'ag-start'].forEach(function (id) {
+      BTN[id] = { id: id, textContent: id, disabled: false, style: {}, handlers: [],
+        addEventListener: function (t, f) { if (t === 'click') this.handlers.push(f) } }
+    })
+    var _gidStart = document.getElementById
+    document.getElementById = function (id) { return BTN[id] || _gidStart(id) }
+    var RUN_URLS = []
+    fetch = function (url) { RUN_URLS.push(String(url)); return Promise.reject(new Error('render_check: 不联网')) }
+    bindOps()
+    var START_BOUND = BTN['ag-start'].handlers.length
+    var RUN_BOUND = BTN['ag-run'].handlers.length
+    BTN['ag-start'].handlers.forEach(function (f) { f() })
+    document.getElementById = _gidStart
+  `, ctx, { filename: 'assert-agent-start' })
+  const checks = [
+    ['两个按钮同屏时「启动智能体」绑上了点击', ctx.START_BOUND === 1],
+    ['「立即跑一次」也还绑着', ctx.RUN_BOUND === 1],
+    ['点「启动智能体」发 POST /api/quant/agent/run', ctx.RUN_URLS[0] === '/api/quant/agent/run'],
+    ['源码里不再有 ag-run || ag-start 这种只绑一个的写法', !/getElementById\('ag-run'\)\s*\|\|/.test(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 启动按钮 ·', name)
+    else { failed++; console.log('FAIL 启动按钮 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 启动按钮断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 小鹿智能体 · 研究台(2026-09-13 · docs/agent-research-plan.md)──────────────
 // 要钉住的:
 //   ① 两列(2026-09-18 起):运行中(待写引擎 / 回测 / 纸上跑都在这里)· 封存;卡片进对的列,淘汰的单独一块;
