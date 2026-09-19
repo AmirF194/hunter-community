@@ -15,6 +15,7 @@ from loguru import logger
 from app.services.agent.tool_registry import ToolCall, ToolRegistry, ToolResult
 from app.services.online_analysis.llm_client import get_client
 from app.services.lang_guard import ZH_ONLY_RULE
+from app.services import runtime_config
 
 
 _DEF = {
@@ -32,7 +33,11 @@ _DEF = {
 }
 
 
-_MODEL = os.getenv("AGENT_SUB_EVENT_MODEL", "gemini-3.5-flash")
+def _model() -> str:
+    # 惰性读取:环境变量非空 → 数据库(向导内置额度路径写入)→ 代码默认值。
+    # **不要改回模块级常量** —— 向导热生效不重启容器,常量会一直是旧值;
+    # 而且 compose 的 `${X:-}` 注进来的是空串,`os.getenv(名, 默认)` 拿不到默认值。
+    return runtime_config.agent_model("AGENT_SUB_EVENT_MODEL", "gemini-3.5-flash")
 
 _EVENT_LLM_SYSTEM = """你是猎鹿人事件影响分析师。给你一条事件 + 一只股票，输出 JSON:
 {
@@ -78,7 +83,7 @@ async def invoke_event_interpret(code: str, stock_name: str = "",
              f"事件描述：\n{event_text}")
     try:
         resp = client.chat.completions.create(
-            model=_MODEL,
+            model=_model(),
             messages=[
                 {"role": "system", "content": _EVENT_LLM_SYSTEM + ZH_ONLY_RULE},
                 {"role": "user", "content": user},

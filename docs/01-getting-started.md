@@ -7,7 +7,12 @@
 - Docker Engine 25+ · Docker Compose v2 (or Docker Desktop on Windows / macOS)
 - 2 CPU · 4 GB RAM · 10 GB disk (all six services run from pre-built images since v1.1.0 — nothing is built locally)
 - Network access to `ghcr.io` (the chat engine image is pulled from there)
-- An LLM API key (any OpenAI-compatible gateway; DeepSeek is the tested default)
+- **A model to talk to.** Recommended: the **built-in quota** — one free
+  [`hunt_tools_` platform key](https://hunter.agentpit.io/dev/api-keys) (~30 seconds)
+  and you are done; no LLM account of your own, no endpoint to look up. See
+  [`docs/builtin-llm/使用说明.md`](./builtin-llm/使用说明.md).
+  Advanced path: your own LLM API key (any OpenAI-compatible gateway; DeepSeek is
+  the tested default).
 
 ## Deploy to a cloud platform instead · 部署到云平台
 
@@ -66,16 +71,28 @@ Edit `.env`:
 - `REGISTRATION_MODE` · only applies when `HUNTER_SINGLE_USER=0` ·
   `open` (anyone can register · first user is admin) ·
   `invite` (needs code from admin · first user still admin) · `closed`
-- **`LLM_BASE_URL` / `LLM_DEFAULT_MODEL` / `LLM_API_KEY`** · leave them empty and
-  all six services still come up healthy — you just cannot chat yet. There is no
-  configuration UI yet (the setup wizard ships in the next milestone), so to chat
-  today you do have to fill all three here and run `docker compose up -d` again.
-  Fill **all three or none**: a half-filled set makes the upstream return 401,
-  which gets swallowed into an empty message ("深度思考完成" with no body).
+- **`LLM_BASE_URL` / `LLM_DEFAULT_MODEL` / `LLM_API_KEY`** · **leave them empty.**
+  Since v1.1.0 the browser wizard configures the model; since v1.2.0 its first card
+  is the built-in quota, so the normal path never touches this file at all.
+  Setting them here still works and **takes priority** — an instance with all three
+  set is *locked* and the wizard can only show them read-only (that is how the demo
+  site runs). Fill **all three or none**: a half-filled set makes the upstream return
+  401, which gets swallowed into an empty message ("深度思考完成" with no body).
   For DeepSeek also set `LLM_SCHEMA_SANITIZE=1`. Per-provider templates:
   [`docs/env-samples/`](./env-samples/).
+  To hard-code the built-in quota (what the one-click deploy templates do):
+  ```bash
+  LLM_BASE_URL=https://hunter.agentpit.io/api/saas/llm/v1
+  LLM_API_KEY=hunt_tools_xxxxxxxxxxxxxxxx   # the platform key — no second key needed
+  LLM_DEFAULT_MODEL=hunter-chat
+  LLM_SCHEMA_SANITIZE=0                     # sanitizing happens at the gateway
+  ```
+  ⚠️ Hard-coding it means you must also set the deep-analysis model variables
+  yourself — the wizard writes them for you otherwise. See
+  [`docs/builtin-llm/使用说明.md` §6](./builtin-llm/使用说明.md).
 - `HUNTER_API_KEY` · optional, for the platform data pipeline. Can also be pasted
-  in the UI later ("解锁全部工具", bottom-left).
+  in the UI later ("解锁全部工具", bottom-left). On the built-in-quota path the
+  wizard stores the same `hunt_tools_` key here for you.
 - Everything else has sensible defaults.
 
 ## Start
@@ -102,6 +119,13 @@ If `opencode` or `llm-shim` shows `Restarting`, see the error table below.
 
 Open [http://localhost:3100](http://localhost:3100). You land straight in the
 app — no registration, no login (see `HUNTER_SINGLE_USER` above).
+
+With no model configured you land in the **first-run wizard**. Step 2's first card,
+"使用 HunterCode 内置额度 (recommended)", fills in the endpoint and model name for
+you — paste one free `hunt_tools_` platform key in step 3, let the three checks pass,
+and you are chatting. It also points deep analysis at `hunter-deep` and unlocks the
+data supply with that same key, so step 4 has nothing left to do.
+Full walkthrough: [`docs/builtin-llm/使用说明.md`](./builtin-llm/使用说明.md).
 
 With `HUNTER_SINGLE_USER=0` you'll be redirected to `/register?setup=1` instead,
 to create the initial admin account.

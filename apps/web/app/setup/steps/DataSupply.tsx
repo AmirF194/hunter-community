@@ -13,9 +13,11 @@ import { Field } from './ModelPick'
 type Choice = 'free' | 'platform' | 'mcp'
 
 export default function DataSupply({
-  status, onNext, onBack, onRefresh,
+  status, builtin, onNext, onBack, onRefresh,
 }: {
   status: SetupStatus
+  /** 上一步选的是「HunterCode 内置额度」—— 那把 key 同时管数据供给,这一步通常已经配好了。 */
+  builtin: boolean
   onNext: () => void
   onBack: () => void
   onRefresh: () => Promise<any>
@@ -49,6 +51,34 @@ export default function DataSupply({
       <div style={{ color: HUNTER.INK_F, fontSize: 13.5 }}>
         大模型负责思考,行情和财务数据要另外有来源。这一步可以跳过,之后随时能改。
       </div>
+
+      {/* 内置额度路径:同一把 key 已经在上一步解锁了数据供给,别让用户以为还要再填一次。
+          ds.configured 为假时(环境变量锁定 / 上游当时连不上)照实说还要填,不假装已解锁。 */}
+      {builtin && (
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: HUNTER.R_SM,
+          background: ds?.configured ? HUNTER.TAG_OK_BG : HUNTER.PAPER2,
+          border: `1px solid ${ds?.configured ? HUNTER.SUCCESS : HUNTER.LINE}`,
+          fontSize: 13, color: HUNTER.INK_S, lineHeight: 1.75,
+        }}>
+          {ds?.configured ? (
+            <>
+              <strong style={{ color: HUNTER.INK }}>同一把 key 已解锁数据供给</strong>
+              （{ds.masked}）—— 你在上一步填的那把 <code>hunt_tools_</code> key
+              同时管大模型额度、工具、SKILL 与数据源,<strong>这一步不用再填一遍</strong>,
+              直接「下一步 · 完成」即可。
+            </>
+          ) : (
+            <>
+              你走的是内置额度,那把 <code>hunt_tools_</code> key 本来也能解锁数据供给,
+              但这台实例现在还没记上（{ds?.env_locked
+                ? '数据源 key 写在 .env 的 HUNTER_API_KEY 里,向导改不了它'
+                : '保存时没能向 Hunter 服务器确认这把 key —— 多半是网络不通'}）。
+              在下面「平台数据管道」里把同一把 key 再粘一次即可。
+            </>
+          )}
+        </div>
+      )}
 
       <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {/* ⚠️ 这一项**不写任何配置**,选它等于「先不配数据源」。文案必须说实话:

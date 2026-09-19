@@ -30,10 +30,15 @@ from app.services.database import get_all_stocks_by_user
 from app.services.subagents.watchlist_agent import (
     _get_a_quote_from_redis, _hk_quote_sync, _us_quote_sync,
 )
+from app.services import runtime_config
 
 
 # 与 watchlist_agent 用同一个 sub-agent env(短评归因和排序同属自选股域)
-_MODEL = os.getenv("AGENT_SUB_WL_MODEL", "gemini-3.5-flash")
+def _model() -> str:
+    # 惰性读取:环境变量非空 → 数据库(向导内置额度路径写入)→ 代码默认值。
+    # **不要改回模块级常量** —— 向导热生效不重启容器,常量会一直是旧值;
+    # 而且 compose 的 `${X:-}` 注进来的是空串,`os.getenv(名, 默认)` 拿不到默认值。
+    return runtime_config.agent_model("AGENT_SUB_WL_MODEL", "gemini-3.5-flash")
 
 _HORIZONS_ALL = ["3M", "6M", "1Y", "3Y"]
 
@@ -675,7 +680,7 @@ async def _llm_one_liner(scored: list[dict]) -> str:
     try:
         resp = await asyncio.to_thread(
             client.chat.completions.create,
-            model=_MODEL,
+            model=_model(),
             messages=[
                 {"role": "system", "content": _SUMMARY_SYS},
                 {"role": "user", "content": prompt},

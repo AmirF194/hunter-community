@@ -258,3 +258,68 @@ def test_save_llm_records_tested_at(monkeypatch):
 
 def _cache_is_empty() -> bool:
     return rc._cache["rows"] is None
+
+
+# ── 5. agent 侧模型名(P2 · 内置额度)─────────────────────────────
+#
+# 这一组盯的是 P1 在测试机上踩到的那个坑:compose 把这些变量写成 `${X:-}`,
+# 没有 .env 时注进容器的是**空串**,`os.getenv(名, 默认)` 拿到的是 `""` 而不是
+# 默认值 —— 请求打过去 model 是空的,表现是「工具调用成功、之后的汇总整个失败」。
+def test_agent_model_env_wins(monkeypatch):
+    monkeypatch.setattr(rc, "_read_db",
+                        lambda: {rc.K_AGENT_MODELS: '{"ASSISTANT_MODEL_CHAT": "db-model"}'})
+    rc.invalidate()
+    monkeypatch.setenv("ASSISTANT_MODEL_CHAT", "env-model")
+    assert rc.agent_model("ASSISTANT_MODEL_CHAT", "fallback") == "env-model"
+
+
+def test_agent_model_empty_env_falls_through(monkeypatch):
+    """compose 的 `${X:-}` 注进来的空串不能当「已配置」。"""
+    monkeypatch.setattr(rc, "_read_db",
+                        lambda: {rc.K_AGENT_MODELS: '{"ASSISTANT_MODEL_CHAT": "db-model"}'})
+    rc.invalidate()
+    monkeypatch.setenv("ASSISTANT_MODEL_CHAT", "   ")
+    assert rc.agent_model("ASSISTANT_MODEL_CHAT", "fallback") == "db-model"
+
+
+def test_agent_model_falls_back_to_default(monkeypatch):
+    """库里也没有时回到代码默认值 —— 这正是这个坑被踩之前本该有的行为。"""
+    monkeypatch.delenv("ASSISTANT_MODEL_CHAT", raising=False)
+    assert rc.agent_model("ASSISTANT_MODEL_CHAT", "gemini-3.5-flash") == "gemini-3.5-flash"
+    assert rc.agent_model("ASSISTANT_MODEL_CHAT") == ""
+
+
+def test_agent_models_bad_json_is_treated_as_unset(monkeypatch):
+    """库里写坏了不抛异常 —— 它在很多请求的主干上(同 llm() 的处理)。"""
+    for raw in ("not json", "[1,2]", '{"A": 1}', '{"A": ""}'):
+        monkeypatch.setattr(rc, "_read_db", lambda raw=raw: {rc.K_AGENT_MODELS: raw})
+        rc.invalidate()
+        assert rc.agent_models() == {}, raw
+
+
+def test_builtin_flag_from_db(monkeypatch):
+    monkeypatch.setattr(rc, "_read_db", lambda: {rc.K_BUILTIN: "1"})
+    rc.invalidate()
+    assert rc.builtin() is True
+    monkeypatch.setattr(rc, "_read_db", lambda: {rc.K_BUILTIN: ""})
+    rc.invalidate()
+    assert rc.builtin() is False
+
+
+def test_builtin_true_when_base_url_is_gateway(monkeypatch):
+    """.env 里把地址写死成网关的锁定实例:向导从没写过标记,额度展示照样要生效。"""
+    monkeypatch.setenv("LLM_BASE_URL", rc.BUILTIN_BASE_URL)
+    monkeypatch.setenv("LLM_API_KEY", "hunt_tools_x")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "hunter-chat")
+    assert rc.builtin() is True
+
+
+def test_builtin_agent_models_split_chat_and_deep():
+    """长任务走 deep、其余走 chat。deep 的输出单价是 chat 的几倍,
+    别把路由分类、摘要压缩这些短任务也指过去。"""
+    m = rc.BUILTIN_AGENT_MODELS
+    assert m["AGENT_SUB_RESEARCH_MODEL"] == rc.BUILTIN_DEEP_MODEL
+    assert m["AGENT_SUB_UZI_MODEL"] == rc.BUILTIN_DEEP_MODEL
+    deep = {k for k, v in m.items() if v == rc.BUILTIN_DEEP_MODEL}
+    assert deep == {"AGENT_SUB_RESEARCH_MODEL", "AGENT_SUB_UZI_MODEL"}
+    assert all(v in (rc.BUILTIN_CHAT_MODEL, rc.BUILTIN_DEEP_MODEL) for v in m.values())
