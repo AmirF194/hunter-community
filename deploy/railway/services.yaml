@@ -1,0 +1,230 @@
+# HunterCode · Railway 手工搭建清单
+# ══════════════════════════════════════════════════════════════════════
+# ⚠️ **这不是 Railway 能直接吃的文件。** Railway 的模板没有「模板文件」这种东西 ——
+#    官方流程是「在控制台里建好一个项目 → Settings → Generate Template from Project」
+#    从**跑通的项目**反向生成模板（https://docs.railway.com/templates/create）。
+#
+#    所以这份 YAML 是一张**逐字对照表**：它把「要在 Railway 控制台里敲进去的东西」
+#    写成机器可读的形式，用来
+#      ① 给 docs/deploy/railway.md 当唯一事实来源（文档里的表格由它生成、不会漂）；
+#      ② 给 deploy/tools/template-to-compose.py 翻译成**等价 compose** 在本机验证 ——
+#         和 Zeabur / Sealos / 1Panel 三个平台完全同一套方法（没有账号也要能验）。
+#
+# 字段语义全部按 Railway 官方文档（2026-09-18 查）：
+#   变量函数 secret(length?, alphabet?) / randomInt(min?, max?)
+#       https://docs.railway.com/templates/create
+#   引用变量 ${{ServiceName.VAR}} / ${{shared.VAR}} / ${{VAR}}
+#       https://docs.railway.com/variables/reference
+#   私有网络 <service-name>.railway.internal，不做端口映射，用服务真实监听端口
+#       https://docs.railway.com/networking/private-networking/how-it-works
+#   卷      一个服务**只能挂一个卷**；卷以 root 属主挂载，非 root 镜像要设 RAILWAY_RUN_UID=0
+#       https://docs.railway.com/reference/volumes
+#   最佳实践 1:1 图标、变量写说明、密钥用变量函数生成、服务间走私有主机名、配健康检查
+#       https://docs.railway.com/templates/best-practices
+#
+# 📌 未在真实平台上验证：本仓没有 Railway 账号。待办清单见 docs/deploy/railway.md 第七节。
+# ══════════════════════════════════════════════════════════════════════
+apiVersion: hunter-community/railway-spec/v1
+platform: railway
+template:
+  name: HunterCode Community
+  description: 自托管的 AI 投研助手 · A 股 / 港股 / 美股 · 自带对话内核与工具链
+  icon: https://raw.githubusercontent.com/agentpit-io/hunter-community/main/deploy/zeabur/logo.png
+  # 唯一对外的服务。Railway 上点 web 服务的 Settings → Networking → Generate Domain。
+  publicService: web
+
+# ── 服务命名约定 ──────────────────────────────────────────────────────
+# 六个服务名全部**不带连字符**（llmshim 而不是 llm-shim）。原因：引用变量的语法是
+# ${{ServiceName.VAR}}，官方文档里的例子都是不带连字符的标识符，带连字符能不能解析
+# 官方没写。服务名只影响私有主机名，而所有跨服务地址我们都显式写成变量，
+# 所以改名的代价为零 —— 不值得为了好看去赌一个没写在文档里的解析规则。
+services:
+
+  # ── postgres ────────────────────────────────────────────────────────
+  - name: postgres
+    image: postgres:16-alpine
+    listenPort: 5432
+    public: false
+    volume:
+      mountPath: /var/lib/postgresql/data
+    variables:
+      POSTGRES_USER:
+        value: hunter
+        note: 数据库用户名
+      POSTGRES_DB:
+        value: hunter
+        note: 数据库名
+      POSTGRES_PASSWORD:
+        value: ${{secret(32)}}
+        note: 数据库口令 · 由 Railway 在部署时生成，api 用引用变量取同一个值
+      PGDATA:
+        value: /var/lib/postgresql/data/pgdata
+        note: >-
+          ⚠️ **不设这个 postgres 起不来，而且是无限重启。** Railway 的卷是 ext4 块设备，
+          文件系统根目录天生带一个 lost+found，于是挂载点永远不是空的，而 initdb 拒绝
+          在非空目录上建库：`initdb: error: directory "/var/lib/postgresql/data" exists
+          but is not empty`。官方镜像自己给的提示就是「Create a subdirectory under the
+          mount point」。本机用 Docker 具名卷试**碰不到**这个坑（具名卷没有 lost+found），
+          M4 是在等价栈里刻意模拟出 lost+found 才复现的。
+      RAILWAY_RUN_UID:
+        value: "0"
+        note: >-
+          卷以 root 属主挂载，而 postgres:16-alpine 以 postgres 用户跑，不设这个就写不进
+          PGDATA。官方镜像的 entrypoint 以 root 启动时会自己 chown 再 gosu 降权，所以设 0 是安全的。
+
+  # ── redis ───────────────────────────────────────────────────────────
+  - name: redis
+    image: redis:7-alpine
+    listenPort: 6379
+    public: false
+    volume:
+      mountPath: /data
+    variables:
+      RAILWAY_RUN_UID:
+        value: "0"
+        note: 同 postgres · redis:7-alpine 以 redis 用户跑，卷是 root 的
+
+  # ── llmshim ─────────────────────────────────────────────────────────
+  - name: llmshim
+    image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0
+    listenPort: 3999
+    public: false
+    healthcheckPath: /health
+    variables:
+      SHIM_PORT:
+        value: "3999"
+        note: 监听端口
+      HUNTER_BIND_HOST:
+        value: "::"
+        note: >-
+          监听地址。Railway 2025-10-16 之前创建的环境，私有网络是 **IPv6-only**，
+          绑 0.0.0.0 的服务在那里彼此连不上；新环境是双栈。`::` 两种环境都能用
+          （shim 会同时关掉 IPV6_V6ONLY，一个 socket 同时收 v4/v6）。
+      LLM_BASE_URL:
+        value: ""
+        note: 留空 · 大模型地址由首启向导写进数据库后热生效
+
+  # ── api ─────────────────────────────────────────────────────────────
+  - name: api
+    image: ghcr.io/agentpit-io/hunter-community-api:1.1.0
+    listenPort: 8000
+    public: false
+    healthcheckPath: /api/health
+    volume:
+      # ⚠️ Railway **一个服务只能挂一个卷**（官方文档明写的限制）。
+      # api 本来要两份可写数据（用户装的 SKILL、导入的数据包），这里合并成
+      # 同一个卷的两个子目录，再用环境变量把路径指过去。
+      # 子目录由 api 的 boot.sh 在启动时 mkdir -p 出来（空卷里本来没有）。
+      #
+      # ⚠️⚠️ 挂载点**不能选 /opt/hunter-data** —— 镜像里那个路径放的是随镜像分发的
+      # 静态数据（llm-presets.json / hk_master.csv / recommended-skills.json）。
+      # 本机用 Docker 具名卷试的时候这个错误**看不出来**：空的具名卷首次挂载会把镜像里
+      # 该路径的内容拷进卷，三个文件还在。而 Railway 的卷和 K8s 的 PVC 一样**不拷贝**，
+      # 挂上去就是个空目录 —— 向导第 2 步会没有任何预设可选。M4 实测踩到并改掉。
+      mountPath: /opt/hunter-vol
+    variables:
+      HUNTER_BIND_HOST: { value: "::", note: 同 llmshim }
+      JWT_SECRET:
+        value: ${{secret(48)}}
+        note: >-
+          签发登录 token + 派生加密已存 key 的 AES 密钥。opencode 必须拿到**同一把**
+          （它的 hunter-auth 插件要验签），所以那边用引用变量取这里的值。
+          ⚠️ 换掉或丢失 = 已保存的大模型 key 全部解不开、登录全部失效。
+      HUNTER_INTERNAL_KEY:
+        value: ${{secret(48)}}
+        note: /api/internal/* 的共享口令 · web 与 opencode 必须同值，否则图片 OCR 一律 401
+      HUNTER_SETUP_TOKEN:
+        value: ${{secret(24)}}
+        note: >-
+          首启向导第 0 步的初始化口令。**必须非空** —— 公网上不设口令等于谁先打开谁就能
+          配置大模型。部署完在 api 服务的 Variables 里复制它。
+      DATABASE_URL:
+        value: postgresql://hunter:${{postgres.POSTGRES_PASSWORD}}@${{postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/hunter
+        note: 走私有网络 · 主机名用引用变量，不写死
+      REDIS_URL:
+        value: redis://${{redis.RAILWAY_PRIVATE_DOMAIN}}:6379/0
+      LLM_SHIM_URL:
+        value: http://${{llmshim.RAILWAY_PRIVATE_DOMAIN}}:3999/v1
+        note: >-
+          ⚠️ **api 也必须知道 shim 在哪**，不是只有 opencode 需要。向导保存后 api 走
+          PATCH /global/config 把 provider 的 baseURL 推给 opencode，推的就是**api 容器里**
+          这个值；不设会回落到硬编码的 http://llm-shim:3999/v1，而 Railway 上没有这个主机名。
+          M3 实测过这个坑：向导五步全绿、engine-ready 也是 true，**但发消息永远没有回复，
+          日志里一条报错都没有**。
+      OPENCODE_URL:
+        value: http://opencode.railway.internal:3901
+        note: >-
+          api 要回调 opencode（向导第 5 步热生效、装完 SKILL 后刷新列表）。
+          这里**故意不用** ${{opencode.RAILWAY_PRIVATE_DOMAIN}}：opencode 已经引用了 api 的
+          两把密钥，再反向引用就是两个服务互相引用，官方没写这种情况能不能解析。
+          私有主机名的格式 <服务名>.railway.internal 是文档里写死的，直接用更稳。
+      HUNTER_SINGLE_USER:
+        value: "0"
+        note: ⚠️ 公网部署必须是 0。单用户模式不要账号密码，开着等于谁都能拿到 admin
+      REGISTRATION_MODE: { value: open, note: 向导完成后由用户自己注册第一个账号（首个账号自动是管理员） }
+      HUNTER_MINIMAL_BOOT: { value: "1", note: 跳过需要外部凭据的后台调度器，让全新实例能健康启动 }
+      JWT_ACCESS_TTL: { value: "3600" }
+      JWT_REFRESH_TTL: { value: "2592000" }
+      HUNTER_UPSTREAM_URL: { value: "", note: 独立运行模式 · 不指回项目方的演示站 }
+      LLM_PROVIDER: { value: openai_compat }
+      HUNTER_SKILLS_DIR: { value: /opt/hunter-skills, note: 内置 SKILL · 在镜像里，不是卷 }
+      HUNTER_USER_SKILLS_DIR: { value: /opt/hunter-vol/user-skills, note: 卷的子目录（见上面 volume 的说明） }
+      HUNTER_PACKAGE_DIR: { value: /opt/hunter-vol/packages, note: 卷的子目录 }
+      HUNTER_API_KEY: { value: "", note: 留空即可 · 想解锁全部行情工具再去 hunter.agentpit.io 免费申请 }
+
+  # ── opencode ────────────────────────────────────────────────────────
+  - name: opencode
+    image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0
+    listenPort: 3901
+    public: false
+    # TCP 探活即可 —— opencode 的 / 本来就不返回 200
+    healthcheckPath: null
+    volume:
+      # ⚠️ 会话正文（opencode-local.db，所有对话）在这里。不挂卷 = 一次重建全没，
+      # 且不可恢复（postgres 的 chat_session_owner 表只存归属，正文一个字都不在里面）。
+      mountPath: /home/hunter/.local
+    variables:
+      RAILWAY_RUN_UID:
+        value: "0"
+        note: >-
+          ⚠️ **不设这个 opencode 起不来。** 镜像以 uid 1001(hunter) 运行，而 Railway 的卷
+          「以 root 属主挂载」（官方文档原文），1001 写不进去 —— 入口脚本会打印
+          「会话数据目录不可写」并退出。镜像里 HOME=/home/hunter 是写死的 ENV，
+          所以换成 root 跑之后配置与数据路径**一个字都不变**。
+      HUNTER_BIND_HOST: { value: "::", note: 同 llmshim }
+      JWT_SECRET:
+        value: ${{api.JWT_SECRET}}
+        note: 必须与 api 同值 · 不同值时服务照常启动，只是一对话就 401
+      HUNTER_INTERNAL_KEY: { value: "${{api.HUNTER_INTERNAL_KEY}}", note: 必须与 api / web 同值 }
+      HERMES_API_URL: { value: "http://${{api.RAILWAY_PRIVATE_DOMAIN}}:8000" }
+      LLM_SHIM_URL: { value: "http://${{llmshim.RAILWAY_PRIVATE_DOMAIN}}:3999/v1" }
+      LLM_SCHEMA_SANITIZE: { value: auto, note: auto = 模型名含 gemini 时才经 shim 洗 schema }
+      LLM_PROVIDER: { value: openai_compat }
+      HUNTER_AUDIT_PATH:
+        value: /home/hunter/.local/share/hunter-audit/AUDIT.jsonl
+        note: 审计日志写进卷内 —— 放 /tmp 的话一次重建就没，而审计的全部意义就是留痕
+      HUNTER_BUDGET_ENABLED: { value: "false", note: 自部署用户付的是自己的大模型账单，不该被限额 }
+
+  # ── web（唯一对外）──────────────────────────────────────────────────
+  - name: web
+    image: ghcr.io/agentpit-io/hunter-community-web:1.1.0
+    listenPort: 3000
+    public: true
+    healthcheckPath: /
+    variables:
+      NODE_ENV: { value: production }
+      PORT: { value: "3000" }
+      HOSTNAME:
+        value: "::"
+        note: >-
+          Next.js standalone 用 HOSTNAME 定监听地址（镜像里默认 0.0.0.0）。
+          理由同 llmshim 的 HUNTER_BIND_HOST。
+      HERMES_API_URL:
+        value: "http://${{api.RAILWAY_PRIVATE_DOMAIN}}:8000"
+        note: BFF 要回调 api 查会话归属；不传会回落 127.0.0.1:8000 → 503
+      OPENCODE_URL:
+        value: "http://${{opencode.RAILWAY_PRIVATE_DOMAIN}}:3901"
+        note: BFF 要反代到 opencode；不传会回落 127.0.0.1:3901（那是 web 自己）→ 502
+      HUNTER_INTERNAL_KEY:
+        value: ${{api.HUNTER_INTERNAL_KEY}}
+        note: 必须与 api 同值，否则图片 OCR 一律 401（症状只是「上传图片没反应」）

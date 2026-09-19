@@ -45,37 +45,117 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 
 ---
 
+## ☁️ One-click deploy to a cloud platform
+
+If you would rather not run a server yourself, deploy to one of these and finish the
+first-run wizard in the browser.
+
+| Platform | Who it fits | Notes |
+|---|---|---|
+| [Zeabur](docs/deploy/zeabur.md) | Works inside and outside China; most capable | Template generates the secrets, binds the domain, attaches volumes |
+| [Sealos](docs/deploy/sealos.md) | Users in China | Kubernetes template; postgres / redis via KubeBlocks |
+| [Railway](docs/deploy/railway.md) | Users outside China | Step-by-step list for building the 6 services in the console, plus how to generate and publish the template |
+| [1Panel](docs/deploy/1panel.md) | Your own server + a Chinese control panel | App package; fill in a port and a token |
+| [Coolify / Dokploy](docs/deploy/coolify-dokploy.md) | Your own server + a self-hosted PaaS | **Two compose files you can paste as-is** |
+
+> ℹ️ **There are no deploy buttons in this release.** We do not have accounts on any of
+> these platforms, have never run a real deployment on them, and have not listed the
+> templates in any marketplace — so: docs only, no buttons.
+> Every template was **equivalence-verified**: mechanically translated into a compose
+> file (same images, same environment variables, random secrets generated the way that
+> platform generates them, same volumes, same dependencies) and run locally from empty
+> volumes through "six services healthy → finish the wizard → a real conversation →
+> a deep-dive analysis → restart without losing data".
+> Each doc states plainly what was verified, what was not, and what you must check
+> yourself on the platform. If you have an account and try one, please tell us in
+> [Issues](https://github.com/agentpit-io/hunter-community/issues) — once a template is
+> verified on the real platform, the button goes in.
+
+**Read this before exposing an instance to the internet**: these platforms put your
+instance on a public address the moment it is created. Every template therefore turns
+off single-user passwordless mode (`HUNTER_SINGLE_USER=0`) and generates a setup token
+`HUNTER_SETUP_TOKEN`, which step 0 of the wizard asks for — otherwise whoever opens the
+page first gets to point your instance at their own model. The token is visible in the
+platform's environment-variable panel.
+
+---
+
 ## 🚀 Deploy in 5 minutes
 
-**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 20 GB disk (the chat-engine image is ~7.5 GB) · 4 GB RAM · access to `ghcr.io`
+**You need**: Docker Desktop (Windows / macOS) or Docker Engine + Compose v2 (Linux) · 10 GB disk · 4 GB RAM (measured peak ~1.3 GB) · access to `ghcr.io`
+
+All six images ship for **amd64 and arm64**, so Apple Silicon and arm cloud instances run natively — no emulation.
 
 > [!IMPORTANT]
 > **Only two things to understand before you start**
-> 1. **An LLM key (required)**: powers the chat itself. We recommend [DeepSeek](https://platform.deepseek.com/api_keys); any OpenAI-compatible gateway works (Qwen, Claude, GPT, OpenRouter, OneAPI, AIHubMix, ...).
+> 1. **Where the model comes from.** Recommended: **HunterCode built-in quota** — [get a free `hunt_tools_` platform key](https://hunter.agentpit.io/dev/api-keys) (~30 seconds), pick the first card in wizard step 2, and **you never hunt for an LLM key of your own**. The endpoint and model name are filled in for you, and you get a free daily token allowance. See [the built-in quota guide](./docs/builtin-llm/使用说明.md) (Chinese).
+>    **Advanced: bring your own LLM key** — [DeepSeek](https://platform.deepseek.com/api_keys) or any OpenAI-compatible gateway (Qwen, Claude, GPT, OpenRouter, OneAPI, AIHubMix, ...). You can switch between the two paths at any time.
 > 2. **Where data comes from (pick one, can wait)**: ① free open-source sources, work out of the box; ② your own MCP / data sources; ③ the platform data pipeline, [free key](https://hunter.agentpit.io/dev/api-keys). See [Data supply: pick one of three](#-data-supply-pick-one-of-three).
+>    On the built-in-quota path this is **already taken care of** — the same `hunt_tools_` key is the data-supply key, and the wizard tells you it is already unlocked.
 
-**Time**: ~5 minutes with images already pulled; ~10–15 minutes on first pull, depending on your network.
+**Time**: since v1.1.0 all six services run from **pre-built images — nothing is built locally**. First run is ~3–5 minutes (all of it image downloads); later `up -d` takes seconds.
 
 ```bash
-# 1. Get the code
 git clone https://github.com/agentpit-io/hunter-community
 cd hunter-community
-cp .env.example .env
-
-# 2. Generate a secret (Linux / macOS; for Windows PowerShell see docs/01-getting-started.md)
-echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
-#    then delete the example line JWT_SECRET=change-me-in-production-please from .env
-
-# 3. Edit .env and fill in the three LLM settings (DeepSeek example)
-# LLM_BASE_URL=https://api.deepseek.com/v1
-# LLM_DEFAULT_MODEL=deepseek-v4-pro
-# LLM_API_KEY=sk-xxxxx
-# LLM_SCHEMA_SANITIZE=1                 # required for DeepSeek
-# HUNTER_API_KEY=hunt_tools_xxxxx       # optional · platform data pipeline
-
-# 4. Start and open the browser
 docker compose up -d
-open http://localhost:3100
+open http://localhost:3100          # finish the setup wizard in the browser — no file edits
+```
+
+**There is no step 2.** Since v1.1.0 you never touch `.env`: secrets are generated,
+the database migrates itself, all six services run from pre-built images, and the LLM
+is configured in the browser.
+
+### The first-run wizard
+
+The first time you open the app (with no LLM configured) it takes you through five steps:
+
+| Step | What it does |
+|---|---|
+| 1 · Environment check | Six services, migration ledger, secret origin & strength, volume writability, how you're reaching this instance — every item actually probed |
+| 2 · Pick a model | **The first card is "use the HunterCode built-in quota" (recommended)** — pick it and the endpoint and model name fill themselves in; all you need is one `hunt_tools_` key. The cards below it are the bring-your-own-key path, carrying **measured** tool-call hit rates and latencies (from [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)) |
+| 3 · Paste the key, test it now | Reachability → chat → tool call. Failures are classified, and **you cannot save a config that did not pass**. On the built-in-quota path it also points deep analysis at `hunter-deep` and unlocks data supply with the same key |
+| 4 · Data supply | Free open-source sources / platform data pipeline / your own MCP — pick one, or skip. On the built-in-quota path it just says "already unlocked with the same key" |
+| 5 · Done | Applied live, **without restarting any container**, plus three example questions to get you into the chat |
+
+<p align="center">
+  <img src="./docs/screenshots/builtin-llm/02-第2步-内置额度是第一张卡.png" alt="Step 2 · the built-in quota is the first card" width="760" />
+</p>
+
+All screenshots: [`docs/screenshots/builtin-llm/`](./docs/screenshots/builtin-llm/) (built-in quota,
+end to end) and [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/) (bring-your-own-key path).
+
+> [!IMPORTANT]
+> **If this instance is reachable from the public internet, set `HUNTER_SETUP_TOKEN` in `.env` first**
+> (any random string — `openssl rand -base64 24`), then `docker compose up -d`.
+> Without it, whoever opens the page first gets to configure the LLM — the wizard decides
+> "is this local?" from HTTP forwarding headers, and on a bare `docker compose` (no nginx or
+> other reverse proxy in front) a visitor can forge those. With the token set, the wizard asks
+> for it up front and locks for 15 minutes after 5 wrong tries.
+> Not needed for a machine only you can reach.
+
+**The old way (hard-coding it in `.env`) still works and takes priority**: an instance with
+`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_DEFAULT_MODEL` set is **locked** — the wizard shows the
+values read-only and cannot change them (that is how the demo site runs). To switch models,
+edit `.env` and run `docker compose up -d` (**not `restart`** — restart does not re-read `.env`).
+The built-in quota can be hard-coded the same way (one-click deploy templates do exactly that):
+
+```bash
+LLM_BASE_URL=https://hunter.agentpit.io/api/saas/llm/v1
+LLM_API_KEY=hunt_tools_xxxxxxxxxxxxxxxx      # the platform key — no second key needed
+LLM_DEFAULT_MODEL=hunter-chat
+LLM_SCHEMA_SANITIZE=0                        # sanitizing happens at the gateway
+```
+
+> Without an LLM configured all six services still come up healthy; sending a message just
+> returns a plain "the LLM is not configured yet" notice. Want to do it later? Click
+> "先进对话页(稍后再说)" on the last step. To run the wizard again: Settings → 大模型 →
+> "重新运行初始化向导".
+
+**Working on the code?** Stack the development override file on top. It brings back local builds and every source bind mount (edits under `apps/web/public` and `scripts/` take effect immediately):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 ```
 
 **Then try**:
@@ -427,6 +507,10 @@ The list is maintained by the [All Contributors](https://allcontributors.org) bo
 
 Built something on HunterCode or maintaining a fork? Tell us in [Discussions](https://github.com/agentpit-io/hunter-community/discussions) and we'll list it here.
 
+### 💝 Thanks for sharing
+
+- Community: [LINUX DO](https://linux.do/) — Chinese developer community
+
 ---
 
 ## 💬 Community & support
@@ -447,8 +531,18 @@ Built something on HunterCode or maintaining a fork? Tell us in [Discussions](ht
 - [x] **v0.1** · Self-hosted skeleton, local account auth, pluggable data / LLM / forecast layers
 - [x] **v0.2** · opencode chat engine, plugins and MCP, one key for everything, GitHub SKILL install
 - [x] **v1.0.0** (2026-09-13) · Market-wide screener, research desk agent, quant factors and backtests isolated per market, SKILL import with attached docs and Chinese descriptions, kronos / truesource MCPs published, chat sessions on named volumes — [full changelog](./CHANGELOG.md)
-- [ ] **v1.0.1** · Docs and community groundwork — [milestone](https://github.com/agentpit-io/hunter-community/milestone/1)
-- [ ] **v1.1.0** · First-run setup wizard (no `.env` editing), multi-arch images, daily deploy smoke test — [milestone](https://github.com/agentpit-io/hunter-community/milestone/2)
+- [x] **v1.0.1** (2026-09-17) · Chat-engine image **7.56 GB → 618 MB** (download 1.70 GB → 153 MB), api image 1.32 GB → 909 MB, entrypoint hardening, daily deploy smoke CI, docs and community groundwork — [how and measurements](./docs/image-slim/)
+- [x] **v1.1.0** (2026-09-18) · Works out of the box with no config file editing — [milestone](https://github.com/agentpit-io/hunter-community/milestone/2)
+  - [x] All six services from pre-built images, amd64 + arm64 (`v1.1.0-rc1`)
+  - [x] Database migrations run automatically on api start; `JWT_SECRET` and friends generated on first boot
+  - [x] LLM settings can live in the database (no longer `.env`-only) and apply live without restarting containers
+  - [x] Graphical first-run wizard (pick a model → paste the key and test it on the spot → start chatting)
+  - [x] Deployment for five platforms (Zeabur / Sealos / Railway / 1Panel / Coolify·Dokploy)
+        — templates and docs are ready and equivalence-verified, but **none has been run
+        on the real platform and none is listed in a marketplace**, so this release ships
+        no deploy buttons. See [One-click deploy](#-one-click-deploy-to-a-cloud-platform)
+  - Progress and measurements: [`docs/setup-wizard/`](./docs/setup-wizard/)
+- [ ] **Next** · Verify and list each platform once we have accounts (buttons go in then), China mirrors, arm64 on real hardware
 
 Want a feature? Vote in [Discussions Ideas](https://github.com/agentpit-io/hunter-community/discussions/categories/ideas).
 

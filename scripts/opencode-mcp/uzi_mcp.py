@@ -6,7 +6,7 @@
 # 返 denied,机器上也没有 gh),等镜像不如直接挂文件。
 #
 # 改动只在 huntercode 仓做,改完再把文件整个拷过来(保留本段头注释),不要在这里单独改。
-# 当前对应 huntercode 提交:e577e7c0e8(2026-09-08 · 加 outline 参数 · 让 SKILL 决定报告结构)
+# 当前对应 huntercode 提交:346f1119cc(2026-09-17 · 描述不再让模型调已删除的 kpred)
 """uzi-mcp · hunter-UZI-Skill 深度分析入口 · Sprint 3 P2 · Phase 1 MVP
 
 薄代理：把 opencode LLM 的 tool_call 转发到 hermes-api /api/internal/uzi/*。
@@ -32,6 +32,31 @@ from mcp.types import Tool, TextContent
 HERMES_API   = os.getenv("HERMES_API_URL",      "http://172.17.0.1:8000")
 INTERNAL_KEY = os.getenv("HUNTER_INTERNAL_KEY", "hunter-internal-2026")
 
+
+def _http_timeout() -> float:
+    """深度分析的 httpx 读超时(秒)· 默认 170,可用 UZI_HTTP_TIMEOUT 覆盖。
+
+    为什么要能改:这个值必须**压在** opencode 那侧的 MCP timeout 之下(镜像里是
+    180000 ms),否则 opencode 先掐断,模型拿到的是 "(pending / no output)" ——
+    看不出是超时。谁调大了 MCP timeout,就得同步调大这里,所以做成环境变量而不是
+    写死。给了非数字或 <=0 的值时按默认值走,不让一个笔误把整条链路变成不超时。
+    """
+    raw = (os.getenv("UZI_HTTP_TIMEOUT") or "").strip()
+    if not raw:
+        return 170.0
+    try:
+        val = float(raw)
+    except ValueError:
+        print(f"[uzi-mcp] UZI_HTTP_TIMEOUT={raw!r} 不是数字,回落 170s", file=sys.stderr)
+        return 170.0
+    if val <= 0:
+        print(f"[uzi-mcp] UZI_HTTP_TIMEOUT={raw!r} 非正数,回落 170s", file=sys.stderr)
+        return 170.0
+    return val
+
+
+HTTP_TIMEOUT = _http_timeout()
+
 server = Server("uzi-mcp")
 
 
@@ -45,7 +70,9 @@ async def list_tools():
                 "**仅当**用户明确要求「深度分析 / 深度看看 / 深挖 / 基本面分析 / 投资论点 / 多空辩论」时用。"
                 "**不要用来做以下场景**（有更合适的轻量 tool）："
                 "查行情/最新价 → 用 stock_quickview（3-8 秒 · 也返 30 天 K 线）；"
-                "走势预测/涨跌预测/未来 N 天怎么走 → 用 kpred（10-30 秒 · Kronos 时序大模型）；"
+                "走势预测/涨跌预测/未来 N 天怎么走 → 看你的工具列表里有没有 K 线预测工具"
+                "（SaaS 部署叫 kronos_kronos_forecast）· 有就用它,没有就如实告诉用户本部署不提供走势预测,"
+                "**不要**拿本工具凑数；"
                 "拉新闻 → 用 stock_news。"
                 "**做什么**：拉实时行情+30日K线+财务+龙虎榜+十大股东+治理+新闻 → Gemini 合成结构化 markdown。"
                 "**正在按某个 SKILL 分析时,必须把该 SKILL 要求的报告结构填进 `outline`** —— "
@@ -125,7 +152,8 @@ async def call_tool(name: str, arguments: dict):
             # 又给后端留 40s 余量 —— 2026-09-07 前是 120s,后端一次拉数卡了 137s 就把
             # 整条链路打穿(ReadTimeout → 模型拿到 error → 前端卡片 NaN)。
             # 2026-08-14 · community 踩坑后回流;2026-09-07 · 再抬并对齐后端预算。
-            async with httpx.AsyncClient(timeout=httpx.Timeout(170.0, connect=10.0)) as client:
+            # 2026-09-17 · 数值改由 UZI_HTTP_TIMEOUT 决定(默认仍是 170),见文件头 _http_timeout()。
+            async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT, connect=10.0)) as client:
                 r = await client.post(
                     f"{HERMES_API}/api/internal/uzi/stock_deep_analysis",
                     headers=headers,

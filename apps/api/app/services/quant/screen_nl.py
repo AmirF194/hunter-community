@@ -42,10 +42,74 @@ from app.services.quant.screen_dsl import ScreenError
 
 log = logging.getLogger(__name__)
 
-# 模型锁死 gemini-3.5-flash(仓内铁律)。
+# 模型调用失败的中文说明(2026-09-19 用户:本地 DeepSeek 余额为 0 时,报错条原样显示
+# 「APIStatusError · Error code: 402 - {'error': {'message': 'Insufficient Balance' …」)。
+# 规则同对话页 lib/modelError.ts:按状态码说原因,认不出的如实写「模型调用失败」+ 状态码,不猜。
+# 上游原话只进日志不进界面 —— 一行报错条放不下折叠区,英文原话对用户没用。
+# ⚠ 返回值必须以「调用模型失败」开头:routers/quant.py 靠这个前缀判断「没调通模型、退回 AI 次数」。
+_NO_AI_TAIL = "可以先直接写筛选脚本,不用 AI(点「语法速查」看写法)。"
+
+
+def model_error_text(e: Exception) -> str:
+    name = type(e).__name__
+    status = getattr(e, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(getattr(e, "response", None), "status_code", None)
+    log.warning("[screen_nl] 调用模型失败 · %s · status=%s · %s", name, status, str(e)[:500])
+    if status == 402:
+        why = ("模型服务的账户余额不足(HTTP 402)。这是部署方模型账户的问题,不是你的脚本写错了;"
+               "自己部署的请给模型服务充值,或在 .env 里换一个有余额的 LLM_API_KEY。")
+    elif status in (401, 403):
+        why = (f"模型服务拒绝了这次请求(HTTP {status}),通常是密钥无效、过期或没有这个模型的权限;"
+               "自己部署的请检查 .env 里的 LLM_API_KEY 和 LLM_DEFAULT_MODEL。")
+    elif status == 404:
+        why = "模型服务找不到这个模型(HTTP 404),请检查 .env 里的 LLM_DEFAULT_MODEL 和 LLM_BASE_URL。"
+    elif status == 429:
+        why = "模型服务限流或当期额度已用完(HTTP 429),请稍后再试。"
+    elif isinstance(status, int) and status >= 500:
+        why = f"模型服务暂时出错(HTTP {status}),请稍后再试。"
+    elif "Timeout" in name:
+        why = "模型服务长时间没有响应(超时),请稍后再试。"
+    elif "Connection" in name:
+        why = "连不上模型服务,请检查网络或 .env 里的 LLM_BASE_URL。"
+    elif isinstance(status, int):
+        why = f"模型服务返回了错误(HTTP {status})。"
+    else:
+        why = "模型服务没有正常返回。"
+    return "调用模型失败:" + why + _NO_AI_TAIL
+
+# gemini 部署仍然锁死 gemini-3.5-flash(仓内铁律)。
 # 3.6 / 3.8 对恰好 2 条 [system, user] 的短对话返 400,2026-09-04 上线 20+ 处全砸 500。
-# 这里正好就是 2 条消息的短对话,是那个 bug 的高危形态,不要动。
-MODEL = "gemini-3.5-flash"
+# 这里正好就是 2 条消息的短对话,是那个 bug 的高危形态,**不要把这条锁去掉**。
+GEMINI_PIN = "gemini-3.5-flash"
+
+
+def model_name() -> str:
+    """这里该用哪个模型。
+
+    改造前这是个写死的 `MODEL = "gemini-3.5-flash"` 常量。对 gemini 网关它是
+    必要的(见上面那条铁律),但对配了 DeepSeek / OpenAI 的开源用户,它等于把一个
+    这套部署根本没有的模型名发出去 —— 表现是「AI 识别」永远报 404 / UnknownModel。
+
+    所以判据改成**按当前生效的模型是不是 gemini 分流**:
+      · 是 gemini(演示站、内部部署)→ 仍然锁 gemini-3.5-flash,行为与改造前逐位一致
+      · 不是 → 用用户自己配的模型
+      · 一个都没配 → 空串(调用方在 get_client() 那一步就已经挡住了)
+    需要显式指定时设环境变量 `SCREEN_NL_MODEL`。
+    """
+    import os
+
+    forced = (os.getenv("SCREEN_NL_MODEL") or "").strip()
+    if forced:
+        return forced
+    try:
+        from app.services.online_analysis.llm_client import default_model
+        cur = default_model()
+    except Exception:          # noqa: BLE001
+        # 用例里 llm_client 被打成假模块(只有 get_client),拿不到就当没配 ——
+        # **不退回一个猜出来的模型名**。真的没配时调用方在 get_client() 就已被挡住。
+        cur = ""
+    return GEMINI_PIN if "gemini" in cur.lower() else cur
 
 _MAX_INPUT = 500
 
@@ -194,14 +258,14 @@ def translate(text: str, market_label: str, sma: list[int], ema: list[int],
     for attempt in (1, 2):
         try:
             completion = client.chat.completions.create(
-                model=MODEL,
+                model=model_name(),
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
                 max_tokens=1200,
                 temperature=0.1,
             )
         except Exception as e:                              # noqa: BLE001
-            raise ScreenError(f"调用模型失败:{type(e).__name__} · {e}") from e
+            raise ScreenError(model_error_text(e)) from e
         raw = (completion.choices[0].message.content or "") if completion.choices else ""
         usage = getattr(completion, "usage", None)
         if usage:
@@ -232,7 +296,7 @@ def translate(text: str, market_label: str, sma: list[int], ema: list[int],
 
         return {
             "script": script,
-            "model": MODEL,
+            "model": model_name(),
             "attempts": attempt,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
@@ -425,14 +489,14 @@ def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: 
         user = f"解析器报错:{cur_err}\n\n脚本:\n{cur}{hint}"
         try:
             completion = client.chat.completions.create(
-                model=MODEL,
+                model=model_name(),
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
                 max_tokens=2000,
                 temperature=0.1,
             )
         except Exception as e:                              # noqa: BLE001
-            raise ScreenError(f"调用模型失败:{type(e).__name__} · {e}") from e
+            raise ScreenError(model_error_text(e)) from e
         raw = (completion.choices[0].message.content or "") if completion.choices else ""
         usage = getattr(completion, "usage", None)
         if usage:
@@ -469,7 +533,7 @@ def fix_script(script: str, error: str, market_label: str, sma: list[int], ema: 
 
         return {
             "script": nxt,
-            "model": MODEL,
+            "model": model_name(),
             "attempts": attempt,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,

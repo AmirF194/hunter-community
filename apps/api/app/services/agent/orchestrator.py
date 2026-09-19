@@ -27,6 +27,7 @@ from .fallback import keyword_route_to_tool
 from .stream_bus import SSEEvent, StreamBus
 from .tool_registry import ToolCall, ToolRegistry, ToolResult, new_tool_call, load_all_tools
 
+from app.services import runtime_config
 from app.services.lang_guard import ZH_ONLY_RULE, has_english_prose, sanitize_llm_text
 from app.services.online_analysis.llm_client import get_client
 
@@ -37,8 +38,15 @@ _STOCK_CODE_RE = _re.compile(r"(?<!\d)(\d{6}|\d{5})(?!\d)")
 
 
 # ─────────────────────────────── 常量 ───────────────────────────────
-MODEL_ROUTER = os.getenv("AGENT_MODEL_ROUTER", "gemini-3.5-flash")
-MODEL_ROUTE_LITE = os.getenv("AGENT_MODEL_ROUTE_LITE", "gemini-3.5-flash")
+def model_router() -> str:
+    # 惰性读取:环境变量非空 → 数据库(向导内置额度路径写入)→ 代码默认值。
+    # **不要改回模块级常量** —— 向导热生效不重启容器,常量会一直是旧值;
+    # 而且 compose 的 `${X:-}` 注进来的是空串,`os.getenv(名, 默认)` 拿不到默认值。
+    return runtime_config.agent_model("AGENT_MODEL_ROUTER", "gemini-3.5-flash")
+
+
+def model_route_lite() -> str:
+    return runtime_config.agent_model("AGENT_MODEL_ROUTE_LITE", "gemini-3.5-flash")
 
 # 简易成本估算（¥/1k tokens，粗略；见 OneAPI 指南 v2026-08-02）
 _COST_PER_1K = 0.05
@@ -254,6 +262,13 @@ class ChatOrchestrator:
             async for chunk in self._stream_summary(query, history, tool_calls):
                 self._assistant_content += chunk
                 yield self._emit("message_delta", {"content": chunk})
+            if not self._assistant_content.strip():
+                # 模型只回了函数调用/空内容：用模板兜底，不能让用户看到空白回答
+                logger.warning("[orch] summary 空输出, 用模板兜底 tools={}",
+                               [tc.name for tc in tool_calls])
+                fallback_text = self._template_summary(tool_calls)
+                self._assistant_content = fallback_text
+                yield self._emit("message_delta", {"content": fallback_text})
         except Exception as e:
             logger.warning("[orch] summary 失败, 用模板兜底: {}", e)
             fallback_text = self._template_summary(tool_calls)
@@ -263,12 +278,12 @@ class ChatOrchestrator:
         cost = round((self._tokens_in + self._tokens_out) / 1000 * _COST_PER_1K, 4)
         total_ms = int((time.time() - overall_t0) * 1000)
         _tel.message_end(self.user_id, self.session_id, message_id,
-                          MODEL_ROUTER, self._tokens_in, self._tokens_out,
+                          model_router(), self._tokens_in, self._tokens_out,
                           cost, total_ms, len(tool_calls))
         yield self._emit("message_end", {
             "finish_reason": "stop",
             "usage": {
-                "model": MODEL_ROUTER,
+                "model": model_router(),
                 "tokens_in": self._tokens_in,
                 "tokens_out": self._tokens_out,
                 "cost_cny": cost,
@@ -319,7 +334,7 @@ class ChatOrchestrator:
         # 用 asyncio.to_thread 避免阻塞
         def _do():
             return self._client.chat.completions.create(
-                model=MODEL_ROUTER, messages=messages,
+                model=model_router(), messages=messages,
                 tools=tools, tool_choice=tc_mode,
                 temperature=0.2, max_tokens=4096,
             )
@@ -486,6 +501,12 @@ class ChatOrchestrator:
                           "用户问题不属于股票/公司/金融领域。请礼貌拒绝："
                           "「我是猎鹿人投研助手，主要陪你研究股票和市场，"
                           "这个话题我不太擅长，换个投资问题吧～」")
+        elif tool_calls:
+            # gemini-3.7/3.8 看到工具清单和工具结果后，常会想"再查一点"而发起新的函数调用，
+            # 汇总阶段没有声明工具 → 输出里没有正文，前端一片空白
+            extra_hint = ("\n\n# 【本轮汇总规则】\n"
+                          "工具已全部调用完毕，本轮不能再调用任何工具。"
+                          "直接基于下面的工具结果用中文回答用户；数据不足的部分如实说明缺什么。")
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT + extra_hint + ZH_ONLY_RULE}]
         messages.extend(history)
@@ -516,7 +537,7 @@ class ChatOrchestrator:
 
         def _stream():
             return self._client.chat.completions.create(
-                model=MODEL_ROUTER, messages=messages,
+                model=model_router(), messages=messages,
                 temperature=0.4, max_tokens=4096, stream=True,
             )
         stream = await asyncio.to_thread(_stream)
@@ -527,7 +548,7 @@ class ChatOrchestrator:
                        "content": str(messages[0].get("content", "")) + ZH_ONLY_RULE
                        + "上一次回答跑成了英文，本次必须整段简体中文重写。"}
             r = self._client.chat.completions.create(
-                model=MODEL_ROUTER, messages=msgs,
+                model=model_router(), messages=msgs,
                 temperature=0.2, max_tokens=4096,
             )
             return r.choices[0].message.content or ""
@@ -543,8 +564,9 @@ class ChatOrchestrator:
             tools=[{"type": "google_search"}]
         注意：google_search 与 function calling tools 不能同用；此处专门为通识问题设计。
         """
-        model = os.getenv("AGENT_MODEL_GENERAL_FINANCE",
-                           os.getenv("SIGNAL_ANALYSIS_MODEL", "gemini-3.5-flash"))
+        model = runtime_config.agent_model(
+            "AGENT_MODEL_GENERAL_FINANCE",
+            runtime_config.agent_model("SIGNAL_ANALYSIS_MODEL", "gemini-3.5-flash"))
         sys_prompt = SYSTEM_PROMPT + (
             "\n\n# 【本轮工作模式 · 通识 + 联网检索】\n"
             "- 这是**金融通识 / 背景解读**问题（公司治理、年报解读、公司战略、行业结构、宏观）\n"
@@ -683,7 +705,7 @@ class ChatOrchestrator:
                 content,
                 user_id=self.user_id,
                 session_id=self.session_id,
-                model=MODEL_ROUTER,
+                model=model_router(),
             )
             if hits:
                 logger.warning("[orch] session={} 合规改写 {} 处: {}",
@@ -697,7 +719,7 @@ class ChatOrchestrator:
             await asyncio.to_thread(_save_agent_v2, self.session_id, query,
                                      content, self._tool_bundle,
                                      self._router_reason,
-                                     {"model": MODEL_ROUTER,
+                                     {"model": model_router(),
                                       "tokens_in": self._tokens_in,
                                       "tokens_out": self._tokens_out,
                                       "cost_cny": round((self._tokens_in + self._tokens_out) / 1000 * _COST_PER_1K, 4)})

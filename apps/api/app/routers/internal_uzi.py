@@ -28,9 +28,26 @@ from app.services.online_analysis.llm_client import get_client
 router = APIRouter(prefix="/internal", tags=["mcp-bridge"])
 
 _INTERNAL_KEY = os.getenv("HUNTER_INTERNAL_KEY", "")
-# AGENT_SUB_UZI_MODEL 是内部部署里指定 Gemini 变体用的,开源版跟随 .env 的 LLM_DEFAULT_MODEL,
-# 否则用户配了 DeepSeek 却在这里请求 gemini-3.5-flash 会直接 502 UnknownModel。
-_MODEL = os.getenv("AGENT_SUB_UZI_MODEL") or os.getenv("LLM_DEFAULT_MODEL", "gemini-3.5-flash")
+def _model() -> str:
+    """深度分析合成用的模型名。
+
+    AGENT_SUB_UZI_MODEL 是内部部署里指定 Gemini 变体用的;没配就用当前生效的模型
+    (`runtime_config.llm()`:环境变量非空 → 数据库),否则用户配了 DeepSeek 却在
+    这里请求 gemini-3.5-flash 会直接 502 UnknownModel。
+
+    取值优先级与别的 agent 侧模型名一致:**环境变量非空 → 数据库 → 当前生效模型**。
+    中间那层是内置额度路径下向导写的(`hunter-deep`),P2 加。
+
+    ⚠️ **必须是函数,不能是模块级常量** —— 配置可以由初始化向导在运行时改,
+    常量的话得重启容器才生效。没配时返回空串,调用方在 get_client() 那一步就已经
+    被挡住了(**不猜模型名**:猜出来的 404 比「尚未配置」更难懂)。
+    """
+    from app.services import runtime_config
+    picked = runtime_config.agent_model("AGENT_SUB_UZI_MODEL")
+    if picked:
+        return picked
+    from app.services.online_analysis.llm_client import default_model
+    return default_model()
 
 # ── 三段时间预算 ───────────────────────────────────────────────
 # 2026-09-07 事故(茅台 600519):同一用户两次深度分析,第一次主拉数 47s 正常出报告;
@@ -1021,7 +1038,8 @@ async def deep_analysis(body: DeepAnalysisIn, request: Request):
     # 走 OneAPI Gemini 合成
     client = get_client()
     if client is None:
-        raise HTTPException(503, "LLM 客户端不可用 · 检查 .env 里 LLM_API_KEY / LLM_BASE_URL / LLM_DEFAULT_MODEL")
+        raise HTTPException(503, "大模型尚未配置 · 请在 .env 里填 LLM_BASE_URL / LLM_API_KEY / "
+                             "LLM_DEFAULT_MODEL,或在首页完成初始化向导")
 
     # ⚠️ system 里的结构描述**必须跟着 outline 走**。
     #
@@ -1053,7 +1071,7 @@ async def deep_analysis(body: DeepAnalysisIn, request: Request):
         # OpenAI 客户端是同步的 · 直接在 async 端点里调会把整个事件循环卡住 LLM 那么久
         # (期间 /api/chat/sessions 等所有请求都排队)。挪进线程,并给这一次调用单独限时。
         return client.with_options(timeout=_LLM_TIMEOUT_S).chat.completions.create(
-            model=_MODEL,
+            model=_model(),
             messages=([
                 {"role": "system", "content": sys_msg or system_msg},
                 {"role": "user", "content": user_msg},
@@ -1106,7 +1124,7 @@ async def deep_analysis(body: DeepAnalysisIn, request: Request):
         markdown = await _call_with_prefill()
         timing["llm_ms"] = int((time.perf_counter() - _t) * 1000)
         if not markdown:
-            logger.warning("[uzi] LLM 返回空 markdown · code={} model={}", code, _MODEL)
+            logger.warning("[uzi] LLM 返回空 markdown · code={} model={}", code, _model())
         _anchor = _outline_anchor(_outline) or "一、"
         markdown = _clean_llm_markdown(markdown, _anchor)
 
@@ -1124,8 +1142,8 @@ async def deep_analysis(body: DeepAnalysisIn, request: Request):
                 await _call_with_prefill(_retry_sys, 0.2), _anchor)
             timing["llm_retry_ms"] = int((time.perf_counter() - _t) * 1000)
     except asyncio.TimeoutError:
-        logger.error("[uzi] LLM 合成超时 code={} model={} 限时 {:.0f}s · timing={}", code, _MODEL, _LLM_TIMEOUT_S, timing)
-        raise HTTPException(504, f"LLM 合成超时(>{_LLM_TIMEOUT_S:.0f}s · model={_MODEL})")
+        logger.error("[uzi] LLM 合成超时 code={} model={} 限时 {:.0f}s · timing={}", code, _model(), _LLM_TIMEOUT_S, timing)
+        raise HTTPException(504, f"LLM 合成超时(>{_LLM_TIMEOUT_S:.0f}s · model={_model()})")
     except Exception as e:
         logger.exception("[uzi] LLM 失败 code=%s", code)
         raise HTTPException(502, f"LLM 合成失败: {e}")
@@ -1166,6 +1184,6 @@ async def deep_analysis(body: DeepAnalysisIn, request: Request):
         "used_fallback": used_fallback,
         "duration_ms": duration_ms,
         "timing": timing,
-        "model": _MODEL,
+        "model": _model(),
         "note": "Phase 1 MVP · 数据源 finance-data · LLM=OneAPI Gemini · 完整 22 dim 报告见 SG UZI worker（后续 phase）",
     }

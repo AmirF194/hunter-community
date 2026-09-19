@@ -25,6 +25,7 @@ from app.services.lang_guard import ZH_ONLY_RULE, sanitize_llm_text, has_english
 # fd.get_quote 走 finance-data.agentpit.io HTTP · 上游可能陈旧（详见 2026-08 排查）
 import json as _json
 import redis as _redis_mod
+from app.services import runtime_config
 _REDIS = _redis_mod.Redis.from_url(
     os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True,
 )
@@ -46,7 +47,11 @@ def _get_a_quote_from_redis(code: str) -> dict | None:
         return None
 
 
-_MODEL = os.getenv("AGENT_SUB_WL_MODEL", "gemini-3.5-flash")
+def _model() -> str:
+    # 惰性读取:环境变量非空 → 数据库(向导内置额度路径写入)→ 代码默认值。
+    # **不要改回模块级常量** —— 向导热生效不重启容器,常量会一直是旧值;
+    # 而且 compose 的 `${X:-}` 注进来的是空串,`os.getenv(名, 默认)` 拿不到默认值。
+    return runtime_config.agent_model("AGENT_SUB_WL_MODEL", "gemini-3.5-flash")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -66,7 +71,7 @@ def _llm_short(system: str, user: str, max_tokens: int = 80) -> str:
         return ""
     try:
         resp = client.chat.completions.create(
-            model=_MODEL,
+            model=_model(),
             messages=[
                 {"role": "system", "content": system + ZH_ONLY_RULE},
                 {"role": "user", "content": user},
@@ -88,7 +93,7 @@ def _llm_short(system: str, user: str, max_tokens: int = 80) -> str:
         #   直接落兜底文案太可惜，一次重跑的成本很低）
         logger.warning("[wl_agent] LLM 输出非中文 · 重跑一次 · raw={}", text[:120])
         resp2 = client.chat.completions.create(
-            model=_MODEL,
+            model=_model(),
             messages=[
                 {"role": "system", "content": system + ZH_ONLY_RULE
                  + "上一次回答跑成了英文，本次直接输出中文正文，不要任何前言。"},
@@ -305,7 +310,7 @@ def _classify_news(stock_name: str, code: str, title: str, content: str = "") ->
     )
     try:
         resp = client.chat.completions.create(
-            model=_MODEL,
+            model=_model(),
             messages=[
                 {"role": "system", "content": _NEWS_SYS + ZH_ONLY_RULE},
                 {"role": "user", "content": prompt},

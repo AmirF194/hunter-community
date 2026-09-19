@@ -62,6 +62,12 @@ vcp_pivot_dist vcp_base_days vcp_low_vol_ratio up_days_20d down_days_20d ud_vol_
 high_5d low_5d high_21d low_21d high_63d low_63d""".split())
 FIELDS |= {f"SMA{n}" for n in SMA} | {f"EMA{n}" for n in EMA} | {f"RSI{n}" for n in RSI}
 FIELDS |= {f"average_volume_{n}d_calc" for n in (10, 30, 60, 90)}
+# 2026-09-18 · 成交额与区间涨幅(线上 metainfo 实有;当日成交额 Value.Traded **不在**白名单,故意不放)
+FIELDS |= {f"AvgValue.Traded_{n}d" for n in (10, 30, 60, 90)}
+FIELDS |= {"Perf.5D", "Perf.3Y", "Perf.5Y", "Perf.10Y", "Perf.All"}
+# 2026-09-17 · 中文名识别用到的真实字段(中文名由 screen_dsl.field_label_cn 生成,不在这里写死)
+FIELDS |= set("""Candle.3BlackCrows BB.basis_50 cash_dividend_coverage_ratio_ttm gap
+Low.All all_time_low""".split())
 
 
 SHOULD_MATCH = [
@@ -382,6 +388,167 @@ SHOULD_REJECT += [
 ]
 
 
+# ── 2026-09-17 · 「可用字段」里点出来的字段,生成时报「没看懂」 ─────────────────
+# 用户:点字段插进生成框、点生成,说不认识 —— 自己的产品不认识自己的库。全量探针(美股 3809 个字段名)按写法类别查出三类:
+#   1. 只写字段名、没写怎么比(列表里 1096 个字段全中):报错必须点明「缺比较」,且不给 AI(阈值 AI 补就是编)
+#   2. 列表显示的中文名打进来认不出(576 个里 380 个):中文名收进词汇,同名多字段 / 两字短名单独收紧
+#   3. 带 - + 或数字开头的字段名列出来却写不进脚本(27 个):从列表里拿掉(screen_source.listable_fields,不在本文件测)
+SHOULD_MATCH += [
+    ("K线·三只乌鸦大于0", "Candle.3BlackCrows > 0"),
+    ("布林带中轨(50)大于100", "BB.basis_50 > 100"),            # 名字里的 50 不能当阈值
+    ("现金股息保障倍数(TTM)大于2", "cash_dividend_coverage_ratio_ttm > 2"),   # 名字里的「倍数」不是倍数句型
+    ("跳空大于1", "gap > 1"),                                # 两字短名:句首 + 紧跟比较词才认
+    ("Candle.3BlackCrows > 0", "Candle.3BlackCrows > 0"),
+]
+SHOULD_REJECT += [
+    "向上跳空大于1",                    # 两字短名不在句首:可能是复合词的一部分
+    "跳空率大于1",                      # 两字短名后面没紧跟比较词
+    "历史最低大于0",                    # Low.All 和 all_time_low 同名,拿不准指哪个
+    "现金股息保障倍数(TTM)大于收盘价的2倍",   # 字段名以外出现倍数,照样拒绝
+]
+SHOULD_MATCH += [
+    # 双边比较(09-14 第 5 轮支持)配中文名:名字里的 50 不能被数成第三个数把区间拆坏
+    ("布林带中轨(50)大于10小于20", "BB.basis_50 > 10 and BB.basis_50 < 20"),
+]
+# 只写了字段名 / 中文名、没有比较 → 必须是 MissingComparison(路由据此不给 AI 按钮),报错里点名字段
+SHOULD_MISS_CMP = [
+    ("MACD.hist", "MACD.hist"),
+    ("macd.hist", "MACD.hist"),                # 大小写不敏感,报错给规范写法
+    ("close", "close"),
+    ("K线·三只乌鸦", "Candle.3BlackCrows"),
+    ("跳空", "gap"),
+    ("市盈率", "price_earnings_ttm"),
+]
+
+
+# ── 2026-09-18 · 成交额(金额)被当成成交量、区间涨幅被当成当日涨跌幅 ─────────────────
+# 用户在本地 docker(美股)实测「股价站上50日均线，成交额大于2000万，近一个月涨幅超过10%」:
+#   成交额 → volume > 20000000(金额当股数)、近一个月涨幅 → change > 10(区间当当日)。按写法类别补:
+#   成交额:当日 / 成交金额 / 成交额度 / N日均 / 日均没说几天 / N日合计还是日均说不清 / 周月单位
+#   区间涨幅:近N日 / 近N周 / 近N个月 / 近N年 / 中文数字 / 年内 / 今年以来 / 上市以来 / 当日;对不上字段的拒绝
+#   跌幅:方向相反(曾产出 change > 10 当成「跌幅超过10%」)
+SHOULD_MATCH += [
+    ("股价站上50日均线，成交额大于2000万，近一个月涨幅超过10%",          # ← 用户原话
+     "close > SMA50 AND close * volume > 20000000 AND Perf.1M > 10"),
+    # 成交额类
+    ("成交额大于2000万", "close * volume > 20000000"),
+    ("成交金额大于1亿", "close * volume > 100000000"),
+    ("成交额度不低于5000万", "close * volume >= 50000000"),
+    ("今日成交额大于2000万", "close * volume > 20000000"),
+    ("30日均成交额大于2000万", "AvgValue.Traded_30d > 20000000"),
+    ("近10日日均成交额大于1亿", "AvgValue.Traded_10d > 100000000"),
+    ("90天平均成交额不低于500万", "AvgValue.Traded_90d >= 5000000"),
+    ("六十日均成交额大于1亿", "AvgValue.Traded_60d > 100000000"),
+    ("AvgValue.Traded_30d大于2000万", "AvgValue.Traded_30d > 20000000"),
+    ("成交额在1000万到5000万之间", "close * volume >= 10000000 and close * volume <= 50000000"),
+    ("成交额大于30日均成交额", "close * volume > AvgValue.Traded_30d"),
+    ("成交量大于100万，成交额大于2000万", "volume > 1000000 AND close * volume > 20000000"),
+    # 区间涨幅类
+    ("近一个月涨幅超过10%", "Perf.1M > 10"),
+    ("近1月涨幅超过10%", "Perf.1M > 10"),
+    ("近1个月涨幅大于10%", "Perf.1M > 10"),
+    ("一个月内涨幅超过10%", "Perf.1M > 10"),
+    ("最近一个月的涨幅大于10%", "Perf.1M > 10"),
+    ("过去三个月涨幅大于30%", "Perf.3M > 30"),
+    ("近3月涨幅大于30%", "Perf.3M > 30"),
+    ("近半年涨幅大于50%", "Perf.6M > 50"),
+    ("近6个月涨幅大于50%", "Perf.6M > 50"),
+    ("近12个月涨幅大于50%", "Perf.Y > 50"),
+    ("近一年涨幅大于100%", "Perf.Y > 100"),
+    ("近3年涨幅大于100%", "Perf.3Y > 100"),
+    ("近一周涨幅大于5%", "Perf.W > 5"),
+    ("近1个星期涨幅大于5%", "Perf.W > 5"),
+    ("近5日涨幅大于5%", "Perf.5D > 5"),
+    ("近五个交易日涨幅大于5%", "Perf.5D > 5"),
+    ("年内涨幅大于20%", "Perf.YTD > 20"),
+    ("今年以来涨幅大于20%", "Perf.YTD > 20"),
+    ("年初至今涨幅大于20%", "Perf.YTD > 20"),
+    ("上市以来涨幅大于100%", "Perf.All > 100"),
+    ("今日涨幅大于5%", "change > 5"),
+    ("当日涨跌幅超过4%", "change > 4"),
+    ("涨幅大于5%", "change > 5"),                                    # 不写区间照旧是当日
+    ("近一个月涨幅在10%到30%之间", "Perf.1M >= 10 and Perf.1M <= 30"),
+    ("近1个月涨幅大于近3个月涨幅", "Perf.1M > Perf.3M"),
+    # 跌幅:方向相反
+    ("跌幅超过5%", "change < -5"),
+    ("近一个月跌幅超过10%", "Perf.1M < -10"),
+    ("跌幅不超过3%", "change >= -3"),
+    ("近1个月涨跌幅大于-10%", "Perf.1M > -10"),                       # 涨跌幅本来就带符号,不翻转
+]
+SHOULD_REJECT += [
+    # 成交额:说不清几天 / 合计还是日均 / 扫描源没有的周期 —— 不能退回成交量,也不拿别的周期冒充
+    "日均成交额大于2000万",
+    "平均成交额大于2000万",
+    "20日均成交额大于2000万",
+    "近20日日均成交额大于2000万",
+    "20日成交额大于1亿",                   # 合计还是日均?
+    "近一个月日均成交额大于2000万",
+    "近一周成交额大于1亿",
+    "成交额大于50日均线",                   # 金额对价格
+    "成交额大于成交量",                     # 金额对股数
+    "成交额大于30日均量",
+    "换手率大于5%",                         # 曾映射成量比
+    # 区间涨幅:扫描源没有对应字段的一律拒绝,**绝不退回当日涨跌幅**
+    "近20日涨幅超过10%",
+    "近二十个交易日涨幅超过10%",
+    "近30天涨幅超过10%",
+    "近两周涨幅大于5%",
+    "近2个月涨幅大于10%",
+    "近半个月涨幅大于5%",
+    "近2年涨幅大于50%",
+    "本月涨幅大于10%",
+    "上周涨幅大于5%",
+    "涨幅近一个月超过10%",                  # 区间写在后面
+    "最近涨幅超过10%",                      # 没说多久
+    "过去一段时间涨幅大于10%",
+    "近期涨幅大于10%",
+    # 跌幅:翻转说不清的句型
+    "跌幅在5%到10%之间",
+    "跌幅超过-5%",
+    "近一个月跌幅大于近三个月跌幅",
+]
+
+
+# ── 2026-09-18(第 8 轮)· 字段名里的比较词被读成比较 ─────────────────────────────
+# 全量字段探针查出两条既有静默错(与第 7 轮无关,新旧版本结果一致):
+#   「recommendation_under > 0」→ recommendation_under < 0:英文比较词 under 从字段原名内部被读出来(_find_op 裸 find、无词边界);
+#   「盘前变动(绝对值)大于0」→ change_abs > 0:同名多字段中文名按设计不收,里面的「变动(绝对值)」(change_abs)却被截了出来。
+# 按类别补:字段原名里含 under / over 的写法(符号 / 中文 / 英文比较词 / 大写),
+#   普通英文单词里的比较词(overbought / oversold / undervalued / overshoot —— oversold 30 曾产出 RSI > 30,意思整个反了),
+#   同名多字段中文名的各种写法(必须报点名错误,不能让子串命中别的字段)
+FIELDS |= {"recommendation_over", "recommendation_under", "pre_change_abs", "premarket_change_abs", "change_abs"}
+SHOULD_MATCH += [
+    ("recommendation_under > 0", "recommendation_under > 0"),           # ← 探针原句
+    ("recommendation_under大于0", "recommendation_under > 0"),           # ← 探针原句
+    ("RECOMMENDATION_UNDER >= 3", "recommendation_under >= 3"),
+    ("recommendation_under不低于1", "recommendation_under >= 1"),
+    ("recommendation_under above 2", "recommendation_under > 2"),
+    ("recommendation_over小于5", "recommendation_over < 5"),             # 旧版 over 抢在「小于」前面 → > 5
+    ("recommendation_over below 5", "recommendation_over < 5"),
+    ("变动(绝对值)大于0", "change_abs > 0"),                             # 唯一的中文名照旧认
+    # 独立的英文比较词照旧认
+    ("close under 10", "close < 10"),
+    ("RSI over 70", "RSI > 70"),
+]
+SHOULD_REJECT += [
+    "盘前变动(绝对值)大于0",                 # ← 探针原句:pre_change_abs / premarket_change_abs 同名
+    "盘前变动(绝对值)小于-1",
+    "盘前变动(绝对值) > 0",
+    "收盘价大于10，盘前变动(绝对值)大于0",    # 全中或全不中
+    # 普通英文单词里的比较词不是比较
+    "RSI overbought 70",
+    "RSI oversold 30",                      # 旧版 → RSI > 30(超卖读成大于)
+    "市盈率undervalued 10",
+    "close overshoot 10",
+]
+# 同名多字段中文名:必须报「拿不准指哪个」且点名全部字段,不能退成「没看懂」或命中别的字段
+SHOULD_AMBIG = [
+    ("盘前变动(绝对值)大于0", ("pre_change_abs", "premarket_change_abs")),
+    ("盘前变动(绝对值) > 0", ("pre_change_abs", "premarket_change_abs")),
+    ("历史最低大于0", ("Low.All", "all_time_low")),
+]
+
+
 def _run(sd, kw) -> list[str]:
     has = lambda n: n in FIELDS                          # noqa: E731
     fails: list[str] = []
@@ -400,6 +567,22 @@ def _run(sd, kw) -> list[str]:
             fails.append(f"应拒绝  {text!r}\n        却产出 {got}   ← 静默错误")
         except sd.ScreenError:
             pass
+    for text, fld in SHOULD_MISS_CMP:
+        try:
+            r = kw.translate(text, has, SMA, EMA, RSI, names=FIELDS)
+            fails.append(f"应报缺比较  {text!r}\n        却产出 {r['script']}")
+        except kw.MissingComparison as e:
+            if fld not in str(e):
+                fails.append(f"应报缺比较  {text!r}\n        报错里没点名字段 {fld}:{e}")
+        except sd.ScreenError as e:
+            fails.append(f"应报缺比较  {text!r}\n        报的却是普通错误(会给 AI 按钮):{e}")
+    for text, flds in SHOULD_AMBIG:
+        try:
+            r = kw.translate(text, has, SMA, EMA, RSI, names=FIELDS)
+            fails.append(f"应报同名多字段  {text!r}\n        却产出 {r['script']}   ← 静默错误")
+        except sd.ScreenError as e:
+            if not all(f in str(e) for f in flds):
+                fails.append(f"应报同名多字段  {text!r}\n        报错里没点名 {' / '.join(flds)}:{e}")
     return fails
 
 
@@ -412,7 +595,7 @@ def test_screen_kw():
 if __name__ == "__main__":
     sd, kw = _load()
     fails = _run(sd, kw)
-    total = len(SHOULD_MATCH) + len(SHOULD_REJECT)
+    total = len(SHOULD_MATCH) + len(SHOULD_REJECT) + len(SHOULD_MISS_CMP) + len(SHOULD_AMBIG)
     print(f"应识别 {len(SHOULD_MATCH)} 条 · 应拒绝 {len(SHOULD_REJECT)} 条 · 共 {total}")
     if fails:
         print(f"FAIL {len(fails)} 条:")

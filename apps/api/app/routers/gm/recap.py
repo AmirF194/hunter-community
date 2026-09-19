@@ -11,6 +11,7 @@ from openai import OpenAI
 from app.services.database import get_conn
 from app.services.gm import findata_db, earnings_cal, yahoo_hk
 from app.services.gm.yahoo_hk import _cache_get, _cache_set
+from app.services import runtime_config
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -156,7 +157,7 @@ watch_today: {json.dumps(ai['watch_today'], ensure_ascii=False)}
 返回: {{"headline":"...", "portfolio":"...", "highlights":["...","...","..."], "watch_today":["...","..."]}}"""
         try:
             client = OpenAI(api_key=api_key,
-                            base_url=os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1"),
+                            base_url=runtime_config.one_api_base_url(),
                             timeout=60)
             resp = client.chat.completions.create(
                 model=os.getenv("ONE_API_MODEL", "gemini-3.5-flash"),

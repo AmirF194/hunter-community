@@ -667,10 +667,49 @@ try {
   console.log('FAIL 迭代方向定向断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
 }
 
+// ─── 小鹿 · 「启动智能体」与「立即跑一次」同时出现时两个都要能点(2026-09-19 用户报点了没反应)──
+// 原来 bindOps 写成 getElementById('ag-run') || getElementById('ag-start'),方向没跑过时两个按钮同屏,
+// 只有「立即跑一次」绑上了,提示条里的「启动智能体」是死按钮。
+try {
+  const ctx = vm.createContext(makeContext('agent.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  const ag = inlineScripts(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))
+  ag.forEach((src, i) => vm.runInContext(src, ctx, { filename: `agent#${i + 1}` }))
+  vm.runInContext(`
+    var BTN = {}
+    ;['ag-run', 'ag-start'].forEach(function (id) {
+      BTN[id] = { id: id, textContent: id, disabled: false, style: {}, handlers: [],
+        addEventListener: function (t, f) { if (t === 'click') this.handlers.push(f) } }
+    })
+    var _gidStart = document.getElementById
+    document.getElementById = function (id) { return BTN[id] || _gidStart(id) }
+    var RUN_URLS = []
+    fetch = function (url) { RUN_URLS.push(String(url)); return Promise.reject(new Error('render_check: 不联网')) }
+    bindOps()
+    var START_BOUND = BTN['ag-start'].handlers.length
+    var RUN_BOUND = BTN['ag-run'].handlers.length
+    BTN['ag-start'].handlers.forEach(function (f) { f() })
+    document.getElementById = _gidStart
+  `, ctx, { filename: 'assert-agent-start' })
+  const checks = [
+    ['两个按钮同屏时「启动智能体」绑上了点击', ctx.START_BOUND === 1],
+    ['「立即跑一次」也还绑着', ctx.RUN_BOUND === 1],
+    ['点「启动智能体」发 POST /api/quant/agent/run', ctx.RUN_URLS[0] === '/api/quant/agent/run'],
+    ['源码里不再有 ag-run || ag-start 这种只绑一个的写法', !/getElementById\('ag-run'\)\s*\|\|/.test(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 启动按钮 ·', name)
+    else { failed++; console.log('FAIL 启动按钮 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 启动按钮断言 ·', e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e)
+}
+
 // ─── 小鹿智能体 · 研究台(2026-09-13 · docs/agent-research-plan.md)──────────────
 // 要钉住的:
-//   ① 四列阶段按真实先后顺序(立项 → 全年回测 → 纸上跑 → 封存),卡片进对的列,淘汰的单独一块;
-//   ② 封存卡有「打开看板」「解除封存」;还没引擎的立项卡写明「还没有引擎」,不画数字格;
+//   ① 两列(2026-09-18 起):运行中(待写引擎 / 回测 / 纸上跑都在这里)· 封存;卡片进对的列,淘汰的单独一块;
+//   ② 封存卡有「打开看板」「解除封存」;还没引擎的卡写明「还没有引擎」,不画数字格;运行中的卡把冻结后的新数据单列;
 //   ③ 对照表只列跑出数据的线,被引用为对照组的那条带「对照组」;净值图每条有净值的线一条 path + 基准一条;
 //   ④ 全 null / 后端 404 骨架:四列照画、数据位 —,不出现 NaN / undefined / null 字面量;
 //   ⑤ 看板视图顶上只有分页(面包屑 2026-09-14 用户要求去掉),封存的线常驻提示条带「解除封存」(新功能入口不许藏 hover);
@@ -693,13 +732,24 @@ try {
           best_branch:'c', best_label:'方向 C · 三段式',
           metrics:{ pnl_pct:5.13, excess_pt:-6.51, max_dd_pct:-5.51, sells:14, win_rate:50, profit_factor:2.37,
                     sharpe:0.88, cycles:14, expectancy_net:364.15 }, nav:NAV3 },
-        { key:'donchian', label:'唐奇安突破线', status:'backtest', status_text:'全年回测',
+        { key:'breakout', label:'突破买入', status:'backtest', status_text:'运行中', column:'running',
+          frozen_at:'2026-09-15 13:25', frozen_through:'2026-09-14', frozen_note:'v14 财报风控',
+          oos:{ frozen_through:'2026-09-14', days:3, cycles:2, expectancy_net:120.5, win_rate:50, net:241, pnl_pct:0.42, last:'2026-09-17' },
+          branches:[{key:'breakout',label:'突破买入 · 基准',version:'v1'}], best_branch:'breakout', best_label:'突破买入 · 基准',
+          metrics:{ pnl_pct:9.43, excess_pt:-2.2, max_dd_pct:-2.81, sells:30, win_rate:58.8, profit_factor:2.1,
+                    sharpe:1.2, cycles:26, expectancy_net:361 }, nav:[0, 3, 9.43] },
+        { key:'limitup', label:'涨停后强势整理', status:'paper', status_text:'运行中', column:'running',
+          frozen_at:'2026-09-17 23:50', frozen_through:'2026-09-17', oos:{ frozen_through:'2026-09-17', days:0, cycles:0, expectancy_net:null, win_rate:null, net:0, pnl_pct:null, last:'2026-09-17' },
+          branches:[{key:'limitup',label:'涨停 · 基准',version:'v1'}], best_branch:'limitup', best_label:'涨停 · 基准',
+          metrics:{ pnl_pct:1.2, excess_pt:null, max_dd_pct:-0.43, sells:149, win_rate:55, profit_factor:1.3,
+                    sharpe:1, cycles:149, expectancy_net:50 }, nav:null },
+        { key:'donchian', label:'唐奇安突破线', status:'backtest', status_text:'运行中',
           hypothesis:'趋势一旦形成会延续', rules_draft:'进:收盘第一次突破前 55 日最高',
           compare_text:'VCP 波段线 · 方向 C · 三段式', kill_text:'…淘汰',
           verdict:{ decision:'wait', text:'全年回测进行中:已跑到 2026-05-01' },
           branches:[{key:'donchian',label:'唐奇安 · 基准',version:'v1'}], best_branch:'donchian', best_label:'唐奇安 · 基准',
           metrics:null, nav:null },
-        { key:'idea-1', label:'均线回踩线', status:'idea', status_text:'立项', custom:true,
+        { key:'idea-1', label:'均线回踩线', status:'idea', status_text:'待写引擎', custom:true,
           hypothesis:'回踩 EMA20 缩量企稳会延续', compare_text:'VCP 波段线 · 方向 C · 三段式', kill_text:'…淘汰',
           branches:[], best_branch:null, metrics:null, nav:null },
         { key:'old', label:'被淘汰的线', status:'killed', status_text:'淘汰',
@@ -729,43 +779,59 @@ try {
     const j = H.indexOf('data-stage=', i + 10)
     return i < 0 ? '' : H.slice(i, j < 0 ? H.indexOf('同口径对照') : j)
   }
+  // 一张卡的 HTML(按标题找):运行中那列里有好几张,断言要落到具体那张上
+  const card = (label) => {
+    const i = H.indexOf('<div class="t">' + label)
+    if (i < 0) return ''
+    const s0 = H.lastIndexOf('<div class="rs-card', i)
+    const e = H.indexOf('<div class="rs-card', i)
+    return H.slice(s0, e < 0 ? H.indexOf('同口径对照') : e)
+  }
   const at = (t) => H.indexOf(t)
   const banned = [/NaN/, /undefined/, />null</]
   const clean = (x) => banned.every((re) => !re.test(x))
   const checks = [
-    ['四列按先后顺序:立项 → 全年回测 → 纸上跑 → 封存',
-      at('data-stage="idea"') >= 0 && at('data-stage="idea"') < at('data-stage="backtest"') &&
-      at('data-stage="backtest"') < at('data-stage="paper"') && at('data-stage="paper"') < at('data-stage="archived"')],
+    ['⭐只有两列:运行中 → 封存(没有立项 / 全年回测 / 纸上跑列)',
+      at('data-stage="running"') >= 0 && at('data-stage="running"') < at('data-stage="archived"') &&
+      ['idea', 'backtest', 'paper'].every((k) => at('data-stage="' + k + '"') < 0) && (H.match(/class="rs-col"/g) || []).length === 2],
     ['封存的 VCP 进「封存」列', col('archived').indexOf('VCP 波段线') >= 0],
-    ['唐奇安进「全年回测」列、写着进度', col('backtest').indexOf('唐奇安突破线') >= 0 && col('backtest').indexOf('已跑到 2026-05-01') >= 0],
-    ['自建立项进「立项」列并写明还没有引擎', col('idea').indexOf('均线回踩线') >= 0 && col('idea').indexOf('还没有引擎') >= 0],
-    ['立项卡不画数字格(没有方向就没有数字)', col('idea').indexOf('rs-kv') < 0],
-    ['空列写「暂时没有」', col('paper').indexOf('暂时没有') >= 0],
-    ['淘汰的线不在看板四列里,在「淘汰记录」',
-      ['idea', 'backtest', 'paper', 'archived'].every((k) => col(k).indexOf('被淘汰的线') < 0) &&
+    ['⭐回测中 / 纸上跑 / 待写引擎的线都进「运行中」', ['突破买入', '涨停后强势整理', '唐奇安突破线', '均线回踩线'].every((t) => col('running').indexOf(t) >= 0)],
+    ['唐奇安卡写着回测进度', card('唐奇安突破线').indexOf('已跑到 2026-05-01') >= 0],
+    ['待写引擎的卡写明还没有引擎、状态标「待写引擎」', card('均线回踩线').indexOf('还没有引擎') >= 0 && card('均线回踩线').indexOf('待写引擎') >= 0],
+    ['待写引擎的卡不画数字格(没有方向就没有数字)', card('均线回踩线').indexOf('rs-kv') < 0 && card('均线回踩线').indexOf('rs-oos') < 0],
+    ['⭐冻结后单列:冻结时间、新交易日、x/30 笔、每笔净损益', /规则冻结于 2026-09-15 13:25\(v14 财报风控\)/.test(card('突破买入'))
+      && /新交易日 <b>3<\/b> 个 · 完整交易 <b>2\/30<\/b> 笔/.test(card('突破买入')) && /\+\$121|\+\$120/.test(card('突破买入'))],
+    ['全段数字标明含回测', card('突破买入').indexOf('全段(含回测)') >= 0],
+    ['冻结后还没有新交易日:写明从下一个交易日起计', card('涨停后强势整理').indexOf('还没有新交易日') >= 0],
+    ['没有冻结日的线不画冻结段', card('唐奇安突破线').indexOf('rs-oos') < 0],
+    ['运行中的线都有「封存」按钮(status 是 paper 也算)', /data-arch="1"[^>]*data-line="limitup"/.test(col('running')) && /data-arch="1"[^>]*data-line="breakout"/.test(col('running'))],
+    ['淘汰的线不在看板两列里,在「淘汰记录」',
+      ['running', 'archived'].every((k) => col(k).indexOf('被淘汰的线') < 0) &&
       H.slice(at('淘汰记录')).indexOf('<div class="rs-card killed">') >= 0],
     ['封存卡有「打开看板」和「解除封存」', /data-open="c"/.test(col('archived')) && /data-arch="0"/.test(col('archived'))],
-    ['回测中的卡有「封存」按钮', /data-arch="1"[^>]*data-line="donchian"/.test(col('backtest'))],
+    ['回测中的卡有「封存」按钮', /data-arch="1"[^>]*data-line="donchian"/.test(col('running'))],
     ['最好的方向带星标', /class="best">方向 C · 三段式 ★/.test(H)],
-    ['没算出来的数字位是 —', /完整交易<b><span class="ag-na">—<\/span><\/b>/.test(col('backtest'))],
-    ['对照表只列有数据的线(VCP + 淘汰的那条)', (H.match(/<tr( class="ref")?><td>/g) || []).length === 2],
+    ['没算出来的数字位是 —', /完整交易<b><span class="ag-na">—<\/span><\/b>/.test(card('唐奇安突破线'))],
+    ['对照表只列有数据的线(VCP + 突破 + 涨停 + 淘汰的那条)', (H.match(/<tr( class="ref")?><td>/g) || []).length === 4],
+    ['对照表阶段列写「运行中」', /<td><span class="rs-chip [a-z]*">运行中<\/span><\/td>/.test(H)],
     ['被引用为对照组的 VCP 那行带「对照组」', /<tr class="ref"><td>VCP 波段线 · 方向 C · 三段式<span class="rs-chip cool">对照组/.test(H)],
-    ['净值图:两条有净值的线 + 基准一条 = 3 条 path', (H.match(/<path d="M/g) || []).length === 3],
+    ['净值图:三条有净值的线 + 基准一条 = 4 条 path', (H.match(/<path d="M/g) || []).length === 4],
     ['基准是虚线', /stroke-dasharray="4 3"/.test(H)],
     ['新建入口常驻可见(按钮在研究台面板里)', /id="rs-new"/.test(H)],
     // 用户 2026-09-14 要求:研究台首页去掉扫描筛选入口卡(09-13 曾加在分页和研究台面板之间);运行看板那张同日也去掉
     ['研究台首页没有扫描筛选入口卡', H.indexOf('扫描筛选 · 找候选票') < 0 && !/打开扫描筛选/.test(H)],
     ['404 骨架里也没有扫描筛选入口卡', ctx.H_RSSKEL.indexOf('扫描筛选 · 找候选票') < 0],
-    ['研究台面板仍紧跟在分页之后', H.indexOf('rs-seg') >= 0 && H.indexOf('rs-seg') < at('从左到右是一条线必经的先后阶段')],
+    ['研究台面板仍紧跟在分页之后', H.indexOf('rs-seg') >= 0 && H.indexOf('rs-seg') < at('运行中 / 封存 · 淘汰的线收在下面')],
     ['研究台视图顶上是分页,研究台高亮', /data-go="research" class="on"/.test(H)],
     ['正常数据不出现 NaN / undefined / null', clean(H)],
     ['全 null 的线不出现 NaN / undefined / null', clean(ctx.H_RSNULL)],
     ['全 null 的线数字位全是 —', (ctx.H_RSNULL.match(/<b><span class="ag-na">—<\/span><\/b>/g) || []).length >= 6],
     ['全 null 净值不画线,写明还没有净值', ctx.H_RSNULL.indexOf('还没有净值数据') >= 0 && !/<path d="M/.test(ctx.H_RSNULL)],
-    ['后端 404 骨架:四列照画', ['idea', 'backtest', 'paper', 'archived'].every((k) => ctx.H_RSSKEL.indexOf('data-stage="' + k + '"') >= 0)],
+    ['后端 404 骨架:两列照画', ['running', 'archived'].every((k) => ctx.H_RSSKEL.indexOf('data-stage="' + k + '"') >= 0)],
     ['后端 404 骨架:顶上说明为什么是 —', /ag-banner dev/.test(ctx.H_RSSKEL) && clean(ctx.H_RSSKEL)],
     ['新建表单写出淘汰线并声明提交后锁定', ctx.H_RSFORM.indexOf('id="rs-f-submit"') >= 0 && ctx.H_RSFORM.indexOf('提交后这一栏锁定') >= 0
       && ctx.H_RSFORM.indexOf('每笔平均净损益 &lt; 0') >= 0],
+    ['新建表单(暂时保留)写明提交后进「运行中」标「待写引擎」', ctx.H_RSFORM.indexOf('提交后放在「运行中」、标「待写引擎」') >= 0 && />提交<\/button>/.test(ctx.H_RSFORM)],
     ['看板视图:分页里「运行看板」高亮', /data-go="dash" class="on"/.test(ctx.H_DASH)],
     // 用户 2026-09-14 要求去掉面包屑(和分页、方向卡、提示条重复)
     ['看板视图:分页右边没有面包屑', ctx.H_DASH.indexOf('rs-crumb') < 0 && !/<a href="#view=research"/.test(ctx.H_DASH)],
@@ -1360,8 +1426,29 @@ try {
     ['复制:多个参数按脚本里 input 的先后,同名参数只带一次,整词匹配', CP[1].text === 'input minStreak = 3;\ninput minStreak2 = 5;\ngreenStreak >= minStreak and greenStreak < minStreak2 * minStreak' && CP[1].params === 2],
     ['复制:没用参数的 def 原样一句', CP[2].text === 'def up = close > close[1];' && CP[2].params === 0],
     ['复制:函数参数里的参数也带上', CP[3].text === 'input minStreak2 = 5;\ndef ma = Average(close, minStreak2);'],
-    ['复制按钮说明会带参数', /title="复制这一条的脚本文本\(连同它用到的参数\)"/.test(String(ctx.EP_COPY_HTML))],
+    ['复制按钮说明会带参数', /title="复制这一条的脚本文本\(连同它用到的参数和中间定义,粘回生成框可直接用\)"/.test(String(ctx.EP_COPY_HTML))],
   ]
+  // 2026-09-17:复制出来的片段要自带**间接**依赖(rng3m 用到 minRng、c_depth 用到 rng3m),粘回生成框才认得。
+  // 顺序:参数在前(按脚本先后)、中间定义其次(按脚本先后)、这一条最后;没用到的定义 / 条件不带
+  vm.runInContext(`
+    S.conditions = [
+      { name: 'minRng', kind: 'input', expr: '0.15' },
+      { name: 'unused', kind: 'input', expr: '9' },
+      { name: 'hi', kind: 'def', expr: 'High.3M' },
+      { name: 'rng3m', kind: 'def', expr: '(hi - Low.3M) / hi' },
+      { name: 'c_price', kind: 'def', expr: 'close > 10', is_bool: true },
+      { name: 'c_depth', kind: 'def', expr: 'rng3m # 这里不用 unused\\n  >= minRng', is_bool: true },
+      { name: 'scan#1', kind: 'term', expr: 'rng3m < 0.5', is_bool: true },
+    ]
+    var TD_CP = [copySnippet(S.conditions[5]), copySnippet(S.conditions[6]), copySnippet(S.conditions[4])]
+  `, ctx)
+  const TD = ctx.TD_CP
+  ep.push(
+    ['⭐复制带上间接用到的中间定义与参数(按脚本先后)', TD[0].text === 'input minRng = 0.15;\ndef hi = High.3M;\ndef rng3m = (hi - Low.3M) / hi;\ndef c_depth = rng3m # 这里不用 unused\n  >= minRng;' && TD[0].params === 1 && TD[0].defs === 2],
+    ['复制 term 行也带中间定义', TD[1].text === 'def hi = High.3M;\ndef rng3m = (hi - Low.3M) / hi;\nrng3m < 0.5' && TD[1].defs === 2],
+    ['没依赖的条件原样一句', TD[2].text === 'def c_price = close > 10;' && TD[2].params === 0 && TD[2].defs === 0],
+    ['生成请求在追加时带上当前脚本当 context', /context: appending \? buildScript\(true\) : null/.test(sc)],
+  )
   for (const [name, ok] of ep) {
     if (ok) console.log('PASS 编辑框参数值 ·', name)
     else { failed++; console.log('FAIL 编辑框参数值 ·', name, ' | ', JSON.stringify({ W, A, B, C, D, E, RT, CP }), html.slice(html.indexOf('cd-edit"'), html.indexOf('cd-edit"') + 160)) }
@@ -1439,9 +1526,9 @@ try {
   const sc = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
   const hk = [
     // 2026-09-14 起 market / asOf 在发请求那一刻就取下来(等 5 秒的这段时间里用户可能切了市场)
-    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: market, asOf: asOf \}/.test(sc)],
+    ['runScan 记下跑出结果表的那份脚本', /S\.resultScan = \{ script: script, market: market, asOf: asOf, runAt: Date\.now\(\) \}/.test(sc)],
     ['筛选器把命中日来源挂到悬停日K 上', /KC\.markOf = hitDaysOf/.test(sc)],
-    ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf \}\)/.test(sc)],
+    ['命中日请求带脚本、市场、代码、截止日', /post\(HITS_API, \{ script: sc\.script, market: sc\.market, code: code, as_of: sc\.asOf, in_result: inResult \}\)/.test(sc)],
     ['app.js:等标记之后再比一次 seq(防止画到别的票上)', /await KC\.markOf\(code, td\)[\s\S]{0,160}if \(seq !== KC\.seq\) return/.test(appJs)],
     ['app.js:0 天命中也写进图例', /mark\.alwaysScan/.test(appJs)],
     ['app.js:算不出的天数单独写', /天算不出/.test(appJs)],
@@ -1978,6 +2065,22 @@ try {
       MB.runResult = S.result && S.result.matched
       MB.runLeft = S.quota.scan.remaining
       MB.runToast = TOASTS.join(' | ')
+      // 自用本地部署 SCREEN_SCAN_GAP_S=0:后端 quota 回 scan_gap_s 0 → 不倒数、直接出结果
+      var gapBox = [], saveQ = S.quota
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: 0 }); gapBox.push(revealSeconds())
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: -1 }); gapBox.push(revealSeconds())
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: '0' }); gapBox.push(revealSeconds())
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: 2.5 }); gapBox.push(revealSeconds())
+      S.quota = null; gapBox.push(revealSeconds())
+      MB.gapSecs = gapBox
+      S.quota = Object.assign({}, saveQ, { scan_gap_s: 0 })
+      REVEALED = null; S.result = null
+      NEXT = { ok: true, status: 200, data: { matched: 4, rows: [] } }
+      await runScan()
+      MB.gap0Revealed = REVEALED
+      MB.gap0Result = S.result && S.result.matched
+      MB.gap0Reveal = S.reveal
+      S.quota = saveQ
       MB.mutate = true
       S.conditions[0].expr = 'close > 20'
       await runScan()
@@ -2038,6 +2141,9 @@ try {
     const as = [
       ['单条测试带 probe:true(不扣扫描次数)', MB.probeBody && MB.probeBody.probe === true],
       ['扫描后调用等待 5 秒', MB.runRevealed === 5],
+      ['scan_gap_s:0 → 0 秒;负数 / 字符串 / 没额度 → 按 5;小数向上取整',
+        JSON.stringify(MB.gapSecs) === JSON.stringify([0, 5, 5, 3, 5])],
+      ['scan_gap_s 为 0:不调 revealAfter、直接出结果', MB.gap0Revealed === null && MB.gap0Result === 4 && !MB.gap0Reveal],
       ['等完才放结果', MB.runResult === 9],
       ['返回的剩余次数记上', MB.runLeft === 11],
       ['每用一次提示剩余', /本次扫描计 1 次,今天还剩 11 \/ 20 次/.test(MB.runToast)],
@@ -2177,6 +2283,106 @@ for (const page of ['index.html', 'factors.html', 'workbench.html', 'backtest.ht
   if (ok) console.log('PASS 标签页图标 ·', page)
   else { failed++; console.log('FAIL 标签页图标 ·', page, '没有声明 /icon.png') }
 }
+
+// ─── 小鹿 · 按线的货币符号(2026-09-17 A 股「涨停后强势整理」线)──────────
+// 看板金额跟 d.currency.symbol 走,研究台每条线跟 ln.currency 走;没给就是美元(老接口 / 美股线)。
+// 前科风险:money() 原来写死 '$',A 股线的 1 万人民币会显示成 $10,000
+try {
+  const ctx = vm.createContext(makeContext('agent.html'))
+  vm.runInContext(appJs, ctx, { filename: 'app.js' })
+  inlineScripts(fs.readFileSync(path.join(DIR, 'agent.html'), 'utf8'))
+    .forEach((src, i) => vm.runInContext(src, ctx, { filename: `agent-ccy#${i + 1}` }))
+  vm.runInContext(`
+    var CCY_BASE = { state:'running', paper:true, version:'v1', day_count:2,
+      strategy:{ name:'涨停后强势整理(A 股)', version:'v1', summary:'x', market_label:'A股' },
+      guardrails:{ initial_capital:1000000, long_only:true, triggered_today:false },
+      overview:{ pnl_abs:-12345, pnl_pct:-1.23, equity:987655, cash:900000, benchmark_symbol:'沪深300' },
+      nav:{ points:[], benchmark_symbol:'沪深300' }, rules:[], holdings:{ items:[] }, watchlist:{ items:[] },
+      trades:{ items:[] }, versions:[], lessons:[] }
+    var H_CNY = render(Object.assign({}, CCY_BASE, { currency:{ symbol:'¥', code:'CNY', unit:'元', market:'a' },
+      guardrails:{ initial_capital:1000000, long_only:true, triggered_today:false, guards_off:true,
+                   daily_loss_halt_pct:null, consecutive_loss_pause:null } }))
+    var H_USD = render(CCY_BASE)
+    var H_RS_CCY = rsCard({ key:'limitup', label:'涨停后强势整理', status:'backtest', status_text:'全年回测',
+      branches:[{ key:'limitup', label:'基准' }], best_branch:'limitup', currency:{ symbol:'¥' },
+      metrics:{ pnl_pct:-1, excess_pt:null, max_dd_pct:-2, cycles:30, win_rate:40, expectancy_net:-25 } })
+    var H_RS_USD = rsCard({ key:'donchian', label:'唐奇安', status:'backtest', status_text:'全年回测',
+      branches:[{ key:'donchian', label:'基准' }], best_branch:'donchian',
+      metrics:{ pnl_pct:-1, excess_pt:null, max_dd_pct:-2, cycles:30, win_rate:40, expectancy_net:-437 } })
+  `, ctx, { filename: 'assert-currency' })
+  const checks = [
+    ['A 股线看板金额用 ¥', /-¥12,345/.test(ctx.H_CNY) && /¥1,000,000/.test(ctx.H_CNY)],
+    ['A 股线看板不出现 $', !/\$\d/.test(ctx.H_CNY)],
+    ['没给 currency 仍是 $(美股线不变)', /-\$12,345/.test(ctx.H_USD) && !/¥/.test(ctx.H_USD)],
+    ['渲染过 A 股线后再渲染美股线,符号换回 $', /\$1,000,000/.test(ctx.H_USD)],
+    ['不设护栏的线写「不设」,不是 —', /单日亏损熔断 <b>不设<\/b>/.test(ctx.H_CNY) && /连亏停机 <b>不设<\/b>/.test(ctx.H_CNY)],
+    ['研究台卡片按线的货币', /-¥25/.test(ctx.H_RS_CCY) && /-\$437/.test(ctx.H_RS_USD)],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 小鹿货币 ·', name)
+    else { failed++; console.log('FAIL 小鹿货币 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 小鹿货币 · 断言脚本本身出错 ·', e && e.stack ? e.stack.split('\n')[0] : e)
+}
+
+// ─── 筛选器 · 扫描当日以结果表为准(2026-09-19)──────────────────────────
+// 悬停日K 取命中日时要带 in_result(票在这次实时结果表里)、缓存键带 runAt(重扫就重取);有 note 的常驻显示
+try {
+  const src = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')
+  const checks = [
+    ['hit-days 请求带 in_result', /in_result:\s*inResult/.test(src)],
+    ['回溯结果不传 in_result(同一份日线本来一致)', /const inResult = !sc\.asOf/.test(src)],
+    ['HITS 缓存键带 runAt', /sc\.runAt/.test(src) && /runAt: Date\.now\(\)/.test(src)],
+    ['有扫描当日可标时不当成算不出', /!\(Array\.isArray\(d\.hits\) && d\.hits\.length\)/.test(src)],
+    ['图例常驻显示 noteShow', /mark\.noteShow/.test(appSrc)],
+  ]
+  for (const [name, ok] of checks) {
+    if (ok) console.log('PASS 扫描当日蓝线 ·', name)
+    else { failed++; console.log('FAIL 扫描当日蓝线 ·', name) }
+  }
+} catch (e) {
+  failed++
+  console.log('FAIL 扫描当日蓝线 · 断言脚本出错 ·', e && e.message)
+}
+
+// ─── 筛选器 · 结果表里的票日K 最后一根一定是蓝的(2026-09-19 用户)──────────────
+// 从页面源码里抠出 pinLastBar,用假日K 真跑:快照日早于最后一根时补标挪到最后一根,真命中不挪,日K 落后时如实写明
+;(async () => {
+  try {
+    const src = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+    const i = src.indexOf('async function pinLastBar')
+    const j = src.indexOf('// 单独测试一条', i)
+    const body = src.slice(i, j)
+    const mk = (tsList) => new Function('kcFetch', body + '; return pinLastBar')(
+      async () => ({ rows: tsList.map(function (t) { return { ts: t } }) }))
+    const res = []
+    let out = { scan: ['2026-09-11', '2026-09-17'] }
+    await mk(['2026-09-17', '2026-09-18'])(out, { scan_day: '2026-09-17', scan_pinned: true, scan_note: 'x' }, 'LPCV')
+    res.push(['快照日早于最后一根且是补标 → 挪到最后一根', out.scan.join() === '2026-09-11,2026-09-18' && /2026-09-18/.test(out.pinNote)])
+    out = { scan: ['2026-09-17'] }
+    await mk(['2026-09-17', '2026-09-18'])(out, { scan_day: '2026-09-17' }, 'X')
+    res.push(['快照日是回算真命中 → 保留,最后一根另加', out.scan.join() === '2026-09-17,2026-09-18'])
+    out = { scan: ['2026-09-18'] }
+    await mk(['2026-09-18'])(out, { scan_day: '2026-09-18', scan_pinned: true, scan_note: '扫描当日 2026-09-18 按扫描结果标为命中' }, 'X')
+    res.push(['快照日 = 最后一根 → 不动,补标说明常驻', out.scan.join() === '2026-09-18' && /按扫描结果/.test(out.pinNote)])
+    out = { scan: ['2026-09-18'] }
+    await mk(['2026-09-17'])(out, { scan_day: '2026-09-18', scan_pinned: true }, 'X')
+    res.push(['日K 落后于快照日 → 不乱标,写明日K 只到哪天', out.scan.join() === '2026-09-18' && /只到 2026-09-17/.test(out.pinNote)])
+    res.push(['hitDaysOf 对结果表里的票调 pinLastBar', /inResult && d\.scan_day\) await pinLastBar/.test(src)])
+    const appSrc = fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')
+    res.push(['图例有「算不出」时照样显示补标说明', /mark\.pinNote \|\| \(!mark\.unknown && mark\.noteShow\)/.test(appSrc)])
+    for (const [name, ok] of res) {
+      if (ok) console.log('PASS 最后一根蓝线 ·', name)
+      else { failed++; console.log('FAIL 最后一根蓝线 ·', name) }
+    }
+  } catch (e) {
+    failed++
+    console.log('FAIL 最后一根蓝线 · 断言脚本出错 ·', e && e.message)
+  }
+})()
 
 // setImmediate:上面有一组断言挂在 async 函数的 await 链上(微任务),同步退出会跳过它们
 setImmediate(() => {
