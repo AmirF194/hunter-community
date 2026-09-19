@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { Activity, User as UserIcon, Zap, Info, Loader2, ExternalLink, Save, Check, X } from 'lucide-react'
+import { Activity, User as UserIcon, Zap, Info, Loader2, ExternalLink, Save, Check, X, Cpu, Lock, Wand2 } from 'lucide-react'
 
 const API = process.env.NEXT_PUBLIC_API_URL || ''
 
@@ -25,7 +25,7 @@ interface SaasConfig {
   kronos_key_masked?: string | null
 }
 
-type TabId = 'account' | 'saas' | 'about'
+type TabId = 'account' | 'llm' | 'saas' | 'about'
 
 export default function SettingsPage() {
   const router = useRouter()
@@ -50,11 +50,13 @@ export default function SettingsPage() {
       <div style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px', display: 'grid', gridTemplateColumns: '200px 1fr', gap: 24 }}>
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <TabButton active={tab === 'account'} onClick={() => setTab('account')} icon={<UserIcon size={15} />} label="账户" />
+          <TabButton active={tab === 'llm'} onClick={() => setTab('llm')} icon={<Cpu size={15} />} label="大模型" />
           <TabButton active={tab === 'saas'} onClick={() => setTab('saas')} icon={<Zap size={15} />} label="SaaS 加速" />
           <TabButton active={tab === 'about'} onClick={() => setTab('about')} icon={<Info size={15} />} label="关于" />
         </nav>
         <div>
           {tab === 'account' && <AccountTab me={me} />}
+          {tab === 'llm' && <LlmTab />}
           {tab === 'saas' && <SaasTab />}
           {tab === 'about' && <AboutTab />}
         </div>
@@ -230,6 +232,108 @@ function SaasTab() {
           </span>
         )}
       </div>
+    </Card>
+  )
+}
+
+// ── 大模型(M2 · 设计方案 4.1「设置页入口」)──────────────────────
+//
+// 两件事:看当前配置、重新跑一遍初始化向导(换模型用)。
+//
+// **环境变量锁定时只读展示并说明为什么改不了** —— 演示站这类 .env 里锁死配置的
+// 部署,这里给一个点不动的按钮比给一个点了报 409 的按钮好。
+function LlmTab() {
+  const router = useRouter()
+  const [st, setSt] = useState<any>(null)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let token = ''
+    try { token = localStorage.getItem('hunter_token') || '' } catch { /* 隐私模式 */ }
+    fetch('/api/setup/status', {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      cache: 'no-store',
+    })
+      .then(async r => {
+        const d = await r.json().catch(() => null)
+        if (!r.ok) throw new Error(d?.detail?.message || d?.message || `HTTP ${r.status}`)
+        setSt(d)
+      })
+      .catch(e => setErr(String(e?.message || e)))
+  }, [])
+
+  const rerun = async () => {
+    setBusy(true); setErr('')
+    let token = ''
+    try { token = localStorage.getItem('hunter_token') || '' } catch { /* 隐私模式 */ }
+    try {
+      const r = await fetch('/api/setup/reopen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: '{}',
+      })
+      if (!r.ok) {
+        const d = await r.json().catch(() => null)
+        throw new Error(d?.detail?.message || d?.message || `HTTP ${r.status}`)
+      }
+      router.push('/setup')
+    } catch (e: any) {
+      setErr(String(e?.message || e)); setBusy(false)
+    }
+  }
+
+  if (err) return <Card title="大模型"><span style={{ fontSize: 13, color: 'var(--red)' }}>{err}</span></Card>
+  if (!st) return <Card title="大模型"><Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /></Card>
+
+  const llm = st.llm || {}
+  const locked = !!llm.env_locked
+  const ENV_NAME: Record<string, string> = {
+    base_url: 'LLM_BASE_URL', model: 'LLM_DEFAULT_MODEL', api_key: 'LLM_API_KEY',
+  }
+  const SRC_CN: Record<string, string> = {
+    env: '环境变量(.env)', db: '向导写入(数据库)', none: '未配置',
+  }
+
+  return (
+    <Card title="大模型">
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: '0 0 16px', lineHeight: 1.6 }}>
+        对话、分析、报告都用这台实例配的大模型。key 加密存在本机数据库里,这里只显示末 4 位。
+      </p>
+      <Row label="状态" value={llm.configured
+        ? <span style={{ color: 'var(--green,#10b981)' }}>已配置</span>
+        : <span style={{ color: 'var(--red)' }}>未配置</span>} />
+      <Row label="模型" value={llm.model || '-'} />
+      <Row label="接口地址" value={llm.base_url || '-'} />
+      <Row label="API key" value={llm.api_key_masked || '-'} />
+      <Row label="schema 清洗" value={llm.sanitize || '-'} />
+      {(['base_url', 'model', 'api_key'] as const).map(k => (
+        <Row key={k} label={ENV_NAME[k]}
+             value={<span style={{ fontSize: 13 }}>{SRC_CN[(llm.locked_items || {})[k]] || '未配置'}</span>} />
+      ))}
+
+      {locked ? (
+        <div style={{ marginTop: 20, padding: 12, background: 'var(--bg-panel)', border: '1px dashed var(--border)', borderRadius: 8, fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+          <strong style={{ color: 'var(--text)', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Lock size={13} /> 这台实例的大模型配置已锁定
+          </strong>
+          <div style={{ marginTop: 6 }}>
+            配置写在环境变量里,向导改不了它。要换模型请改部署目录的 <code>.env</code>,
+            然后 <code>docker compose up -d</code>（<strong>不是 restart</strong> —— restart 不会重新读 .env）。
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 20 }}>
+          <button onClick={rerun} disabled={busy}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: busy ? 'var(--bg-panel)' : 'var(--blue)', color: busy ? 'var(--text-muted)' : '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: busy ? 'not-allowed' : 'pointer' }}>
+            <Wand2 size={14} /> 重新运行初始化向导
+          </button>
+          <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--text-muted)' }}>
+            换模型走这里:向导会当场检测连通 / 对话 / 工具调用三项,通过才让保存。
+            已保存的配置不会被清掉,你可以在向导里看到当前值。
+          </div>
+        </div>
+      )}
     </Card>
   )
 }

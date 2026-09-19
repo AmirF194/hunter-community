@@ -1,60 +1,52 @@
 #!/bin/sh
-# opencode 容器入口 · 补两件镜像没做的事,再交给 opencode 本体。
+# opencode 容器入口 · 只做一件镜像做不了的事:按 .env 现生成 provider 配置。
 #
-# ① MCP 依赖版本
-#    镜像里 4 个 MCP 脚本用的是 mcp<2 的 API(@server.list_tools() 装饰器),
-#    但镜像构建时没锁版本,装进去的是 mcp 2.0.0 —— 脚本一启动就
-#    AttributeError: 'Server' object has no attribute 'list_tools',
-#    于是所有工具都注册不上,左侧 SKILL 点了没反应。
-#    这里兜一下。**真正该修的地方是 huntercode 的 Dockerfile 锁 "mcp<2"**,
-#    镜像修好后下面这段会自动变成空转(检测到能用就不装)。
+# opencode 只从配置文件读 provider,不认 LLM_* 环境变量 —— 不生成这个文件,它会回落到
+# 内置的 OpenCode Zen,你在 .env 里填的网关根本不会被调用,现象是「能聊天但答得驴唇不对马嘴」。
+# 改完 .env 重新 `docker compose up -d opencode` 即生效。
 #
-# ② opencode.json
-#    镜像自带 plugins/ 和 mcp/ 却没有把它们串起来的配置文件,而 opencode 只认
-#    配置文件里的 provider、不认 LLM_* 环境变量 —— 不生成的话它会回落到内置的
-#    OpenCode Zen,根本不去调你配的网关。
-#
-# ⚠️ 末尾 exec 与镜像 ENTRYPOINT 保持一致,镜像若改了启动参数这里要跟着改。
-#    查当前值:docker inspect ghcr.io/agentpit-io/hunter-opencode:latest \
-#              --format '{{json .Config.Entrypoint}}'
+# 以前这里还补三件事,现在都在源头修好了,故删除:
+#   · pip 补装 mcp<2 —— 镜像自 1.18.12-slim.1 起用 pip --target 装的就是 1.x
+#   · sed 改 uzi_mcp.py 的 httpx 超时 —— 改成读 UZI_HTTP_TIMEOUT(见 scripts/opencode-mcp/uzi_mcp.py)
+#   · sed 改 .opencode/opencode.jsonc 的 MCP timeout —— 镜像源头已是 180000
 set -e
 
-if python3 -c 'import mcp.server,sys; sys.exit(0 if hasattr(mcp.server.Server("probe"),"list_tools") else 1)' 2>/dev/null; then
-    echo "[boot] mcp SDK 版本可用,跳过安装"
-else
-    echo "[boot] mcp SDK 不兼容(镜像装的是 2.x,脚本要 1.x),补装中…"
-    # --user 装到 /home/hunter/.local · --break-system-packages 是 PEP 668 的要求,
-    # 这是容器不是系统 Python,没有"弄坏发行版"的风险
-    pip install --user --break-system-packages --quiet --no-warn-script-location "mcp<2" \
-        || echo "[boot] ⚠️ 补装失败 —— 工具类 SKILL 会不可用,聊天不受影响"
+# ── 会话数据目录可写自检(R0 预研结论第四节)────────────────────────
+# 会话正文(opencode-local.db)与审计日志都写在 /home/hunter/.local 下。
+# 这个目录不可写时,opencode 的插件会在 mkdir 处崩掉 —— 容器进入重启循环,
+# 日志里只有一句 `EACCES: permission denied, mkdir ...`,看不出是卷属主的问题。
+# 与其等它崩,不如在这里拦下并说清原因。
+#
+# Docker 具名卷不会出这个问题:空卷首次挂载会把镜像里该路径的内容与属主
+# (1001:1001)拷进卷。K8s / 云平台的 PVC 不拷贝,卷根属主是平台给的(实测
+# 1000:1003 或 0:0),容器以 1001 跑就写不进去。
+if [ ! -w /home/hunter/.local ]; then
+    owner=$(stat -c '%u:%g' /home/hunter/.local 2>/dev/null || echo '未知')
+    echo "[boot] ❌ 会话数据目录 /home/hunter/.local 不可写(当前属主 ${owner},容器以 uid 1001 运行)。" >&2
+    echo "[boot]    Docker 具名卷不会出这个问题;K8s / 云平台的 PVC 需要把卷属主设成 1001" >&2
+    echo "[boot]    (securityContext.fsGroup: 1001)或加一个 initContainer 执行 chown。" >&2
+    exit 1
 fi
+
+# ── 密钥(设计方案 3.2 · M1 子任务 C)────────────────────────────
+# 必须 `.`(source)进来,不能直接执行 —— 直接执行的话 export 只作用于子进程,
+# opencode 本体拿不到 JWT_SECRET,hunter-auth 插件验不了签,表现是对话莫名 401。
+# 环境变量非空时优先(云平台走模板注入),否则读 hunter_secrets 卷里的 secrets.env
+# (本地 compose 由 api 首启时生成)。读不到只告警不退出。
+. /opt/hunter-boot/load-secrets.sh
 
 python3 /opt/hunter-boot/gen-config.py
 
-# ③ MCP 超时兜底(两层)
-#
-#    层 A · uzi_mcp.py 里 httpx 客户端写死 timeout=25.0 →
-#            后端 finance-data 7 路抓 + LLM 合成 22-30s 起步,25s 极易踩线,
-#            超时后 tool 返 ReadTimeout,LLM 就说"深度分析服务不可用"。
-#            in-place 拉到 120s。
-#
-#    层 B · opencode 自己 .opencode/opencode.jsonc 里所有 MCP 都 "timeout": 30000 ms →
-#            即使层 A 抬到 120s,opencode 也会在 30s 时把 tool 掐掉、直接
-#            "(pending / no output)" 回给 LLM(见 packages/opencode/src/mcp/index.ts
-#            DEFAULT_TIMEOUT = 30_000)。开源版深度分析 62s、组合建议 45s+ 都要它。
-#            统一抬到 180000(3 分钟),给一切工具留缓冲。
-#
-#    镜像修好后可删。
-UZI_MCP=/opt/opencode-workspace/mcp/uzi_mcp.py
-if [ -w "$UZI_MCP" ] && grep -q "timeout=25.0" "$UZI_MCP" 2>/dev/null; then
-    sed -i 's/timeout=25\.0/timeout=120.0/g' "$UZI_MCP" \
-        && echo "[boot] uzi_mcp httpx timeout 25s → 120s"
+# 新镜像(1.18.12-slim.1 起)是单文件二进制,旧镜像只有 bun + 源码。两种都要能起来:
+# 本脚本现在是 COPY 进包装镜像的(M1 · 见 deploy/opencode.Dockerfile),但基础镜像的
+# 版本由 OPENCODE_TAG 决定,用户把它钉回旧标签是常态 —— 那时没有 opencode 二进制,
+# 由镜像里的 bun 垫片兜住。(开发时仍可用 docker-compose.dev.yml 把本目录挂回去。)
+# 监听地址:默认 0.0.0.0。Railway 老环境的私有网络是 IPv6-only,那里要设 HUNTER_BIND_HOST=::
+BIND_HOST="${HUNTER_BIND_HOST:-0.0.0.0}"
+
+if command -v opencode >/dev/null 2>&1; then
+    exec opencode serve --hostname "$BIND_HOST" --port 3901
 fi
 
-MCP_CFG=/opt/opencode-workspace/.opencode/opencode.jsonc
-if [ -w "$MCP_CFG" ] && grep -q '"timeout": 30000' "$MCP_CFG" 2>/dev/null; then
-    sed -i 's/"timeout": 30000/"timeout": 180000/g' "$MCP_CFG" \
-        && echo "[boot] opencode MCP timeout 30s → 180s(否则 opencode 会在 30s 掐 tool → 前端显示'no output')"
-fi
-
-exec bun run packages/opencode/src/index.ts serve --hostname 0.0.0.0 --port 3901
+echo "[boot] 镜像里没有 opencode 二进制(旧镜像),回落到源码启动" >&2
+exec bun run packages/opencode/src/index.ts serve --hostname "$BIND_HOST" --port 3901

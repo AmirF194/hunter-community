@@ -18,77 +18,164 @@
   · 上游地址从环境变量读,不再写死
   · 支持 GET(opencode 会拉 /v1/models)
   · 路径按 base_url 的前缀重写,兼容非 /v1 的网关
+
+M1(设计方案 3.3)又加了三件事:
+  · **缺 LLM_BASE_URL 不再退出** —— 配置可能存在数据库里,地址由请求头带来
+  · 上游地址优先取请求头 `X-Hunter-Upstream`,并做白名单校验(check_upstream):
+    只允许 http/https,拒绝内部服务名、回环、链路本地(云元数据)与内网地址,
+    防止 shim 被当成访问内网的跳板。自建内网网关请显式设 LLM_SHIM_ALLOW_PRIVATE=1
+  · 没配置 / 地址不让用时**立刻**回一个 OpenAI 兼容错误(流式回合法 SSE),
+    绝不拖到上游超时 —— R0 §1.5 实测上游不可达时对话会挂住 100 秒以上,
+    用户完全看不出发生了什么
+schema 清洗规则挪去了 schema_clean.py(向导的工具调用检测要用同一份)。
 """
+import ipaddress
 import json
 import os
 import re
-import sys
+import socket
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# 上游真实网关,例如 http://104.197.139.51:3000/v1
+from schema_clean import clean, clean_tools, ensure_object_schema  # noqa: F401
+
+# 环境变量里的默认上游网关。**空着也能启动**(M1):配置可能存在数据库里,
+# 由 opencode 的 provider 通过 `X-Hunter-Upstream` 请求头逐次带过来。
 UPSTREAM = (os.environ.get("LLM_BASE_URL") or "").strip().rstrip("/")
 LISTEN_PORT = int(os.environ.get("SHIM_PORT", "3999"))
-# 我们对外假装成 /v1,收到的 /v1/xxx 会被转成 UPSTREAM + /xxx
+# 监听地址默认 0.0.0.0;Railway 老环境私有网络 IPv6-only,那里设 HUNTER_BIND_HOST=::
+LISTEN_HOST = os.environ.get("HUNTER_BIND_HOST") or "0.0.0.0"
+# 我们对外假装成 /v1,收到的 /v1/xxx 会被转成 上游 + /xxx
 LISTEN_PREFIX = "/v1"
+# opencode 送来的上游地址走这个头(gen-config.py / opencode_admin.apply_llm 写的)
+UPSTREAM_HEADER = "X-Hunter-Upstream"
 
 # 允许关闭 think 剥离(默认开)· 出 bug 时可紧急关掉不重构
 STRIP_THINK = os.environ.get("LLM_STRIP_THINK", "1") == "1"
 
-# Gemini 不认的 JSON Schema 关键字。删掉不影响语义 —— 它们只是更严格的约束,
-# 而工具调用的正确性由 tool 自身的参数校验兜底。
-STRIP = {
-    "additionalProperties", "exclusiveMinimum", "exclusiveMaximum",
-    "const", "patternProperties", "dependentRequired", "dependentSchemas",
-    "if", "then", "else", "not", "minContains", "maxContains",
-    "unevaluatedItems", "unevaluatedProperties", "propertyNames",
-    "maxProperties", "minProperties",
-    "$schema", "$id", "$defs", "$ref",
+# 放行内网上游。**默认关**:shim 是容器内服务,能访问 docker 网络里的一切,
+# 上游地址又是用户可填的 —— 不校验就等于给了一个「让 shim 替我访问内网」的按钮
+# (SSRF)。确实要用自建内网网关的人显式打开它,并且自己承担风险。
+# 打开之后**仍然**拒绝:内部服务名、链路本地地址(含 169.254.169.254 云元数据)。
+ALLOW_PRIVATE = (os.environ.get("LLM_SHIM_ALLOW_PRIVATE") or "").strip() in ("1", "true", "yes", "on")
+
+# 这套部署自己的容器名。它们没有一个是大模型网关:
+# api/web 是我们自己的服务(拿它当上游 = 让 shim 替人打内部接口),
+# llm-shim 是自己(无限套娃),postgres/redis/opencode 同理。
+# **ALLOW_PRIVATE 也不放行这一组** —— 没有任何正当理由要往这儿转发。
+INTERNAL_HOSTS = {
+    "api", "web", "postgres", "redis", "opencode", "llm-shim", "llm_shim", "shim",
 }
 
+# 未配置时的占位模型名(见 scripts/opencode/gen-config.py)
+PLACEHOLDER_MODEL = "hunter-unconfigured"
 
-def clean(node):
-    if isinstance(node, dict):
-        # allOf/oneOf/anyOf 一律塌缩成第一个分支 —— Gemini 不支持组合子句,
-        # 保留第一支比整个丢掉更接近原意
-        for k in ("allOf", "oneOf", "anyOf"):
-            if k in node and isinstance(node[k], list) and node[k]:
-                first = clean(node[k][0]) or {}
-                sib = {kk: clean(vv) for kk, vv in node.items()
-                       if kk not in ("allOf", "oneOf", "anyOf")}
-                sib.update(first)
-                return clean(sib)
-        out = {}
-        for k, v in node.items():
-            if k in STRIP:
-                continue
-            out[k] = clean(v)
-        # Gemini 要求 array 必须声明 items
-        if out.get("type") == "array" and "items" not in out:
-            out["items"] = {"type": "string"}
-        return out
-    if isinstance(node, list):
-        return [clean(x) for x in node]
-    return node
+# ⚠️ 措辞以**不撒谎**为准:写进去的每一条路都得真的存在。
+# M2 起首启向导(/setup)已经上线,所以这里改成指向它;M1 时期那句
+# 「或等初始化向导上线后在首页完成配置」已经作废。
+UNCONFIGURED_MSG = (
+    "大模型尚未配置:这套部署还没有可用的大模型地址。"
+    "打开浏览器访问这台实例的 /setup 完成首启向导即可(不用改任何文件);"
+    "也可以在 .env 里填好 LLM_BASE_URL / LLM_API_KEY / LLM_DEFAULT_MODEL 后 docker compose up -d。"
+)
 
 
-def _ensure_object_schema(schema):
-    """DeepSeek / OpenAI 严格模式要求 tool 的 parameters 必须是 type=object 的
-    JSON Schema。opencode 打包某些 MCP tool 时(比如 github-pr-search)会送来
-    `null` 或 `{"type": "null"}`,DeepSeek 会直接 400:
-        Invalid schema for function 'xxx': schema must be a JSON Schema
-        of 'type: "object"', got 'type: "null"'.
-    这里统一兜底成合法 object schema,保留其它字段(description 等)。
+def check_upstream(url: str, allow_private=None):
+    """校验上游地址 → (是否放行, 中文原因)。
+
+    只允许 http/https;拒绝内部服务名、回环、链路本地(含云元数据
+    169.254.169.254)、私有网段、保留与组播地址。
+
+    ⚠️ **必须解析一次 DNS 再判断 IP**,不能只看字符串:攻击者可以让一个公网域名
+    解析到 127.0.0.1 或 169.254.169.254,字符串上完全看不出来。
     """
-    if not isinstance(schema, dict):
-        return {"type": "object", "properties": {}}
-    t = schema.get("type")
-    if t is None or t in ("null", "None"):
-        schema = {**schema, "type": "object"}
-    if schema.get("type") == "object" and "properties" not in schema:
-        schema["properties"] = {}
-    return schema
+    if allow_private is None:
+        allow_private = ALLOW_PRIVATE
+    raw = (url or "").strip()
+    if not raw:
+        return False, "上游地址为空"
+    try:
+        p = urllib.parse.urlparse(raw)
+    except ValueError as e:
+        return False, f"上游地址解析失败({type(e).__name__})"
+    if p.scheme not in ("http", "https"):
+        return False, f"上游地址只允许 http/https,收到 {p.scheme or '(没有协议头)'}"
+    try:
+        host = (p.hostname or "").strip().rstrip(".").lower()
+        port = p.port or (443 if p.scheme == "https" else 80)
+    except ValueError as e:
+        return False, f"上游地址里的主机名/端口不合法({e})"
+    if not host:
+        return False, "上游地址里没有主机名"
+    if host in INTERNAL_HOSTS:
+        return False, f"上游地址指向本部署的内部服务 {host},不允许"
+    if host == "localhost" or host.endswith(".localhost"):
+        if not allow_private:
+            return False, "上游地址指向本机回环(localhost),不允许"
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        # 解析不了就不放行。转发过去也是失败,而这里能给一句看得懂的话。
+        return False, f"解析不了上游主机名 {host}"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        # ⚠️ 判断顺序是从具体到笼统,别调换:IPv4 的 is_private 把回环与链路本地也
+        # 算在内,而 IPv6 的 `::1` 连 is_reserved 都为真 —— 先判笼统的,报出来的
+        # 原因就会变成没头没脑的「保留地址」。
+        if ip.is_link_local:
+            # 169.254.0.0/16 · 云厂商元数据服务(169.254.169.254)就在这里,
+            # 它能吐出实例凭证 —— **ALLOW_PRIVATE 也不放行**。
+            return False, f"上游地址解析到链路本地地址 {ip}(云元数据网段),不允许"
+        if ip.is_multicast or ip.is_unspecified:
+            return False, f"上游地址解析到特殊地址 {ip},不允许"
+        if ip.is_loopback:
+            if not allow_private:
+                return False, (f"上游地址解析到回环地址 {ip},不允许。"
+                               "确实要用本机网关请设 LLM_SHIM_ALLOW_PRIVATE=1")
+        elif ip.is_private:
+            if not allow_private:
+                return False, (f"上游地址解析到内网地址 {ip},不允许 —— "
+                               "防止 shim 被当成访问内网的跳板。"
+                               "确实要用自建内网网关请设 LLM_SHIM_ALLOW_PRIVATE=1")
+        elif ip.is_reserved:
+            return False, f"上游地址解析到保留地址 {ip},不允许"
+    return True, ""
+
+
+def error_body(message: str, code: str = "hunter_unconfigured",
+               etype: str = "invalid_request_error") -> dict:
+    """OpenAI 兼容的错误体。前端 / SDK 认得 `error.message`。"""
+    return {"error": {"message": message, "type": etype, "code": code, "param": None}}
+
+
+def error_sse(message: str, model: str = PLACEHOLDER_MODEL) -> bytes:
+    """流式请求的错误回复 —— 一条正文帧 + 一条收尾帧 + [DONE]。
+
+    为什么用**正文帧**而不是只发一个 `{"error":...}` 帧:正文帧是 SSE 里最不会被
+    误解的东西,任何 OpenAI 兼容客户端都会把它渲染成回答文字,用户直接看得见。
+    只发 error 帧的话,不同 SDK 处理不一,最坏的结果是前端一片空白 ——
+    而「一片空白」正是这条路径要消灭的症状(R0 §1.5:上游不可达时对话挂住 100 秒
+    以上,用户完全看不出发生了什么)。
+    """
+    created = int(time.time())
+    base = {"id": "hunter-shim-error", "object": "chat.completion.chunk",
+            "created": created, "model": model}
+    first = dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "content": message},
+                                 "finish_reason": None}])
+    last = dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}])
+    return (b"data: " + json.dumps(first, ensure_ascii=False).encode() + b"\n\n"
+            + b"data: " + json.dumps(last, ensure_ascii=False).encode() + b"\n\n"
+            + b"data: [DONE]\n\n")
+
+
+# 兼容老名字(仓库里别处可能还在 import)
+_ensure_object_schema = ensure_object_schema
 
 
 class ThinkStripper:
@@ -252,30 +339,88 @@ def sanitize_body(body_bytes: bytes) -> bytes:
         obj = json.loads(body_bytes.decode())
     except Exception:
         return body_bytes            # 不是 JSON 就别碰
-    if isinstance(obj.get("tools"), list):
-        for t in obj["tools"]:
-            fn = t.get("function") if isinstance(t.get("function"), dict) else None
-            if fn and "parameters" in fn:
-                fn["parameters"] = _ensure_object_schema(clean(fn["parameters"]))
+    clean_tools(obj)                 # 见 schema_clean.py(api 的向导检测共用同一份)
     _maybe_inject_no_think(obj)
     return json.dumps(obj).encode()
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _target(self) -> str:
+    def _target(self, upstream: str) -> str:
         path = self.path
         if path.startswith(LISTEN_PREFIX):
             path = path[len(LISTEN_PREFIX):]
-        return UPSTREAM + path
+        return upstream + path
+
+    def _request_upstream(self) -> str:
+        """这一次请求该转发到哪。请求头优先,其次环境变量。
+
+        头优先是必须的:大模型配置存进数据库之后,shim 容器的 LLM_BASE_URL 是空的,
+        地址只能由 opencode 的 provider(options.headers)逐次带过来。
+        """
+        return ((self.headers.get(UPSTREAM_HEADER) or "").strip().rstrip("/")
+                or UPSTREAM)
+
+    def _send_error(self, message: str, *, stream: bool, model: str = PLACEHOLDER_MODEL,
+                    status: int = 400) -> None:
+        """立刻回一个 OpenAI 兼容的错误。**不能等上游超时**。
+
+        R0 §1.5 实测:上游不可达时 opencode 那边的对话会挂住 100 秒以上,
+        用户完全看不出发生了什么。所以「没配置 / 地址不让用」这两种情况必须由
+        shim 自己当场回话。
+        """
+        print(f"[shim] 拒绝转发 · {message}", flush=True)
+        if stream:
+            # 流式:回 200 + 合法 SSE。正文帧里就是这句中文,用户直接看得见。
+            payload = error_sse(message, model or PLACEHOLDER_MODEL)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            self.wfile.flush()
+            return
+        payload = json.dumps(error_body(message), ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+        self.wfile.flush()
+
+    def _precheck(self, body: bytes | None):
+        """→ (上游地址, 拒绝原因, 是否流式, 模型名)。拒绝原因非空就别转发了。"""
+        stream, model = False, ""
+        if body:
+            try:
+                obj = json.loads(body.decode())
+                stream = bool(obj.get("stream"))
+                model = str(obj.get("model") or "")
+            except Exception:       # noqa: BLE001
+                pass
+        upstream = self._request_upstream()
+        if model.strip() == PLACEHOLDER_MODEL:
+            # gen-config 在「一项都没配」时写的占位模型名
+            return upstream, UNCONFIGURED_MSG, stream, model
+        if not upstream:
+            return upstream, UNCONFIGURED_MSG, stream, model
+        ok, why = check_upstream(upstream)
+        if not ok:
+            return upstream, why, stream, model
+        return upstream, "", stream, model
 
     def _proxy(self, body: bytes | None):
+        upstream, reject, stream, model = self._precheck(body)
+        if reject:
+            self._send_error(reject, stream=stream, model=model)
+            return
         if body is not None and self.path.endswith("/chat/completions"):
             body = sanitize_body(body)
         # SSL EOF 常发生在 keep-alive stream 尾部 · 加 Connection: close 强制新连接
         # 重试 1 次 · 主要覆盖偶发 SSL_UNEXPECTED_EOF · 不做无限重试防死循环
         for attempt in (1, 2):
             try:
-                req = urllib.request.Request(self._target(), data=body,
+                req = urllib.request.Request(self._target(upstream), data=body,
                                              method=self.command)
                 for k in ("Authorization", "Content-Type", "Accept"):
                     if k in self.headers:
@@ -379,9 +524,26 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    if not UPSTREAM:
-        print("[shim] LLM_BASE_URL 未设置,无法转发", file=sys.stderr, flush=True)
-        sys.exit(1)
-    print(f"[shim] listening 0.0.0.0:{LISTEN_PORT}{LISTEN_PREFIX} -> {UPSTREAM}",
+    # **缺 LLM_BASE_URL 不再退出**(M1)。配置可能存在数据库里,由 opencode 的
+    # provider 通过 X-Hunter-Upstream 头逐次带过来;一项都没配时 shim 也要活着 ——
+    # 它正是那句「大模型尚未配置」的出口。退出的话 compose 的健康检查过不去,
+    # opencode 因为 depends_on 根本起不来,用户连首页都打不开。
+    print(f"[shim] listening {LISTEN_HOST}:{LISTEN_PORT}{LISTEN_PREFIX} -> "
+          f"{UPSTREAM or '(环境变量未配上游 · 等请求头 ' + UPSTREAM_HEADER + ')'}",
           flush=True)
-    ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler).serve_forever()
+    if ALLOW_PRIVATE:
+        print("[shim] ⚠ LLM_SHIM_ALLOW_PRIVATE=1 · 已放行内网/回环上游地址。"
+              "内部服务名与链路本地(云元数据)地址仍然拒绝。", flush=True)
+    Server = ThreadingHTTPServer
+    if ":" in LISTEN_HOST:              # IPv6 字面量(如 ::):换 AF_INET6 并关掉 v6only,一个 socket 同时收 v4/v6
+        class Server(ThreadingHTTPServer):      # noqa: F811
+            address_family = socket.AF_INET6
+
+            def server_bind(self):
+                try:
+                    self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                except OSError:
+                    pass                        # 内核不让改就只收 IPv6,总比起不来强
+                super().server_bind()
+
+    Server((LISTEN_HOST, LISTEN_PORT), Handler).serve_forever()

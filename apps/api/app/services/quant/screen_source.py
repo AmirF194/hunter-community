@@ -48,7 +48,7 @@ import time
 
 import httpx
 
-from app.services.quant import screen_dsl, screen_rs, vcp
+from app.services.quant import screen_cn, screen_dsl, screen_rs, vcp
 from app.services.quant.screen_dsl import Compiled, ScreenError
 
 log = logging.getLogger(__name__)
@@ -134,6 +134,22 @@ BASE_FILTER = [
     # 实测影响:美股 7486 → 7405(剔 81 只),A 股和港股本来就没有,不受影响。
     {"left": "typespecs", "operation": "has", "right": ["common"]},
 ]
+
+# 港股不能用 is_primary(2026-09-18 给小鹿准备港股研究数据时发现)。上游把「主上市地」判在别处的
+# 港股线全标成 is_primary=False:A+H 的 H 股(工行 1398 / 比亚迪 1211 / 宁德 3750 / 中国平安 2318)、
+# 第二上市与双重主要上市(阿里 9988 / 京东 9618 / 网易 9999)、汇丰 0005 …… 实测 255 只,
+# 恒指权重股一大半在里面,原来港股池只有 2398 只、这些一只都没有。
+# 那 255 只里 232 只是港元柜台(真股票),23 只是人民币柜台(80700 / 89988 这类,和港元柜台是同一只股,
+# 必须剔掉,否则 RS 排名池里同一家公司算两次)。所以港股把 is_primary 换成 currency = HKD:
+# 实测 primary 那 2398 只里 2397 只是 HKD(剩 1 只人民币计价),新口径 = 2397 + 232。
+_HK_FILTER = [f for f in BASE_FILTER if f["left"] != "is_primary"] + [
+    {"left": "currency", "operation": "equal", "right": "HKD"},
+]
+
+
+def base_filter(market_key: str) -> list:
+    """按市场取永远下推的过滤。港股见 _HK_FILTER 上面的说明。"""
+    return list(_HK_FILTER if market_key == "hk" else BASE_FILTER)
 
 # 永远带回来的列(不管脚本用不用)。currency 是给跨市场比较兜底的,
 # description 是股票名 —— 只给代码的结果没法看。
@@ -350,7 +366,7 @@ def _fetch_upstream(md: MarketDef, market_key: str, cols: list[str], limit_scan:
     with httpx.Client(timeout=_TIMEOUT, headers=_UA) as cli:
         while offset < limit_scan:
             body = {
-                "filter": list(BASE_FILTER) + list(extra_filter or []),
+                "filter": base_filter(md.key) + list(extra_filter or []),
                 "options": {"lang": "en"},   # zh_CN 实测也只回英文名,没有中文名可拿
                 "markets": [md.tv],
                 "symbols": {"query": {"types": []}, "tickers": []},
@@ -657,7 +673,7 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
             + "如果某条条件缺得特别多,可以考虑去掉或换一个覆盖更全的字段。")
 
     def _pick(r: dict) -> dict:
-        return {
+        p = {
             "code": r.get("_code"),
             "symbol": r.get("_symbol"),
             "name": r.get("description") or r.get("name"),
@@ -665,6 +681,8 @@ def run_script(script: str, market_key: str = "us", limit: int = 100,
             "currency": r.get("currency") or md.currency,
             "fields": {k: v for k, v in r.items() if not k.startswith("_")},
         }
+        # A 股名称 / 板块换中文(扫描源给的是英文)· 只动展示,求值已经结束
+        return screen_cn.localize_a_pick(p) if md.key == "a" else p
 
     # keep_all:把全部命中一起带回去,路由存进 screen_resort,点列头排序时直接重排、不扣次数
     all_picks = [_pick(r) for r in hits] if keep_all else None
@@ -870,10 +888,11 @@ def _run_series(c: Compiled, md: MarketDef, market_key: str, has_field, limit: i
             f"{skipped} 只没能判断(是「算不出」,不是「不满足」):" + ";".join(parts) + "。")
 
     def _pick(r: dict) -> dict:
-        return {"code": r.get("_code"), "symbol": r.get("_symbol"),
-                "name": r.get("description") or r.get("name"),
-                "close": r.get("close"), "currency": r.get("currency") or md.currency,
-                "fields": {k: v for k, v in r.items() if not k.startswith("_")}}
+        p = {"code": r.get("_code"), "symbol": r.get("_symbol"),
+             "name": r.get("description") or r.get("name"),
+             "close": r.get("close"), "currency": r.get("currency") or md.currency,
+             "fields": {k: v for k, v in r.items() if not k.startswith("_")}}
+        return screen_cn.localize_a_pick(p) if md.key == "a" else p
 
     all_picks = [_pick(r) for r in hits] if keep_all else None
     picks = all_picks[:limit] if keep_all else [_pick(r) for r in hits[:limit]]
@@ -962,7 +981,7 @@ def official_preset_of(script: str, market_key: str) -> dict | None:
 
 
 def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
-                 user_id: str | None = None, on_ai=None) -> dict:
+                 user_id: str | None = None, on_ai=None, context: str | None = None) -> dict:
     """只解析、不拉数 —— 界面上点「生成」走这条,把脚本变成可视化条件行。
 
     和 run_script 共用同一个编译器,所以**界面上看到的条件就是真正会跑的条件**。
@@ -985,9 +1004,28 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     ai = None
     kw = None
     original_text = script
+    # 条件行「复制这一条」复制出来的片段(没有 plot)—— 补成完整脚本;追加模式带着当前脚本当上下文(2026-09-17)
+    frag = None
+    frag_err: ScreenError | None = None
+    if context is not None and len(context) > 20000:
+        context = None
     try:
-        c: Compiled = _compile(script)
+        frag = screen_dsl.complete_fragment(script, context, _compile)
+    except ScreenError as fe:
+        frag_err = fe
+        if not context and "不认识" in str(fe):
+            frag_err = ScreenError(
+                f"{fe}\n这像是从条件行「复制这一条」复制出来的片段,它用到的定义在原脚本里 —— "
+                f"用「追加」模式粘到那份脚本上,或者用「复制脚本」拿完整脚本。")
+    try:
+        if frag is not None:
+            script = frag["src"]
+            c = frag["c"]
+        else:
+            c: Compiled = _compile(script)
     except ScreenError as script_err:
+        if frag_err is not None:
+            script_err = frag_err
         # 解析不了 —— 按"最省"的顺序往下试。
         #
         # ① 写着 def/plot 却解析不过 = 他的脚本有错,真实报错原样给他,**同时**给「AI 修错」按钮。
@@ -1034,6 +1072,9 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
                 if hit_ids:
                     screen_learned.record_hits(hit_ids)
             except ScreenError as kw_err:
+                # 只写了字段、没写怎么比:阈值得用户自己定,不给 AI 按钮(AI 补的数字就是编的)
+                if isinstance(kw_err, screen_kw.MissingComparison):
+                    raise
                 if not allow_ai:
                     # 不抛普通 ScreenError —— 路由要据此告诉前端"可以试试 AI"
                     raise NeedsAI(str(kw_err)) from kw_err
@@ -1049,6 +1090,21 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
                 ai["script"] = script
 
     d = screen_dsl.decompose(script, c, has_field, meta.sma, meta.ema, meta.rsi)
+    if frag is not None and frag["context"]:
+        # 追加:上下文(当前脚本)只用来让片段编译得过,交给前端的只能是片段自己的条件行 ——
+        # 否则 mergeAppend 会把原脚本的条件再追加一遍。term 行的名字是「plot名#k」或「宿主#k」
+        own = frag["frag_names"] | {frag["plot_name"]}
+
+        def _mine(n: str) -> bool:
+            return n in frag["frag_names"] or n.split("#", 1)[0] in own and "#" in n
+        d["conditions"] = [x for x in d.get("conditions") or [] if _mine(x["name"])]
+        d["plot_refs"] = [n for n in d.get("plot_refs") or [] if n in frag["frag_names"]]
+        d["plot_order"] = [n for n in d.get("plot_order") or [] if _mine(n)]
+        d["combine"] = "all"
+        d["term_host"] = ""
+        d["extra_plots"] = []
+        d["plot_name"] = frag["plot_name"]
+        d["plot_expr"] = ""
 
     warnings = [DELAY_WARN]
     if c.series is not None:
@@ -1085,6 +1141,8 @@ def parse_script(script: str, market_key: str = "us", allow_ai: bool = False,
     d["fields"] = c.fields
     # 界面据此提示「官方示例 · 不计扫描次数」;真正是否扣次数由 /screener/run 再判一次(前端的话不算数)
     d["official_preset"] = official_preset_of(script, md.key)
+    if frag is not None:
+        warnings.extend(frag["notes"])
     d["warnings"] = warnings
     if kw:
         # 本地关键词匹配出来的 —— 同样要可核对:哪一句变成了哪个表达式。
@@ -1399,6 +1457,16 @@ def preset(key: str) -> dict | None:
     return None
 
 
+def listable_fields(market_key: str) -> list[str]:
+    """「可用字段」列表里给用户看、给用户点的字段 —— **每一个都必须能原样写进脚本**。
+
+    原来只排 `|`(多周期)和 `[`,带 `-` `+` / 数字开头的 27 个名字照样列出,点进生成框必定报不认识
+    (2026-09-17 探针实测,见 screen_dsl.is_writable_name)。界面上的字段个数也按这个数,不写死。
+    """
+    meta = get_meta(market_key)
+    return sorted(n for n in meta.names if screen_dsl.is_writable_name(n))
+
+
 def field_search(market_key: str, q: str, limit: int = 50) -> list[dict]:
     """字段搜索 —— 前端「可用字段」用。3777 个字段不可能列全,只能搜。
 
@@ -1411,8 +1479,7 @@ def field_search(market_key: str, q: str, limit: int = 50) -> list[dict]:
     """
     meta = get_meta(market_key)
     q = (q or "").strip().lower()
-    base = sorted(n for n in meta.names
-                  if isinstance(n, str) and "|" not in n and "[" not in n)
+    base = listable_fields(market_key)
     labels = {n: screen_dsl.field_label_cn(n) for n in base}
 
     def pack(names):

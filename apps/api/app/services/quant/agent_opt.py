@@ -40,9 +40,11 @@ from app.services.quant import agent_vcp3 as av3
 from app.services.quant import agent_vcp4 as av4
 from app.services.quant import agent_donchian as ad
 from app.services.quant import agent_breakout as abk
+from app.services.quant import agent_limitup as alu
+from app.services.quant import agent_limitup_yin as aly
 from app.services.quant import agent_sim
 
-ENGINES = {"vcp": av, "vcp3": av3, "vcp4": av4, "donchian": ad, "breakout": abk}
+ENGINES = {"vcp": av, "vcp3": av3, "vcp4": av4, "donchian": ad, "breakout": abk, "limitup": alu, "limitup_yin": aly}
 
 MIN_CYCLES = 8
 OBS_DAYS = 10           # 原 5,2026-09-12 全年回测后用户同意拉长
@@ -83,9 +85,42 @@ BRANCHES: dict = {
     "breakout3y": {"engine": "breakout", "label": "突破买入 · 三年",
                    "direction": "与「突破买入 · 基准」同一套规则(v14),回测从 2023-09-15 起跑三年,和一年结果对比",
                    "tunable": {}},
+    # 2026-09-17 用户:A 股「涨停后强势整理」研究线(第一条 A 股线)。规则固定,每个信号独立买 1 万、次日收盘卖
+    "limitup": {"engine": "limitup", "label": "涨停后强势整理 · 基准",
+                "direction": "A 股:4 个交易日前涨停、之后三天没再涨停且收盘都高于涨停日收盘 → 当天收盘买 1 万,次日收盘卖;规则固定",
+                "tunable": {}},
+    # 2026-09-18 用户:同一条研究线新开迭代方向「涨停 + 三根阴线」,只做主板,原方向 limitup(v4)不动
+    "limitup_yin": {"engine": "limitup_yin", "label": "涨停三阴 · 主板",
+                    "direction": "A 股主板:4 个交易日前涨停、之后连续三天阴线(收盘 < 开盘)→ 当天收盘买 1 万,次日收盘卖;规则固定",
+                    "tunable": {}},
 }
 # 方向键全局唯一(四张表按方向分行,不分研究线)。归属哪条研究线看 agent_research.LINES
-BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian", "breakout", "breakout3y"]
+BRANCH_ORDER = ["base", "buy", "sell", "c", "donchian", "breakout", "breakout3y", "limitup", "limitup_yin"]
+
+
+# ─── 市场(2026-09-17 加 A 股线时引入)──────────────────────────────
+# 原来整个小鹿按美股写死(agent_run.MARKET)。引擎声明 MARKET / INITIAL_CAPITAL / 货币 / 基准名就按它来,
+# 不声明的(VCP / 唐奇安 / 突破买入)一律是美股 + 10 万美元,行为和原来完全一样。
+_US_CCY = {"market": "us", "market_label": "美股", "code": "USD", "symbol": "$", "unit": "美元", "bench_label": "标普500"}
+_MARKET_LABEL = {"us": "美股", "a": "A股", "hk": "港股"}
+
+
+def market_of(branch: str) -> str:
+    return getattr(engine_of(branch), "MARKET", "us")
+
+
+def initial_capital(branch: str) -> float:
+    return float(getattr(engine_of(branch), "INITIAL_CAPITAL", av.GUARDS["initial_capital"]))
+
+
+def currency(branch: str) -> dict:
+    eng = engine_of(branch)
+    mk = getattr(eng, "MARKET", "us")
+    if mk == "us":
+        return dict(_US_CCY)
+    return {"market": mk, "market_label": _MARKET_LABEL.get(mk, mk), "code": getattr(eng, "CURRENCY", ""),
+            "symbol": getattr(eng, "CURRENCY_SYMBOL", ""), "unit": getattr(eng, "CURRENCY_UNIT", ""),
+            "bench_label": getattr(eng, "BENCH_LABEL", "基准")}
 
 
 def engine_of(branch: str):

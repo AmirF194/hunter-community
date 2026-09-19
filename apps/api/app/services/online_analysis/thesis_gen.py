@@ -10,9 +10,10 @@ from loguru import logger
 from openai import OpenAI
 
 from .prompts import THESIS_GEN_SYSTEM, build_thesis_user_prompt
+from app.services import runtime_config
 
 
-_BASE_URL = os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+_BASE_URL = runtime_config.one_api_base_url()
 _API_KEY  = os.getenv("ONE_API_KEY",      "")
 _MODEL    = os.getenv("ONE_API_MODEL",    "gemini-3.5-flash")
 _TIMEOUT  = 30

@@ -62,6 +62,7 @@ cd public/strategies && node render_check.js              # 在 node 里真跑�
 ```
 
 - `apps/api/tests` 里多数文件是脚本式用例(导入即执行,最后 `sys.exit`)。`pytest` 会把这样的文件放进子进程原样跑,每个文件算一个用例;也可以单独跑:`cd apps/api && PYTHONPATH=. python tests/test_xxx.py`。`test_screen_xlayer_official.py` 要分三步跑(联网、连库、用 node),pytest 里显示为跳过,命令见该文件头。
+- CI 另有 `migrations` job,在空 Postgres 上连跑两遍迁移。`python -m pytest` 里 `test_migrate.py` 的真库用例没有 `TEST_DATABASE_URL` 时会跳过;本地要对真库验证,跑 `bash apps/api/tests/manual_migrate_check.sh`(需要 docker,用法见脚本头)。
 - **Windows**:`uvloop` 不支持 Windows,`requirements.txt` 已用环境标记自动跳过它,其余依赖照常安装。控制台出现 `UnicodeEncodeError` 之类的编码报错时,先设 `PYTHONUTF8=1`(PowerShell:`$env:PYTHONUTF8 = "1"`)。
 
 ### SKILL 规范
@@ -186,6 +187,7 @@ cd public/strategies && node render_check.js              # actually runs the st
 ```
 
 - Most files in `apps/api/tests` are script-style tests (they run on import and end with `sys.exit`). `pytest` runs each such file as-is in a subprocess and counts it as one test; you can also run one on its own: `cd apps/api && PYTHONPATH=. python tests/test_xxx.py`. `test_screen_xlayer_official.py` has to run in three steps (network access, a database, node), so pytest reports it as skipped; the commands are in its header.
+- CI also has a `migrations` job that runs the migrations twice against an empty Postgres. The real-database cases in `test_migrate.py` are skipped by `python -m pytest` when `TEST_DATABASE_URL` is not set; to check against a real database locally, run `bash apps/api/tests/manual_migrate_check.sh` (needs docker; usage is in the script header).
 - **Windows**: `uvloop` doesn't support Windows, so `requirements.txt` skips it with an environment marker; everything else installs as usual. If the console throws encoding errors such as `UnicodeEncodeError`, set `PYTHONUTF8=1` first (PowerShell: `$env:PYTHONUTF8 = "1"`).
 
 ### SKILL guidelines

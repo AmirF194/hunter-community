@@ -254,6 +254,13 @@ class ChatOrchestrator:
             async for chunk in self._stream_summary(query, history, tool_calls):
                 self._assistant_content += chunk
                 yield self._emit("message_delta", {"content": chunk})
+            if not self._assistant_content.strip():
+                # 模型只回了函数调用/空内容：用模板兜底，不能让用户看到空白回答
+                logger.warning("[orch] summary 空输出, 用模板兜底 tools={}",
+                               [tc.name for tc in tool_calls])
+                fallback_text = self._template_summary(tool_calls)
+                self._assistant_content = fallback_text
+                yield self._emit("message_delta", {"content": fallback_text})
         except Exception as e:
             logger.warning("[orch] summary 失败, 用模板兜底: {}", e)
             fallback_text = self._template_summary(tool_calls)
@@ -486,6 +493,12 @@ class ChatOrchestrator:
                           "用户问题不属于股票/公司/金融领域。请礼貌拒绝："
                           "「我是猎鹿人投研助手，主要陪你研究股票和市场，"
                           "这个话题我不太擅长，换个投资问题吧～」")
+        elif tool_calls:
+            # gemini-3.7/3.8 看到工具清单和工具结果后，常会想"再查一点"而发起新的函数调用，
+            # 汇总阶段没有声明工具 → 输出里没有正文，前端一片空白
+            extra_hint = ("\n\n# 【本轮汇总规则】\n"
+                          "工具已全部调用完毕，本轮不能再调用任何工具。"
+                          "直接基于下面的工具结果用中文回答用户；数据不足的部分如实说明缺什么。")
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT + extra_hint + ZH_ONLY_RULE}]
         messages.extend(history)

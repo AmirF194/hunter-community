@@ -246,8 +246,15 @@ def inject(rows: list[dict], market_key: str = "us", hist: dict | None = None,
     ratings, coverage = ({}, 0.0)
     method = "snapshot"
     young = 0
+    young_src = 0
     if fresh:
-        ratings, coverage = rs_ratings(raw_exact, len(pool))
+        # 分母去掉「扫描源也说是次新(SMA250 空)且我们也没有精确值」的票(2026-09-18 用户拍板)。
+        # 港股池补回 A+H 后,一批 2024~2025 年新上市的(宁德 3750、美的 0300 …)不足 253 根,
+        # 精确法覆盖率 89.1% 卡在 90% 门槛下,整个港股退回快照插值。门槛本意是拦「每晚任务只拉了一部分」——
+        # 扫描源有 SMA250 却没有精确值的票(真没拉到)**仍在分母里**,门槛照样拦得住;只是不再被新股拖垮。
+        # 快照法那条路不变(分母含次新股,用例「次新股太多时整批不给」),两条路口径不同是有意的。
+        young_src = sum(1 for idx in pool if raw_exact[idx] is None and rows[idx].get("SMA250") is None)
+        ratings, coverage = rs_ratings(raw_exact, len(pool) - young_src)
         if ratings:
             method = "exact"
             raw = raw_exact

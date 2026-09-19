@@ -48,12 +48,35 @@ def _wrap_for_translation(text: str) -> str:
     return "<<<TEXT>>>\n" + text + "\n<<<END>>>"
 
 
+def _resolve_llm(model_env: str, model: str | None = None) -> tuple[str, str, str]:
+    """(base_url, api_key, model) · 翻译兜底用的大模型配置。
+
+    优先级:显式传入的 model → `model_env` 指定的环境变量(DEBATE_MODEL /
+    SKILL_DESC_MODEL)→ ONE_API_* → runtime_config(环境变量非空 → 数据库)。
+
+    **在函数里现取,不做模块级常量** —— 向导改完配置后 api 进程不重启也要生效。
+    **不给 base_url / model 任何默认值**:原来的默认地址是我们自己演示站的网关
+    (104.197.139.51:3000),开源用户没配时他的文本会被发到我们的服务器上;
+    模型名猜一个 gemini-3.5-flash 也只会换来一个看不懂的 404。
+    """
+    from app.services.runtime_config import llm as _runtime_llm
+
+    cfg = _runtime_llm()
+    use_model = ((model or "").strip()
+                 or (os.getenv(model_env) or "").strip()
+                 or (os.getenv("ONE_API_MODEL") or "").strip()
+                 or cfg.model)
+    return ((os.getenv("ONE_API_BASE_URL") or "").strip() or cfg.base_url,
+            (os.getenv("ONE_API_KEY") or "").strip() or cfg.api_key,
+            use_model)
+
+
 def ensure_chinese(text: str, *, model: str | None = None) -> str:
     """净化 text 里的英文散文；净化不出可用中文时调 LLM 整段翻译。
 
     Args:
         text:  上游 agent 的原始输出
-        model: 翻译模型 · 默认沿用 DEBATE_MODEL/gemini-3.5-flash · 与辩论 agent 一致
+        model: 翻译模型 · 默认沿用 DEBATE_MODEL,没配就用当前生效的模型(见 _resolve_llm)
 
     Returns:
         简体中文正文；净化 + 翻译都拿不到中文时返回 ""（调用方给中文占位）。
@@ -65,13 +88,9 @@ def ensure_chinese(text: str, *, model: str | None = None) -> str:
     if cleaned and not has_english_prose(cleaned):
         return cleaned
 
-    _model = model or os.getenv("DEBATE_MODEL") or os.getenv("LLM_DEFAULT_MODEL", "gemini-3.5-flash")
-    # ONE_API_* 是 SaaS 网关历史命名 · 缺 key 时回退 .env 里统一的 LLM_* 三件套
-    # (与 hunter-community 同步)。
-    api_key  = os.getenv("ONE_API_KEY")      or os.getenv("LLM_API_KEY", "")
-    base_url = os.getenv("ONE_API_BASE_URL") or os.getenv("LLM_BASE_URL", "http://104.197.139.51:3000/v1")
-    if not api_key:
-        logger.warning("ensure_chinese: 无 key · 无法翻译 · 返回净化结果(可能为空)")
+    base_url, api_key, _model = _resolve_llm("DEBATE_MODEL", model)
+    if not (base_url and api_key and _model):
+        logger.warning("ensure_chinese: 大模型尚未配置 · 无法翻译 · 返回净化结果(可能为空)")
         return cleaned
     logger.warning("ensure_chinese: 检测到英文正文 · 触发翻译兜底 · raw={}", text[:120])
     try:
@@ -234,11 +253,9 @@ def translate_desc(text: str, *, model: str | None = None) -> str:
     if contains_chinese(raw) or looks_like_slug(raw):
         return raw
 
-    _model = model or os.getenv("SKILL_DESC_MODEL") or os.getenv("LLM_DEFAULT_MODEL", "gemini-3.5-flash")
-    api_key  = os.getenv("ONE_API_KEY")      or os.getenv("LLM_API_KEY", "")
-    base_url = os.getenv("ONE_API_BASE_URL") or os.getenv("LLM_BASE_URL", "http://104.197.139.51:3000/v1")
-    if not api_key:
-        logger.warning("translate_desc: 无 key · 保留英文原文")
+    base_url, api_key, _model = _resolve_llm("SKILL_DESC_MODEL", model)
+    if not (base_url and api_key and _model):
+        logger.warning("translate_desc: 大模型尚未配置 · 保留英文原文")
         return raw
     try:
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=45)

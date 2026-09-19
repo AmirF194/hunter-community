@@ -14,6 +14,7 @@ from app.services.database import (
     get_users_subscribed_to, get_stocks_by_user,
     save_signal_report,
 )
+from app.services import runtime_config
 
 CST = timezone(timedelta(hours=8))
 
@@ -463,7 +464,7 @@ def _generate_html_report_sync(
 
     from openai import OpenAI
     _api_key = os.getenv("ONE_API_KEY", "")
-    _base_url = os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+    _base_url = runtime_config.one_api_base_url()
     if not _api_key:
         logger.warning("[signal] html report: ONE_API_KEY 未配置")
         return ""
@@ -523,7 +524,7 @@ def generate_event_analysis_html(event_desc: str, stocks: list) -> str:
     from openai import OpenAI
 
     _api_key  = os.getenv("ONE_API_KEY", "")
-    _base_url = os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+    _base_url = runtime_config.one_api_base_url()
     if not _api_key:
         logger.warning("[event-analysis] ONE_API_KEY 未配置")
         return ""

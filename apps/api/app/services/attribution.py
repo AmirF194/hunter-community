@@ -30,6 +30,7 @@ import re
 from typing import Optional
 from loguru import logger
 from openai import OpenAI
+from app.services import runtime_config
 
 
 CST_OFFSET = 8  # 仅给 prompt 描述时间用
@@ -248,7 +249,7 @@ def analyze(
             "_no_thesis":    True,
         }
 
-    base_url = os.environ.get("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+    base_url = runtime_config.one_api_base_url()
     api_key  = os.environ.get("ONE_API_KEY",  "")
     model    = os.environ.get("ONE_API_MODEL", "gemini-3.5-flash")
 

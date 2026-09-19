@@ -336,10 +336,43 @@ def _mismatch(series, anchor: date, ratio: float) -> float | None:
 _LOG_WILD = math.log(1.8)
 
 
-def _cut_unverified_head(s: list[tuple], anchors) -> list[tuple]:
+_LOG_SPLIT_VOL = math.log(1.6)
+_LOG_SPLIT_MAG = math.log(5.0)
+_VOL_WIN = 20
+
+
+def split_like(s: list[tuple], i: int, vols: dict) -> bool:
+    """第 i 根的跳变像不像没复权的合股 / 拆股(港股截头用,2026-09-18)。
+
+    N 合 1 合股:价 ×N、成交量 ÷N 且之后一直是这个量级 —— 前后各 20 天的中位成交量之比 ≈ 1 / 价格倍数。
+    真暴涨暴跌:量放大或不变,和价格不成反比。前后量不够 10 天判「像」(宁可截)。三条,顺序不能乱:
+    1. 单日 ≥5 倍或 ≤1/5 一律截:真涨跌这么大的极少,核对不了就不赌(01566 ×37、00167 ×125 都是这类)。
+    2. 涨:量缩得和价格倍数相当**或缩得更狠**就截(单边)。港股仙股合股后流动性常常塌得比价格倍数还多
+       (00627 价 ×91、量 ×0.004),双边容差会把它们当成真涨放过去 —— 2026-09-18 第一版就是这么漏的。
+    3. 跌:和「量反向同倍」相差 1.6 倍以内才截(双边)。真暴跌通常放量,和拆股分不太开,这里宁可截。
+    港股实测(2026-09-18 补完三年历史):457 次单日 ±80% 跳变里 374 次量没反向、68 次量反向同倍
+    (00064 价 ×19.6、量 ×0.046 = 20 合 1)—— 腾讯港股前复权**不可靠地处理合股**,所以截头规则得留着,只是别连真涨跌一起截。
+    """
+    before = sorted(v for d, _ in s[max(0, i - _VOL_WIN - 1):i - 1] for v in [vols.get(d)] if v)
+    after = sorted(v for d, _ in s[i + 1:i + 1 + _VOL_WIN] for v in [vols.get(d)] if v)
+    if len(before) < 10 or len(after) < 10 or s[i - 1][1] <= 0 or s[i][1] <= 0:
+        return True
+    lr = math.log(s[i][1] / s[i - 1][1])
+    if abs(lr) >= _LOG_SPLIT_MAG:
+        return True
+    lv = math.log(after[len(after) // 2] / before[len(before) // 2]) + lr
+    return lv < _LOG_SPLIT_VOL if lr > 0 else abs(lv) < _LOG_SPLIT_VOL
+
+
+def _cut_unverified_head(s: list[tuple], anchors, vols: dict | None = None) -> list[tuple]:
     """最老的锚点之前那段没法核对(腾讯给约 15 个月,扫描源最远的锚点是 1 年)。
     那段里有单日 ±80% 以上的跳变 → 从跳变之后截断,不赌它是不是没复权的拆股。
-    代价只是少几个月头部数据;用错了拆股的数,RS 线会凭空跳一截。"""
+    代价只是少几个月头部数据;用错了拆股的数,RS 线会凭空跳一截。
+
+    vols({日期: 成交量})只有港股传(2026-09-18):港股补到三年后,这条规则截掉了 246 只票的头部
+    (共 12 万根,多数截到 2024 / 2025 年)—— 港股小盘单日翻倍很常见(2024-09-30 那波),
+    把真涨跌也截掉,研究样本就偏向了稳定的票。传了 vols 只在 split_like 的跳变处截。
+    美股 / A 股不传,行为不变 —— 已有研究线的回测结果依赖它,改了就不可复现。"""
     used = [d for d, _ in anchors if d >= s[0][0]]
     oldest = min(used) if used else s[-1][0]
     cut = 0
@@ -347,12 +380,13 @@ def _cut_unverified_head(s: list[tuple], anchors) -> list[tuple]:
         if s[i][0] > oldest:
             break
         if s[i - 1][1] > 0 and abs(math.log(s[i][1] / s[i - 1][1])) > _LOG_WILD:
-            cut = i
+            if vols is None or split_like(s, i, vols):
+                cut = i
     return s[cut:]
 
 
 def repair_splits(series: list[tuple], anchors: list[tuple[date, float]],
-                  max_fix: int = 3) -> tuple[list[tuple] | None, int]:
+                  max_fix: int = 3, vols: dict | None = None) -> tuple[list[tuple] | None, int]:
     """→ (修好的序列 | None, 修了几处)。None = 对不上又修不好,这只票不给数。
 
     series 按日期升序 [(date, close)];anchors 见 perf_anchors。
@@ -374,7 +408,7 @@ def repair_splits(series: list[tuple], anchors: list[tuple[date, float]],
                 break
             hi = d
         if bad is None:
-            return _cut_unverified_head(s, anchors), fixed
+            return _cut_unverified_head(s, anchors, vols), fixed
         if fixed == max_fix:
             return None, fixed
         lo, hi, m = bad
@@ -705,7 +739,8 @@ def compute_market(market: str) -> dict:
             return
         raw = {d: (c, h, lo, v) for d, c, h, lo, v in full}
         series = [(d, c) for d, c, _h, _l, _v in full]
-        series, n_fix = repair_splits(series, perf_anchors(series[-1][0], p))
+        series, n_fix = repair_splits(series, perf_anchors(series[-1][0], p),
+                                      vols=({d: v for d, _c, _h, _l, v in full} if market == "hk" else None))
         if series is None:
             split["bad"] += 1
             if len(bad_eg) < 12:
