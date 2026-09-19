@@ -119,10 +119,11 @@ The first time you open the app (with no LLM configured) it takes you through fi
 | 5 · Done | Applied live, **without restarting any container**, plus three example questions to get you into the chat |
 
 <p align="center">
-  <img src="./docs/screenshots/setup-wizard/04-三项检测通过.png" alt="Step 3 · the three checks" width="760" />
+  <img src="./docs/screenshots/builtin-llm/02-第2步-内置额度是第一张卡.png" alt="Step 2 · the built-in quota is the first card" width="760" />
 </p>
 
-All screenshots: [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/).
+All screenshots: [`docs/screenshots/builtin-llm/`](./docs/screenshots/builtin-llm/) (built-in quota,
+end to end) and [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/) (bring-your-own-key path).
 
 > [!IMPORTANT]
 > **If this instance is reachable from the public internet, set `HUNTER_SETUP_TOKEN` in `.env` first**
