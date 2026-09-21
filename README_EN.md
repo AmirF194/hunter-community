@@ -23,11 +23,11 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 [![Stars](https://img.shields.io/github/stars/agentpit-io/hunter-community?style=social)](https://github.com/agentpit-io/hunter-community/stargazers)
 [![Discussions](https://img.shields.io/github/discussions/agentpit-io/hunter-community)](https://github.com/agentpit-io/hunter-community/discussions)
 
-<img src="./docs/screenshots/hunter-demo.gif" alt="HunterCode demo: asking about a stock returns a rich card" width="760" />
+<img src="./docs/screenshots/hunter-demo-0919.gif" alt="HunterCode demo: asking about a stock returns a rich card" width="760" />
 
 [**🚀 Live demo**](https://hunter-community.agentpit.io) &nbsp;·&nbsp; [**⚡ Deploy in 5 min**](#-deploy-in-5-minutes) &nbsp;·&nbsp; [**📖 Docs**](./docs/01-getting-started.md) &nbsp;·&nbsp; [**💬 Discussions**](https://github.com/agentpit-io/hunter-community/discussions)
 
-🏆 [Finalist, Global Open-source AI Competition (GOAI), Track 2 Top 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg) · [Feature-by-feature comparison with WorkBuddy Finance (with official sources)](https://www.agentpit.io/compare/workbuddy) · [Full demo video, 3:34 (recorded on the Cloud edition)](https://github.com/user-attachments/assets/37f4a065-663b-4eee-8d3f-c9c0573270e3)
+🏆 [Finalist, Global Open-source AI Competition (GOAI), Track 2 Top 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg) · [Feature-by-feature comparison with WorkBuddy Finance (with official sources)](https://www.agentpit.io/compare/workbuddy) · [Full demo video, 3:00 (recorded 2026-09-19)](https://www.agentpit.io/media/huntercode-demo-0919.mp4)
 
 </div>
 
