@@ -23,7 +23,7 @@ HunterCode is an open-source, local alternative to Tencent WorkBuddy Finance Edi
 [![Stars](https://img.shields.io/github/stars/agentpit-io/hunter-community?style=social)](https://github.com/agentpit-io/hunter-community/stargazers)
 [![Discussions](https://img.shields.io/github/discussions/agentpit-io/hunter-community)](https://github.com/agentpit-io/hunter-community/discussions)
 
-<img src="./docs/screenshots/hunter-demo-0919.gif" alt="HunterCode demo: asking about a stock returns a rich card" width="760" />
+<img src="./docs/screenshots/hunter-demo-0919-v2.gif" alt="HunterCode demo: feature overview → stock screener across A-share / HK / US → agent research desk" width="760" />
 
 [**🚀 Live demo**](https://hunter-community.agentpit.io) &nbsp;·&nbsp; [**⚡ Deploy in 5 min**](#-deploy-in-5-minutes) &nbsp;·&nbsp; [**📖 Docs**](./docs/01-getting-started.md) &nbsp;·&nbsp; [**💬 Discussions**](https://github.com/agentpit-io/hunter-community/discussions)
 

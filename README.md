@@ -23,7 +23,7 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 [![Stars](https://img.shields.io/github/stars/agentpit-io/hunter-community?style=social)](https://github.com/agentpit-io/hunter-community/stargazers)
 [![Discussions](https://img.shields.io/github/discussions/agentpit-io/hunter-community)](https://github.com/agentpit-io/hunter-community/discussions)
 
-<img src="./docs/screenshots/hunter-demo-0919.gif" alt="HunterCode 演示:对话中查询个股并返回富卡片" width="760" />
+<img src="./docs/screenshots/hunter-demo-0919-v2.gif" alt="HunterCode 演示:功能总览 → 选股器扫描 A股/港股/美股 → 小鹿智能体研究台" width="760" />
 
 [**🚀 在线演示**](https://hunter-community.agentpit.io) &nbsp;·&nbsp; [**⚡ 5 分钟部署**](#-5-分钟跑起来) &nbsp;·&nbsp; [**📖 文档**](./docs/01-getting-started.md) &nbsp;·&nbsp; [**💬 讨论区**](https://github.com/agentpit-io/hunter-community/discussions)
 
