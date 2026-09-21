@@ -27,7 +27,7 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 [**🚀 在线演示**](https://hunter-community.agentpit.io) &nbsp;·&nbsp; [**⚡ 5 分钟部署**](#-5-分钟跑起来) &nbsp;·&nbsp; [**📖 文档**](./docs/01-getting-started.md) &nbsp;·&nbsp; [**💬 讨论区**](https://github.com/agentpit-io/hunter-community/discussions)
 
-🏆 [入围世界人工智能开源大赛(GOAI)总决赛 · 赛道二 TOP 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg) · [与 WorkBuddy 金融版逐项对比(附官方来源)](https://www.agentpit.io/compare/workbuddy) · [完整演示视频 3 分 34 秒(云端版录制)](https://github.com/user-attachments/assets/37f4a065-663b-4eee-8d3f-c9c0573270e3)
+🏆 [入围世界人工智能开源大赛(GOAI)总决赛 · 赛道二 TOP 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg) · [与 WorkBuddy 金融版逐项对比(附官方来源)](https://www.agentpit.io/compare/workbuddy) · [完整演示视频 3 分钟(2026-09-19 录制)](https://www.agentpit.io/media/huntercode-demo-0919.mp4)
 
 </div>
 
