@@ -84,7 +84,7 @@ not waive upstream rules on your behalf.
 
 ## 4. The allowance
 
-- **300,000 tokens per key per day** by default (input + output, output
+- **10,000,000 tokens per key per day** by default (input + output, output
   includes thinking tokens), resetting at 00:00 Asia/Shanghai.
 - There are also **per-minute request and concurrency limits**, plus per-request
   input and output length caps.

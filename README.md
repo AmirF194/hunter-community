@@ -82,7 +82,7 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
 > 1. **模型从哪来**。推荐走 **HunterCode 内置额度**:[免费申请一把 `hunt_tools_` 平台 key](https://hunter.agentpit.io/dev/api-keys)(约 30 秒),在向导第 2 步选第一张卡,**不用自己去各家申请大模型 key**,地址和模型名向导自动填好。详见 [内置额度使用说明](./docs/builtin-llm/使用说明.md)。
->    · **额度**:每把 key **每天 30 万 token**(输入 + 含 thinking 的输出),北京时间 0 点重置;另有每分钟请求数与并发上限。额度用完不是断服 —— 对话里会用中文说清几点重置、怎么改用自带 key,工具与数据供给照常。额度与服务可能调整或下线。
+>    · **额度**:每把 key **每天 1000 万 token**(输入 + 含 thinking 的输出),北京时间 0 点重置;另有每分钟请求数与并发上限。额度用完不是断服 —— 对话里会用中文说清几点重置、怎么改用自带 key,工具与数据供给照常。额度与服务可能调整或下线。
 >    · **隐私**:网关只记 token 数与模型名,**不记任何 prompt 与回复内容**。
 >    · 使用前请读一遍 [**服务条款与可接受使用政策**](./docs/builtin-llm/服务条款.md)([English](./docs/builtin-llm/terms-of-service.md)) —— 仅限自部署用户的研究用途,禁止转售、禁止当通用 API 用。
 >    **高级路径:自带大模型 key** —— [DeepSeek](https://platform.deepseek.com/api_keys) 或任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)都行,向导里粘进去当场检测。两条路随时互相切换。
