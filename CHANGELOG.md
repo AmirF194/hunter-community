@@ -3,6 +3,27 @@
 All notable changes to HunterCode · Community Edition follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### 🐛 修复 · Fixed
+
+- **侧栏填了 Hunter key,对话却还是自己的模型**(2026-09-22 用户实报)。平台 key 与大模型
+  配置本来就是两件事,侧栏「Hunter key 管理」弹窗只存前者 —— 用户以为填了 key 就会用上
+  内置 Gemini,实际要再走一遍向导选第一张卡。现在弹窗的已解锁状态下多一张卡片:
+  - 自带 key 的实例:「**一键开启内置额度**」。用库里那把平台 key 跑与向导同口径的
+    三项检测(连通 / 对话 / 工具调用),通过才写库、写深度分析模型名、热推 opencode,
+    然后刷新页面;没通过就**原样保留**当前配置并说清哪一项没过。卡片上如实写明
+    「会替换当前的大模型配置」以及怎么切回自带 key。
+  - `.env` 锁定的实例:说清网页为什么改不了、`.env` 里改哪三行。
+  - 已在用内置额度:一行绿字。
+  - 新接口 `POST /api/setup/llm/adopt-builtin`,门禁与向导其它写接口相同,
+    key 不经过浏览器。单测 +6 条(`tests/test_setup_builtin.py`)。
+- **换模型后浏览器还拿着旧模型名发消息**。热推配置是 mergeDeep,旧模型名会残留在
+  `hunter-llm` 的清单里,于是本地存的 `hunter-llm/deepseek-flash` 仍被判为有效 ——
+  切到内置额度后每条消息都是 400 `model_not_allowed`,选择器里也同时挂着新旧两个。
+  现在 `hunter-llm` 下只认 opencode 当前选定的那一个模型(与占位名同一个根因、同一种修法)。
+  走向导切换模型的用户同样受益。
+
 ## [1.2.0] - 2026-09-19
 
 > 1.2.0-rc1 已在测试服务器全流程验证过（见 `docs/builtin-llm/P2-成果与测试报告.md`）。

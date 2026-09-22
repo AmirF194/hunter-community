@@ -271,19 +271,25 @@ class SaveIn(BaseModel):
     builtin: bool = False
 
 
+def _raise_if_env_locked() -> None:
+    """大模型配置写在环境变量里时 409 —— 写进库也不会生效(`llm()` 里环境变量优先)。"""
+    if not runtime_config.env_locked():
+        return
+    locked = [k for k in ("base_url", "api_key", "model")
+              if runtime_config.source(k) == "env"]
+    raise HTTPException(409, {
+        "message": "这台实例的大模型配置写在环境变量里（"
+                   + "、".join({"base_url": "LLM_BASE_URL", "api_key": "LLM_API_KEY",
+                                "model": "LLM_DEFAULT_MODEL"}[k] for k in locked)
+                   + "），向导改不了它。要换模型请改 .env 后 docker compose up -d。",
+        "locked_items": locked,
+    })
+
+
 @router.put("/llm")
 async def llm_save(body: SaveIn, request: Request):
     _guard(request)
-    if runtime_config.env_locked():
-        locked = [k for k in ("base_url", "api_key", "model")
-                  if runtime_config.source(k) == "env"]
-        raise HTTPException(409, {
-            "message": "这台实例的大模型配置写在环境变量里（"
-                       + "、".join({"base_url": "LLM_BASE_URL", "api_key": "LLM_API_KEY",
-                                    "model": "LLM_DEFAULT_MODEL"}[k] for k in locked)
-                       + "），向导改不了它。要换模型请改 .env 后 docker compose up -d。",
-            "locked_items": locked,
-        })
+    _raise_if_env_locked()
 
     base_url = (body.base_url or "").strip().rstrip("/")
     model = (body.model or "").strip()
@@ -330,6 +336,64 @@ async def llm_save(body: SaveIn, request: Request):
                                   "sanitize": sanitize, "api_key_masked": mask(api_key),
                                   "builtin": builtin},
             "data_supply": data_supply}
+
+
+@router.post("/llm/adopt-builtin")
+async def llm_adopt_builtin(request: Request):
+    """用**已经存好的平台 key** 一键切到内置额度(侧栏「Hunter key 管理」弹窗那颗按钮)。
+
+    为什么要有这条:平台 key 与大模型配置是两件事,侧栏弹窗只存前者。2026-09-22
+    用户实报:填了 Hunter key,对话框里还是自己的 deepseek-flash,以为内置
+    Gemini 没生效 —— 其实要再走一遍向导选第一张卡。这里把那一步折成一个按钮。
+
+    与向导「内置额度」卡片走**同一套**:三项检测 → 写库(sanitize=0)→ 写 agent
+    侧模型名 → 热推 opencode。key 从库里取,**前端拿不到也不需要拿到明文**。
+    检测不过就不写 —— 当前配置原样保留,把失败原因如实返回。
+    """
+    _guard(request)
+    _raise_if_env_locked()
+
+    if runtime_config.builtin():
+        cfg = runtime_config.llm()
+        return {"ok": True, "already": True, "model": cfg.model}
+
+    from app.services import hunter_key
+    key = (hunter_key.resolve() or "").strip()
+    if not key:
+        raise HTTPException(400, {"code": "no_key",
+                                  "message": "还没有配置 Hunter 平台 key,先在上面保存一把"})
+    if not key.startswith("hunt_tools_"):
+        raise HTTPException(400, {"code": "not_platform_key",
+                                  "message": "当前平台 key 不是 hunt_tools_ 开头,内置额度网关不认"})
+
+    base_url, model = runtime_config.BUILTIN_BASE_URL, runtime_config.BUILTIN_CHAT_MODEL
+    res = await run_in_threadpool(llm_probe.run_all, base_url, key, model)
+    if not res["ok"]:
+        bad = next((c for c in res["checks"] if not c["ok"]), {})
+        logger.info("[setup] 一键内置额度 · 检测未通过 · {} · {}",
+                    bad.get("name", "?"), bad.get("code", ""))
+        return {"ok": False, "checks": res["checks"],
+                "message": f"「{bad.get('name', '检测')}」没通过:{bad.get('message', '')}"
+                           "。当前大模型配置没有改动。"}
+
+    class _Cfg:
+        pass
+    cfg = _Cfg()
+    cfg.base_url, cfg.api_key, cfg.model, cfg.sanitize = base_url, key, model, "0"
+    # 第二个参数只用来记检测时间(见 save_llm 的说明)—— 上面刚跑过三项检测
+    await run_in_threadpool(runtime_config.save_llm, cfg, "adopt-builtin")
+    await run_in_threadpool(runtime_config.save_builtin, True,
+                            runtime_config.BUILTIN_AGENT_MODELS)
+    # 没走过向导的实例也记上完成时间 —— 否则下次打开对话页会被弹回向导
+    if not runtime_config.get_str(runtime_config.K_SETUP_DONE):
+        await run_in_threadpool(runtime_config.set_str, runtime_config.K_SETUP_DONE,
+                                str(int(time.time())))
+
+    applied = await run_in_threadpool(opencode_admin.apply_llm, runtime_config.llm())
+    logger.info("[setup] 一键内置额度 · 已保存 · 热推 ok={}", bool(applied.get("ok")))
+    return {"ok": True, "already": False, "model": model,
+            "applied": bool(applied.get("ok")), "apply_reason": applied.get("reason", ""),
+            "expect_ready_seconds": 10}
 
 
 async def _adopt_llm_key_for_data(api_key: str) -> dict:
