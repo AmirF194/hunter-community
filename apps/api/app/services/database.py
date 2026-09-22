@@ -2,7 +2,7 @@ import os
 import psycopg2
 from loguru import logger
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://hermes:Hermes2026DB!@localhost:5432/hermes")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5432/hunter")
 
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS stocks (
