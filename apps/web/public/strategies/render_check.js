@@ -1244,6 +1244,43 @@ auditJob('保存策略', async () => {
   auditCheck('保存策略', '加载解析失败:市场退回、loadedName 清空', vm.runInContext(`S.market + '|' + S.loadedName`, ctx2) === 'us|')
 })
 
+// G2 · 点官方示例 = 直接换成那套条件(2026-09-22 线上事故:追加模式下点「VCP 波段收缩」报「不认识 'sma50'」)
+// 原来点示例是塞进生成框再 generate(),受追加开关影响、拿当前条件当上下文编译。现在和加载「我的扫描策略」一样一律替换。
+auditJob('官方示例', async () => {
+  const ctx = scCtx()
+  vm.runInContext(`
+    S.mode = 'append'; S.market = 'hk'; S.input = '用户正在写的一句'
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['old1', 'old2'], plot_order: ['old1', 'old2'], conditions: [
+      { name: 'sma50', expr: 'Average(close, 50)', kind: 'def', is_bool: false, tokens: [] },
+      { name: 'old1', expr: 'close > sma50', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'old2', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] } ] })
+    var PRE = { key: 'vcp_range', name: 'VCP 波段收缩', market: 'us', script: 'def c_trend = close > SMA50;' + NL + 'plot scan = c_trend;' }
+    RESP.push({ ok: true, status: 200, data: { combine: 'all', plot_name: 'scan', plot_refs: ['c_trend'], plot_order: ['c_trend'], conditions: [
+      { name: 'c_trend', expr: 'close > SMA50', kind: 'def', is_bool: true, tokens: [] } ] } })
+  `, ctx)
+  await vm.runInContext(`loadOfficialPreset(PRE)`, ctx)
+  const b0 = ctx.SENT[0] && ctx.SENT[0].body
+  auditCheck('官方示例', '⭐追加模式下点示例:发去解析的就是示例原文,不带当前脚本当上下文', b0 && b0.script === ctx.PRE.script && !b0.context, b0)
+  auditCheck('官方示例', '⭐条件整套替换(原来 2 条没了,只剩示例的)',
+    vm.runInContext(`S.conditions.filter(function (c) { return c.is_bool }).map(function (c) { return c.name }).join(',')`, ctx) === 'c_trend')
+  auditCheck('官方示例', '市场切到示例的市场', vm.runInContext(`S.market`, ctx) === 'us')
+  auditCheck('官方示例', '不往生成框里塞示例脚本', vm.runInContext(`S.input`, ctx) === '')
+  auditCheck('官方示例', '提示替换了几条', ctx.TOASTS.some(t => /已加载官方示例「VCP 波段收缩」 · 替换了原来的 2 个条件/.test(t[0])), ctx.TOASTS)
+  const ctx2 = scCtx()
+  vm.runInContext(`
+    S.market = 'hk'
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['old1'], plot_order: ['old1'], conditions: [
+      { name: 'old1', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] } ] })
+    RESP.push(ERR400)
+  `, ctx2)
+  await vm.runInContext(`loadOfficialPreset({ key: 'x', name: 'X', market: 'us', script: 'plot scan = close > 1;' })`, ctx2)
+  auditCheck('官方示例', '解析失败:市场退回、原来的条件不动',
+    vm.runInContext(`S.market + '|' + S.conditions.map(function (c) { return c.name }).join(',')`, ctx2) === 'hk|old1')
+  const html = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
+  const branch = html.slice(html.indexOf('if (!b.dataset.preset) return'), html.indexOf('if (!b.dataset.preset) return') + 300)
+  auditCheck('官方示例', '⭐源码:点示例走 loadOfficialPreset,不再 generate()', /loadOfficialPreset\(p\)/.test(branch) && !/generate\(\)/.test(branch), branch)
+})
+
 // H · 草稿:宿主脚本能恢复;401 时草稿不被覆盖
 auditJob('草稿', async () => {
   const ctx = scCtx()

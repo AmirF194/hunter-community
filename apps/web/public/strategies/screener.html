@@ -1028,6 +1028,27 @@ async function doSave(raw, modal) {
   toast((r.data && r.data.created ? '已保存' : '已覆盖') + '「' + name + '」', 'success')
 }
 
+// 点官方示例 = 直接换成那套条件(2026-09-22 用户:「官方预留的就直接记录筛选器就行,不要再生成一次」)。
+// 原来是把示例脚本塞进生成框再走 generate(),受「追加 / 替换」开关影响:追加模式下拿当前条件当上下文编译,
+// 当前是「上升趋势」(有 def sma50)时点「VCP 波段收缩」,VCP 里的 SMA50 被当成上下文里的 sma50,报「不认识 'sma50'」。
+// 示例是一整套设置,和加载「我的扫描策略」一样一律替换:不进生成框、不看追加开关、失败时市场退回、条件不动。
+async function loadOfficialPreset(p) {
+  const before = S.conditions.filter(function (c) { return c.is_bool }).length
+  const prevMarket = S.market
+  if (p.market) S.market = p.market
+  S.input = ''
+  S.genError = null
+  const ok = await reparse(p.script)
+  if (!ok || S.genError) {
+    S.market = prevMarket
+    render()
+    return
+  }
+  S.loadedName = ''         // 换成系统示例了,就不再是「基于我那个策略」
+  render()
+  toast('已加载官方示例「' + p.name + '」' + (before ? ' · 替换了原来的 ' + before + ' 个条件' : ''))
+}
+
 async function loadSavedPreset(id) {
   const p = S.saved.filter(function (x) { return x.id === id })[0]
   if (!p) return
@@ -1397,14 +1418,10 @@ function bind() {
       setHiddenPresets(h); render(); return
     }
     if (!b.dataset.preset) return
-    S.loadedName = ''         // 换成系统示例了,就不再是「基于我那个策略」
     const p = ((S.meta && S.meta.presets) || []).filter(function (x) {
       return x.key === b.dataset.preset
     })[0]
-    if (!p) return
-    S.input = p.script
-    if (p.market) S.market = p.market
-    generate()
+    if (p) loadOfficialPreset(p)
   })
 
   const list = document.getElementById('cd-list')
