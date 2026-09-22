@@ -21,7 +21,13 @@ bind mount 让文件立刻更新,但 **MCP 是 opencode 启动时 spawn 的子�
     import hunter_capability_mcp as m
     asyncio.run(m.list_tools())"'
 
-这个 MCP 不在镜像里,通过 docker-compose 的 bind mount 挂进容器,
+**源文件在这里(huntercode mcp/)**,2026-09-17 从 hunter-community 的
+scripts/opencode-mcp/ 收回。之前它只存在于 hunter-community,违反「opencode 相关代码只在
+huntercode 改」—— 两边各改各的就会像 hunter-mcp-context.ts 那样漂移(社区版补了
+hunter_user_ 前缀,这里一个月没有)。改动先改这里,再整份拷到 hunter-community。
+目前**只有 hunter-community 部署了它**,hermes(SaaS)没有注册。
+
+在 hunter-community 里,这个 MCP 不在镜像里,通过 docker-compose 的 bind mount 挂进容器,
 再由 scripts/opencode/gen-config.py 注册进 opencode.json 的 mcp 段
 (镜像自带的 .opencode/opencode.jsonc 注册了另外 4 个,两份配置会合并)。
 

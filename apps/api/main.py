@@ -417,6 +417,23 @@ app.include_router(internal_cap_router.router, prefix="/api")
 from app.routers import internal_uzi as internal_uzi_router
 app.include_router(internal_uzi_router.router, prefix="/api")
 
+# ── 用户 SKILL 导出 · 供 opencode 的 `skills.urls` 拉取(M1 子任务 D)──
+# 云平台上 api 与 opencode 不能共用一个卷,用户装的 SKILL 模型看不到;
+# 改由 opencode 原生的 URL 拉取解决,见 routers/internal_skills.py 开头
+from app.routers import internal_skills as internal_skills_router
+app.include_router(internal_skills_router.router, prefix="/api")
+
+# 大模型配置下发给 opencode 容器(M1 · 设计方案 3.3)
+from app.routers import internal_runtime as internal_runtime_router
+app.include_router(internal_runtime_router.router, prefix="/api")
+
+# 首启向导(M2 · 设计方案第四节)· /api/setup/*
+# 鉴权不走 JWT 中间件(向导要在"还没有账号"时可用),自己一套门禁见 routers/setup.py。
+# `/api/setup/` 已加进 middleware/auth.py 的 _PUBLIC_PREFIXES —— 那只是让 JWT
+# 中间件放行,真正的鉴权在每个 handler 的 `_guard`。
+from app.routers import setup as setup_router
+app.include_router(setup_router.router, prefix="/api")
+
 # ── 用户画像与记忆体 + admin 用户洞察后台 ──
 # ── 平台 key 门控 · 开源版解锁全部工具与 SKILL ──
 from app.routers import hunter_unlock as hunter_unlock_router

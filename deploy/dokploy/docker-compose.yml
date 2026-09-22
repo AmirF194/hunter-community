@@ -1,0 +1,182 @@
+# HunterCode Community Edition · Dokploy 用编排
+# ══════════════════════════════════════════════════════════════════════
+# 用法：Dokploy → Project → Create Service → **Compose** → Provider 选 Raw
+#       → 把这份文件整个粘进 Compose File → 到 **Environment** 页签填两个变量
+#       → **Domains** 页签给 web 服务加域名（Container Port 填 3000）→ Deploy。
+#       详细步骤见
+#       https://github.com/agentpit-io/hunter-community/blob/main/docs/deploy/coolify-dokploy.md
+#
+# ⚠️ **Dokploy 不会把 Environment 页签里的变量自动注入容器**（官方文档原文：
+#    "Environment variables set in the UI are written to the `.env` file, but are
+#    **not automatically injected into containers**"）。它写的是同目录的 `.env`，
+#    而 compose 的 `${VAR}` 插值**读的正是这个 .env** —— 所以下面这种写法是对的，
+#    不需要额外的 env_file。
+#
+# Environment 页签里要填的**只有两个**：
+#
+#     POSTGRES_PASSWORD=<自己生成，如 openssl rand -hex 24>
+#     HUNTER_SETUP_TOKEN=<自己生成，如 openssl rand -hex 12>
+#
+# Dokploy 没有 Coolify 那种「magic 变量」自动生成随机值，所以这两个要自己生成。
+# **不要留空**：HUNTER_SETUP_TOKEN 为空 = 公网上谁先打开谁就能配大模型。
+#
+# 其余与 Coolify 版完全一致（同镜像、同环境变量、同卷、同依赖），
+# 差别只有上面这一处「随机值谁来生成」和域名的绑定方式。
+services:
+  # ── web · 本应用唯一对外的服务（在 Domains 页签里选它）────────
+  web:
+    image: ghcr.io/agentpit-io/hunter-community-web:1.1.0
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      opencode:
+        condition: service_started
+    environment:
+      # 域名不在这里配 —— Dokploy 在 Domains 页签里选服务 web + Container Port 3000，
+      # 部署时自动往这个服务加 Traefik 标签并把它接进 dokploy-network，
+      # 不需要你写 labels，也不需要 ports:（官方文档 Method 1）。
+      NODE_ENV: production
+      # BFF 要回调 api 查会话归属；不传会回落 127.0.0.1:8000 → 503
+      HERMES_API_URL: http://api:8000
+      # BFF 要反代到 opencode；不传会回落 127.0.0.1:3901（那是 web 自己）→ 502
+      OPENCODE_URL: http://opencode:3901
+      OPENCODE_SERVER_USERNAME: ""
+      OPENCODE_SERVER_PASSWORD: ""
+    volumes:
+      # 只读 · web 的 BFF 调 /api/internal/ocr/extract 要和 api 用同一把
+      # HUNTER_INTERNAL_KEY，否则「上传图片没反应」（其实是 401）
+      - hunter_secrets:/opt/hunter-secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ── api · 后端 + 自动迁移 + 首启向导 ─────────────────────────
+  api:
+    image: ghcr.io/agentpit-io/hunter-community-api:1.1.0
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HUNTER_MINIMAL_BOOT: "1"
+      DATABASE_URL: postgresql://hunter:${POSTGRES_PASSWORD}@postgres:5432/hunter
+      REDIS_URL: redis://redis:6379/0
+      # 首启向导第 0 步的初始化口令。**必须非空** —— 公网上不设口令等于
+      # 谁先打开谁就能配大模型、看别人的 key。部署后在 Environment Variables 里查。
+      HUNTER_SETUP_TOKEN: ${HUNTER_SETUP_TOKEN}
+      # ⚠️ 公网部署必须是 0。单用户模式不要账号密码，开着等于谁都能拿到 admin
+      HUNTER_SINGLE_USER: "0"
+      # open = 允许注册，第一个注册的账号自动是管理员。建好管理员后
+      # 建议在 Coolify 里改成 closed 再 Redeploy。
+      REGISTRATION_MODE: open
+      JWT_ACCESS_TTL: "3600"
+      JWT_REFRESH_TTL: "2592000"
+      # 独立运行模式 · 不指回项目方的演示站
+      HUNTER_UPSTREAM_URL: ""
+      # 留空即可 · 聊天用你自己的大模型 key。想解锁全部行情工具再到
+      # https://hunter.agentpit.io/dev/api-keys 免费申请
+      HUNTER_API_KEY: ""
+      LLM_PROVIDER: openai_compat
+      HUNTER_SKILLS_DIR: /opt/hunter-skills
+      HUNTER_USER_SKILLS_DIR: /opt/hunter-user-skills
+      OPENCODE_URL: http://opencode:3901
+      # ⚠️ **api 也必须知道 shim 在哪**，不是只有 opencode 需要：向导保存后 api 走
+      # PATCH /global/config 把 provider 的 baseURL 推给 opencode，推的就是这个值。
+      LLM_SHIM_URL: http://llm-shim:3999/v1
+    volumes:
+      - hunter_user_skills:/opt/hunter-user-skills
+      - hunter_packages:/opt/hunter-packages
+      # 自动生成的密钥 · api 可写（它是写方），web / opencode 只读挂同一个卷
+      - hunter_secrets:/opt/hunter-secrets
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 3 http://127.0.0.1:8000/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
+
+  # ── opencode · 对话内核（会话正文在卷里）─────────────────────
+  opencode:
+    image: ghcr.io/agentpit-io/hunter-community-opencode:1.1.0
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      llm-shim:
+        condition: service_healthy
+    environment:
+      HERMES_API_URL: http://api:8000
+      LLM_PROVIDER: openai_compat
+      LLM_SCHEMA_SANITIZE: auto
+      LLM_SHIM_URL: http://llm-shim:3999/v1
+      # 审计日志写进卷内 —— 放 /tmp 的话一次重建就没，而审计的全部意义就是留痕
+      HUNTER_AUDIT_PATH: /home/hunter/.local/share/hunter-audit/AUDIT.jsonl
+      # 自部署用户付的是自己的大模型账单，不该被限额
+      HUNTER_BUDGET_ENABLED: "false"
+    volumes:
+      # ⚠️ 会话正文（opencode-local.db · 所有对话内容）必须落在卷上。
+      #    2026-09-07 事故：没挂卷时一次容器重建让 33 个用户会话全部消失且不可恢复 ——
+      #    postgres 里只有 session_id↔user_id 的归属映射，正文一个字都不在里面。
+      - hunter_opencode:/home/hunter/.local
+      - hunter_secrets:/opt/hunter-secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS -o /dev/null --max-time 3 http://127.0.0.1:3901/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ── llm-shim · tool schema 清洗层 ───────────────────────────
+  # opencode 送出的是完整 JSON Schema，Gemini 只认 OpenAPI 子集。
+  # 用非 Gemini 模型时这个容器空转，不影响任何东西。
+  llm-shim:
+    image: ghcr.io/agentpit-io/hunter-community-llm-shim:1.1.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request as u;u.urlopen('http://127.0.0.1:3999/health',timeout=3)\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ── postgres ────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hunter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: hunter
+    volumes:
+      - hunter_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hunter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── redis ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - hunter_redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  hunter_pg:
+  hunter_redis:
+  hunter_opencode:
+  hunter_user_skills:
+  hunter_packages:
+  hunter_secrets:

@@ -15,9 +15,14 @@ from loguru import logger
 from app.services.agent.tool_registry import ToolCall, ToolRegistry, ToolResult
 from app.services.online_analysis.llm_client import get_client
 from app.services.lang_guard import ZH_ONLY_RULE
+from app.services import runtime_config
 
 
-_MODEL = os.getenv("AGENT_SUB_RESEARCH_MODEL", "gemini-3.5-flash")
+def _model() -> str:
+    # 惰性读取:环境变量非空 → 数据库(向导内置额度路径写入)→ 代码默认值。
+    # **不要改回模块级常量** —— 向导热生效不重启容器,常量会一直是旧值;
+    # 而且 compose 的 `${X:-}` 注进来的是空串,`os.getenv(名, 默认)` 拿不到默认值。
+    return runtime_config.agent_model("AGENT_SUB_RESEARCH_MODEL", "gemini-3.5-flash")
 
 _SYSTEM = """你是猎鹿人 Hunter 的"深度研究"专家。给定一只股票和用户问题，输出结构化 JSON：
 {
@@ -64,7 +69,7 @@ async def invoke_research(code: str, question: str = "") -> tuple[dict, Optional
     user = f"股票代码：{code}\n用户问题：{question or '综合看一下'}"
     try:
         resp = client.chat.completions.create(
-            model=_MODEL,
+            model=_model(),
             messages=[
                 {"role": "system", "content": _SYSTEM + ZH_ONLY_RULE},
                 {"role": "user", "content": user},

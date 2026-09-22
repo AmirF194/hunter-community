@@ -16,6 +16,16 @@ RS 评级是**全市场排名**:算某天这只票的评级,要知道那天排�
 脚本用到**没有历史**的字段(市值 / 财务,`screen_asof.reconstructable` 为假)时,那些条件每天都是「算不出」,
 不算命中也不算没命中,计进 `unknown` 并在 `note` 里点名 —— 不许当成「那天没命中」,
 否则图上一条蓝线都没有,用户会以为这只票过去一年从没满足过条件。
+
+## 扫描当天以结果表为准(2026-09-19 用户:「显示命中的蓝色线一定是基于当前筛选器配置命中的,这点原则一直不能变」)
+
+快照类脚本(不带 `[1]` 这类写法)的结果表用**扫描源快照**求值,这里用**自家日线**回算 —— 两份数据在扫描当天可能对不上:
+① 自家日线还没有快照那一天(每晚任务没跑到 / 本地版不拉数):那天根本没法回算,结果是「一年命中 0 天」;
+② 两边数值有细微差别(均线差几分钱卡在边界、个别票自家日线的量或高低价有问题)。
+2026-09-19 本地实测「放量突破」134 只:94 只扫描当天有蓝线,18 只没有(②),22 只自家日线里根本没有这只票。
+所以 `in_result=True`(这只票就在这次实时扫描的结果表里)时,**快照所属交易日(扫描源 `daily-bar.time`)一律记为命中**,
+自家日线回算和它不一致就在 note 里写明;过去的日子仍按自家日线回算(扫描源没有历史快照,只能这样)。
+时间回溯(as_of)与时间序列脚本本来就和结果表同一份日线同一套算法,不走这条。
 """
 from __future__ import annotations
 
@@ -77,11 +87,50 @@ def _snapshot(market_raw: str, market_key: str, has_field):
         return hit[1], hit[2]
     cols = [x for x in screen_asof.STATIC_COLS if x not in screen_source.ALWAYS_COLS and has_field(x)]
     cols += list(rs_history._PERF_COLS) + ["exchange", "market_cap_basic"]
+    if has_field(BAR_TIME):
+        cols.append(BAR_TIME)          # 快照是哪个交易日的(扫描当天以结果表为准要用)
     rows, _ = screen_source.fetch_rows(market_raw, cols)
     perf = {r["_code"]: r for r in rows}
     with _lock:
         _snap_cache[market_key] = (now, rows, perf)
     return rows, perf
+
+
+BAR_TIME = "daily-bar.time"
+
+
+def snapshot_day(row: dict | None) -> date | None:
+    """扫描源快照属于哪个交易日:`daily-bar.time` 是当天日 K 的 UTC 零点时间戳(实测 MPC / AAPL 2026-09-18 → 1789689600)。"""
+    from datetime import datetime, timezone
+    t = (row or {}).get(BAR_TIME)
+    if not isinstance(t, (int, float)) or t <= 0:
+        return None
+    return datetime.fromtimestamp(t, tz=timezone.utc).date()
+
+
+def _pin_scan_day(out: dict, scan_day: date | None, store_last) -> dict:
+    """扫描当天以结果表为准:把快照所属交易日记为命中,回算和它不一致时写明原因。"""
+    if scan_day is None:
+        return out
+    d = str(scan_day)
+    hits = list(out.get("hits") or [])
+    notes = [out["note"]] if out.get("note") else []
+    out = dict(out, scan_day=d)
+    if d in hits:
+        return out
+    if store_last is not None and scan_day > store_last:
+        notes.append(f"扫描当日 {d} 的日线还没进自家日线库(最新到 {store_last}),这一天按扫描结果标为命中")
+    elif out.get("evaluated"):
+        notes.append(f"扫描当日 {d} 按扫描结果标为命中;用自家日线回算这一天不满足"
+                     "(扫描源快照与自家日线的均线 / 成交量 / 高低价有细微差别,卡在条件边界上)")
+    else:
+        notes.append(f"只能标出扫描当日 {d}(按扫描结果),更早的日子算不出")
+    hits.append(d)
+    out["hits"] = sorted(hits)
+    out["scan_pinned"] = True          # 这一天是按结果表补标的(不是回算命中),前端可按日K 最后一根挪位
+    out["scan_note"] = notes[-1]       # 补标说明单独给,前端常驻显示
+    out["note"] = ";".join(notes)
+    return out
 
 
 def _rs_table(market_key: str, store: dict, snap: dict) -> dict:
@@ -152,8 +201,23 @@ def screen_dsl_label(f: str) -> str:
     return screen_dsl.field_label_cn(f) or f
 
 
-def hit_days(script: str, market: str, code: str, as_of: date | None = None, days: int = DAYS) -> dict:
-    """→ {code, market, from, to, evaluated, hits: [YYYY-MM-DD], unknown, unavailable: [字段], note}"""
+def hit_days(script: str, market: str, code: str, as_of: date | None = None, days: int = DAYS,
+             in_result: bool = False) -> dict:
+    """→ {code, market, from, to, evaluated, hits: [YYYY-MM-DD], unknown, unavailable: [字段], note, scan_day?}
+
+    in_result:这只票在这次**实时**扫描的结果表里(前端按结果表传)。只对快照类脚本、没有回溯日时生效,见文件头最后一节。"""
+    out = _hit_days(script, market, code, as_of, days)
+    series, store_last = out.pop("_series", False), out.pop("_store_last", None)     # 内部用,不进响应
+    if not in_result or as_of is not None or series:
+        return out
+    from app.services.quant import screen_source
+    md = screen_source._market(market)
+    meta = screen_source.get_meta(market)
+    _rows, perf = _snapshot(market, md.key, lambda n: n in meta.names)
+    return _pin_scan_day(out, snapshot_day(perf.get(code)), store_last)
+
+
+def _hit_days(script: str, market: str, code: str, as_of: date | None, days: int) -> dict:
     from app.services.quant import screen_source, screen_dsl, screen_asof, screen_rs, rs_history as rh, vcp
 
     if not (script or "").strip():
@@ -164,6 +228,7 @@ def hit_days(script: str, market: str, code: str, as_of: date | None = None, day
     def has_field(n: str) -> bool:
         return n in meta.names
 
+    script = screen_dsl.fix_case(script, meta.names)[0]      # 不分大小写,同 parse_script
     c = screen_dsl.compile_script(script, has_field, meta.sma, meta.ema, meta.rsi)
     fields = list(c.fields)
     _rows, perf = _snapshot(market, md.key, has_field)
@@ -172,7 +237,8 @@ def hit_days(script: str, market: str, code: str, as_of: date | None = None, day
     days = max(1, min(int(days or DAYS), DAYS))
     base = {"code": code, "market": md.key, "hits": [], "evaluated": 0, "unknown": 0, "unavailable": []}
     if not item:
-        return dict(base, **{"from": None, "to": None,
+        return dict(base, **{"from": None, "to": None, "_store_last": store["last"],
+                             "_series": c.series is not None,
                              "note": "自家全市场日线里没有这只票(不在日线池里,或者还没拉到),算不出过去哪些天会被命中"})
     dates, arr = item
     end = min(as_of, store["last"]) if as_of else store["last"]
@@ -183,7 +249,7 @@ def hit_days(script: str, market: str, code: str, as_of: date | None = None, day
     with _lock:
         hit = _hit_cache.get(key)
     if hit and hit[0] == store["loaded_at"]:
-        return hit[1]
+        return dict(hit[1], _store_last=store["last"], _series=c.series is not None)
 
     if c.series is not None:
         # 时间序列脚本:整段历史一次算出 plot 的整列,最后 days 列就是逐日命中。
@@ -193,7 +259,7 @@ def hit_days(script: str, market: str, code: str, as_of: date | None = None, day
             if len(_hit_cache) > 2000:
                 _hit_cache.clear()
             _hit_cache[key] = (store["loaded_at"], out)
-        return out
+        return dict(out, _series=True)
     rcache = screen_dsl.build_resolver_cache(c, has_field, meta.sma, meta.ema, meta.rsi)
 
     unavailable = sorted({f for f in fields if not screen_asof.reconstructable(f)})
@@ -263,4 +329,4 @@ def hit_days(script: str, market: str, code: str, as_of: date | None = None, day
         if len(_hit_cache) > 2000:
             _hit_cache.clear()
         _hit_cache[key] = (store["loaded_at"], out)
-    return out
+    return dict(out, _store_last=store["last"], _series=False)

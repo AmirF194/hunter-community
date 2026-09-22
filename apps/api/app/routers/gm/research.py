@@ -12,6 +12,7 @@ from openai import OpenAI
 
 from app.services.gm import findata_db, yahoo_hk, kpred_rules, news_src
 from app.services.gm.yahoo_hk import _cache_get, _cache_set
+from app.services import runtime_config
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,7 +33,7 @@ def _llm_json(prompt: str) -> dict | None:
     if not api_key:
         return None
     client = OpenAI(api_key=api_key,
-                    base_url=os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1"),
+                    base_url=runtime_config.one_api_base_url(),
                     timeout=60)
     model = os.getenv("ONE_API_MODEL", "gemini-3.5-flash")
     try:

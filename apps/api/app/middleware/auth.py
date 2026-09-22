@@ -76,6 +76,16 @@ _PUBLIC_PREFIXES = (
     "/api/backtest/share/",
     # Internal MCP bridge · shared-secret authenticated separately
     "/api/internal/",
+    # 首启向导(M2)· **自己有一套门禁**,见 routers/setup.py 的 `_guard`:
+    # 管理员 JWT / 单用户模式的登录用户 / 初始化会话 token / 口令未配置且来源是
+    # 本机内网,四者之一才放行。
+    #
+    # 为什么必须免 JWT:向导要在「一个账号都还没有、大模型也还没配」的状态下用 ——
+    # 云平台刚部署出来的实例就是这个状态,拿不到任何 token。
+    #
+    # ⚠️ 免 JWT 不等于免鉴权。这个前缀下**每一个** handler 第一行都要调 `_guard`,
+    # 漏一个就是「公网上谁都能改这台实例的大模型配置」(同 `/api/catalog/*` 那条铁律)。
+    "/api/setup/",
 )
 
 

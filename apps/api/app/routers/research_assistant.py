@@ -19,6 +19,7 @@ from openai import OpenAI
 from pydantic import BaseModel
 
 from app.services.database import get_conn
+from app.services import runtime_config
 
 router = APIRouter()
 
@@ -38,9 +39,19 @@ MAX_HISTORY_MESSAGES = 8
 SUMMARY_TRIGGER_COUNT = 16
 
 # 模型配置（走 OneAPI，可通过环境变量切换）
-MODEL_ROUTE    = os.getenv("ASSISTANT_MODEL_ROUTE",    "gemini-3.5-flash")  # 意图分类主模型（快）
-MODEL_CHAT     = os.getenv("ASSISTANT_MODEL_CHAT",     "gemini-3.5-flash")        # 通用对话（更强推理）
-MODEL_COMPRESS = os.getenv("ASSISTANT_MODEL_COMPRESS", "gemini-3.5-flash")  # 摘要压缩（便宜）
+def model_route() -> str:      # 意图分类主模型（快）
+    # 惰性读取:环境变量非空 → 数据库(向导内置额度路径写入)→ 代码默认值。
+    # **不要改回模块级常量** —— 向导热生效不重启容器,常量会一直是旧值;
+    # 而且 compose 的 `${X:-}` 注进来的是空串,`os.getenv(名, 默认)` 拿不到默认值。
+    return runtime_config.agent_model("ASSISTANT_MODEL_ROUTE", "gemini-3.5-flash")
+
+
+def model_chat() -> str:       # 通用对话（更强推理）
+    return runtime_config.agent_model("ASSISTANT_MODEL_CHAT", "gemini-3.5-flash")
+
+
+def model_compress() -> str:   # 摘要压缩（便宜）
+    return runtime_config.agent_model("ASSISTANT_MODEL_COMPRESS", "gemini-3.5-flash")
 
 # chat reply 上限（字符），用户要求 1200 字以给出完整方案
 CHAT_REPLY_MAX_CHARS = 1200
@@ -194,7 +205,7 @@ def _call_llm(messages: list[dict], model: str, max_tokens: int = 1200,
     api_key = os.getenv("ONE_API_KEY", "")
     if not api_key:
         raise HTTPException(500, "LLM 未配置（ONE_API_KEY 缺失）")
-    base_url = os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+    base_url = runtime_config.one_api_base_url()
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=LLM_TIMEOUT_SEC)
 
     def _do(m: str, mt: int) -> str:
@@ -212,7 +223,7 @@ def _call_llm(messages: list[dict], model: str, max_tokens: int = 1200,
         if not allow_fallback:
             raise
         # 双向降级：chat 模型失败 → 用 route；route 失败 → 用 chat（因两者 JSON mode 都不 100% 稳定）
-        alt_model = MODEL_ROUTE if model == MODEL_CHAT else MODEL_CHAT
+        alt_model = model_route() if model == model_chat() else model_chat()
         logger.warning("[assistant] {} 输出非 JSON: {} · 降级到 {} 重试",
                        model, str(e)[:80], alt_model)
         try:
@@ -228,7 +239,7 @@ def _call_llm_plain(messages: list[dict], model: str, max_tokens: int = 800) -> 
     api_key = os.getenv("ONE_API_KEY", "")
     if not api_key:
         raise HTTPException(500, "LLM 未配置")
-    base_url = os.getenv("ONE_API_BASE_URL", "http://104.197.139.51:3000/v1")
+    base_url = runtime_config.one_api_base_url()
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=LLM_TIMEOUT_SEC)
     resp = client.chat.completions.create(
         model=model, messages=messages, temperature=0.2, max_tokens=max_tokens,
@@ -421,7 +432,7 @@ def _maybe_compress_history(session_id: str) -> None:
     try:
         new_summary = _call_llm_plain(
             [{"role": "user", "content": compress_prompt}],
-            model=MODEL_COMPRESS, max_tokens=800,
+            model=model_compress(), max_tokens=800,
         )
     except Exception as e:
         logger.warning("[assistant] 压缩失败 session={} err={}", session_id, e)
@@ -481,7 +492,7 @@ async def chat(body: ChatBody, request: Request):
     # V2：启发式选择模型 · chat 类问题（含追问）用更强的 gemini-3.5-flash
     has_history = len(history) > 0 or bool(summary)
     is_chat = _looks_like_chat_question(q, has_history=has_history)
-    model_used = MODEL_CHAT if is_chat else MODEL_ROUTE
+    model_used = model_chat() if is_chat else model_route()
     # chat 意图需要更大 max_tokens 装 1200 字中文回答（约 2500-3500 tokens）+ JSON 字段
     max_tokens = 3500 if is_chat else 800
 

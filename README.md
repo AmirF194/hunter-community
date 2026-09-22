@@ -23,11 +23,11 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 [![Stars](https://img.shields.io/github/stars/agentpit-io/hunter-community?style=social)](https://github.com/agentpit-io/hunter-community/stargazers)
 [![Discussions](https://img.shields.io/github/discussions/agentpit-io/hunter-community)](https://github.com/agentpit-io/hunter-community/discussions)
 
-<img src="./docs/screenshots/hunter-demo.gif" alt="HunterCode 演示:对话中查询个股并返回富卡片" width="760" />
+<img src="./docs/screenshots/hunter-demo-0919-v2.gif" alt="HunterCode 演示:功能总览 → 选股器扫描 A股/港股/美股 → 小鹿智能体研究台" width="760" />
 
 [**🚀 在线演示**](https://hunter-community.agentpit.io) &nbsp;·&nbsp; [**⚡ 5 分钟部署**](#-5-分钟跑起来) &nbsp;·&nbsp; [**📖 文档**](./docs/01-getting-started.md) &nbsp;·&nbsp; [**💬 讨论区**](https://github.com/agentpit-io/hunter-community/discussions)
 
-🏆 [入围世界人工智能开源大赛(GOAI)总决赛 · 赛道二 TOP 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg) · [与 WorkBuddy 金融版逐项对比(附官方来源)](https://www.agentpit.io/compare/workbuddy) · [完整演示视频 3 分 34 秒(云端版录制)](https://github.com/user-attachments/assets/37f4a065-663b-4eee-8d3f-c9c0573270e3)
+🏆 [入围世界人工智能开源大赛(GOAI)总决赛 · 赛道二 TOP 15](https://mp.weixin.qq.com/s/n8olfrqdP0-rkj6mU_N6Hg) · [与 WorkBuddy 金融版逐项对比(附官方来源)](https://www.agentpit.io/compare/workbuddy) · [完整演示视频 3 分钟(2026-09-19 录制)](https://www.agentpit.io/media/huntercode-demo-0919.mp4)
 
 </div>
 
@@ -45,38 +45,126 @@ HunterCode 是腾讯 WorkBuddy 金融版的开源本地替代方案 · 面向私
 
 ---
 
+## ☁️ 一键部署到云平台
+
+不想自己管服务器的,可以直接部署到下面这些平台,部署完打开域名走一遍首启向导就能用。
+
+| 平台 | 适合谁 | 说明 |
+|---|---|---|
+| [Zeabur](docs/deploy/zeabur.md) | 国内外都能用,能力最全 | 模板自动生成密钥、绑域名、挂卷 |
+| [Sealos](docs/deploy/sealos.md) | 国内用户 | K8s 模板,postgres / redis 走 KubeBlocks |
+| [Railway](docs/deploy/railway.md) | 海外用户 | 控制台里手工搭 6 个服务的逐条清单 + 生成模板的步骤 |
+| [1Panel](docs/deploy/1panel.md) | 自有服务器 + 国产面板 | 应用包,表单里填端口和口令即可 |
+| [Coolify / Dokploy](docs/deploy/coolify-dokploy.md) | 自有服务器 + 自托管 PaaS | **两份可以整段粘贴的 compose** |
+
+> ℹ️ **这一版还没有「一键部署」按钮。** 我们没有这些平台的账号,一次真实部署都没做过,
+> 更没有上架到任何一家的模板市场 —— 所以不放按钮,只给文档。
+> 每份模板都做过**等价验证**:把模板机械翻译成 compose(同镜像、同环境变量、
+> 用平台自己的方式生成的随机密钥、同卷、同依赖),在本机从空卷跑完
+> 「六服务健康 → 走完向导 → 真实对话 → 深度分析 → 重启数据不丢」。
+> 各篇文档里都写明了「哪些验过、哪些没验过、平台上要自己核对什么」。
+> 有账号的朋友帮忙实测一次,欢迎来
+> [Issues](https://github.com/agentpit-io/hunter-community/issues) 说结果 —— 验过就加按钮。
+
+**公网部署必看**:这些平台上的实例一创建就在公网上。模板都默认
+关掉了单用户免登录(`HUNTER_SINGLE_USER=0`)并生成了一道初始化口令
+`HUNTER_SETUP_TOKEN`,向导第 0 步要填它 —— 不然谁先打开谁就能把大模型配成他自己的。
+口令在平台的环境变量面板里看。
+
+---
+
 ## 🚀 5 分钟跑起来
 
-**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 20 GB(对话引擎镜像约 7.5 GB)· 内存 4 GB · 能访问 `ghcr.io`
+**准备**:Docker Desktop(Windows / macOS)或 Docker Engine + Compose v2(Linux) · 磁盘 10 GB · 内存 4 GB(实测峰值约 1.3 GB) · 能访问 `ghcr.io`
+
+六个服务的镜像都同时提供 **amd64 与 arm64**,Apple Silicon 与 arm 云主机原生运行,不用模拟。
 
 > [!IMPORTANT]
 > **开始前只需要理解两件事**
-> 1. **大模型 key(必需)**:驱动对话本身。推荐 [DeepSeek](https://platform.deepseek.com/api_keys),也支持任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)。
+> 1. **模型从哪来**。推荐走 **HunterCode 内置额度**:[免费申请一把 `hunt_tools_` 平台 key](https://hunter.agentpit.io/dev/api-keys)(约 30 秒),在向导第 2 步选第一张卡,**不用自己去各家申请大模型 key**,地址和模型名向导自动填好。详见 [内置额度使用说明](./docs/builtin-llm/使用说明.md)。
+>    · **额度**:每把 key **每天 1000 万 token**(输入 + 含 thinking 的输出),北京时间 0 点重置;另有每分钟请求数与并发上限。额度用完不是断服 —— 对话里会用中文说清几点重置、怎么改用自带 key,工具与数据供给照常。额度与服务可能调整或下线。
+>    · **隐私**:网关只记 token 数与模型名,**不记任何 prompt 与回复内容**。
+>    · 使用前请读一遍 [**服务条款与可接受使用政策**](./docs/builtin-llm/服务条款.md)([English](./docs/builtin-llm/terms-of-service.md)) —— 仅限自部署用户的研究用途,禁止转售、禁止当通用 API 用。
+>    **高级路径:自带大模型 key** —— [DeepSeek](https://platform.deepseek.com/api_keys) 或任何 OpenAI 兼容网关(通义、Claude、GPT、OpenRouter、OneAPI、AIHubMix 等)都行,向导里粘进去当场检测。两条路随时互相切换。
 > 2. **数据从哪来(三选一,可以先不管)**:① 免费开源源,开箱即用;② 接你自己的 MCP / 数据源;③ 平台数据管道,[免费申请 key](https://hunter.agentpit.io/dev/api-keys)。详见 [数据供给三选一](#-数据供给三选一)。
+>    走内置额度的话这一步**已经顺带解决了** —— 同一把 `hunt_tools_` key 也是数据供给的 key,向导会直接告诉你已解锁。
 
-**耗时**:镜像已拉取约 5 分钟;首次拉取镜像约 10–15 分钟,取决于网络。
+**耗时**:自 v1.1.0 起六个服务**全部走预构建镜像,不再本地构建** —— 首次约 3–5 分钟(全在下镜像),之后 `up -d` 几十秒。向导本身约 1 分钟。
 
 ```bash
-# 1. 拉代码
 git clone https://github.com/agentpit-io/hunter-community
 cd hunter-community
-cp .env.example .env
-
-# 2. 生成密钥(Linux / macOS;Windows PowerShell 写法见 docs/01-getting-started.md)
-echo "JWT_SECRET=$(openssl rand -base64 48)" >> .env
-#    然后删掉 .env 里原有的示例行 JWT_SECRET=change-me-in-production-please
-
-# 3. 编辑 .env,填大模型三项(以 DeepSeek 为例)
-# LLM_BASE_URL=https://api.deepseek.com/v1
-# LLM_DEFAULT_MODEL=deepseek-v4-pro
-# LLM_API_KEY=sk-xxxxx
-# LLM_SCHEMA_SANITIZE=1                 # DeepSeek 必开
-# HUNTER_API_KEY=hunt_tools_xxxxx       # 可选 · 平台数据管道
-
-# 4. 启动,打开浏览器
 docker compose up -d
-open http://localhost:3100
+open http://localhost:3100          # 浏览器里完成首启向导,不用改任何文件
 ```
+
+**没有第二步。** 自 v1.1.0 起 `.env` 一个字都不用改 —— 密钥自动生成、数据库自动迁移、
+六个服务全走预构建镜像;大模型在浏览器里配。
+
+### 浏览器里的首启向导
+
+第一次打开会自动进入向导(没配大模型时),五步:
+
+| 步骤 | 做什么 |
+|---|---|
+| 1 · 环境自检 | 六个服务连通、迁移账本、密钥来源与强度、卷可写、访问方式 —— 逐项真探测 |
+| 2 · 选大模型 | **第一张卡是「使用 HunterCode 内置额度」(推荐)**:选中即自动填好地址与模型名,你只要一把 `hunt_tools_` key。下面几张是自带 key 的高级路径,带**实测**的工具调用命中率与耗时(来自 [`docs/model-testing/`](./docs/model-testing/model-compat-matrix.md)) |
+| 3 · 填 key 当场测 | 连通 → 对话 → 工具调用三项,失败分类报错,**测不通不让保存**;内置额度路径下还会顺带把深度分析指向 `hunter-deep`、用同一把 key 解锁数据供给 |
+| 4 · 数据供给 | 免费开源源 / 平台数据管道 / 自接 MCP,三选一,可以跳过。走内置额度的话这里会直接显示「同一把 key 已解锁」 |
+| 5 · 完成 | **不重启任何容器**热生效,给三个示例问题带你进对话 |
+
+<p align="center">
+  <img src="./docs/screenshots/builtin-llm/02-第2步-内置额度是第一张卡.png" alt="第 2 步 · 内置额度是第一张卡" width="760" />
+</p>
+
+全部截图见 [`docs/screenshots/builtin-llm/`](./docs/screenshots/builtin-llm/)(内置额度全流程)
+与 [`docs/screenshots/setup-wizard/`](./docs/screenshots/setup-wizard/)(自带 key 路径)。
+
+> [!IMPORTANT]
+> **这台实例只要能从公网打开,就先在 `.env` 里设 `HUNTER_SETUP_TOKEN`**(随便一串随机值,
+> `openssl rand -base64 24`),然后 `docker compose up -d`。
+> 不设的话,谁先打开这个页面谁就能配置大模型 —— 向导判断「来源是不是本机」靠的是
+> HTTP 转发头,裸 `docker compose`(前面没有 nginx 之类的反代)时那是访问者可以伪造的。
+> 设了之后向导第 0 步会要这个口令,连错 5 次锁 15 分钟。本机 / 内网使用不需要设。
+
+**想走老路(在 `.env` 里写死)也行**,而且优先级更高:填了 `LLM_BASE_URL` / `LLM_API_KEY` /
+`LLM_DEFAULT_MODEL` 的实例是**锁定**状态,向导只读展示、改不了它(演示站就是这么跑的)。
+要换模型改 `.env` 后 `docker compose up -d`(**不是 restart** —— restart 不重读 `.env`)。
+内置额度也能写死(一键部署模板会这么预填),写法见
+[内置额度使用说明 · 第六节](./docs/builtin-llm/使用说明.md#六想在-env-里写死一键部署模板)。
+
+> 不配大模型时六个服务照样健康,只是发消息会收到一句中文的「大模型尚未配置」。
+> 想以后再配,向导最后一步点「先进对话页(稍后再说)」即可;
+> 要重新跑向导:设置 → 大模型 → 「重新运行初始化向导」。
+
+**要改代码的开发者**叠加开发覆盖文件 —— 它带回本地构建与全部源码挂载(改 `apps/web/public` 下的静态文件、`scripts/` 下的 MCP 与插件都立即生效):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+### 从 v1.0.x 升级
+
+```bash
+git pull
+docker compose pull && docker compose up -d
+bash scripts/migrate-volumes.sh          # ⚠️ 只有老用户需要,见下
+```
+
+> [!WARNING]
+> **装过 SKILL / 导入过数据包的老用户必须跑一次 `scripts/migrate-volumes.sh`。**
+> v1.0.x 把 `./user-skills` 和 `./data-packages` 两个仓库目录直接挂给 api;
+> v1.1.0 起改成 api 自己的具名卷 —— 云平台上没有仓库目录,挂不了。
+> 直接升级的话新卷是空的,**你装过的 SKILL 会从界面上消失**。
+> 文件一个都没丢(还在 `user-skills/` 下),这个脚本就是把它们搬进新卷;
+> 幂等,目标非空时不覆盖。api 启动日志里也会提示。
+
+其余几处变化不需要你做什么:
+- `JWT_SECRET` 留空不再拒绝启动 —— 首次启动自动生成并写进 `hunter_secrets` 卷。
+  **已经在 `.env` 里填了的不要动**:换掉它会让已保存的 key 全部解不开、登录全部失效。
+- 数据库迁移改由 api 启动时执行(原来挂给 postgres 的 initdb 目录只在建卷那次跑,
+  所以老部署一直缺表缺列)。升级后第一次启动会把没跑过的迁移补齐,日志里逐个列出来。
+- 用户 SKILL 不再靠 api 与 opencode 共享目录,改由 opencode 按 URL 向 api 拉取。
 
 **打开后试试**:
 - 问「601899 现在多少钱」—— 返回富卡片(实时价 · 52 周分位 · AI 短评)
@@ -426,6 +514,10 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
 
 你基于 HunterCode 做了二次开发或 fork?欢迎在 [讨论区](https://github.com/agentpit-io/hunter-community/discussions) 告诉我们,我们会加到这里。
 
+### 💝 感谢推荐分享
+
+- 社区:[LINUX DO](https://linux.do/) —— 中文开发者社区
+
 ---
 
 ## 💬 社区与支持
@@ -446,8 +538,17 @@ python scripts/check_skill_sync.py       # 比对磁盘与 opencode 实际加载
 - [x] **v0.1** · 自部署骨架、本地账号认证、可插拔数据 / 大模型 / 预测层
 - [x] **v0.2** · opencode 对话引擎、插件与 MCP、一把 key 通用、GitHub 一键装 SKILL
 - [x] **v1.0.0**(2026-09-13)· 全市场扫描筛选器、小鹿智能体研究台、量化因子与回测按市场隔离、SKILL 导入附属文档与中文说明、kronos / truesource MCP 发布、会话数据落具名卷 —— [完整更新日志](./CHANGELOG.md)
-- [ ] **v1.0.1** · 文档与社区基建 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/1)
-- [ ] **v1.1.0** · 首启向导(免改 `.env`)、多架构镜像、每日部署冒烟测试 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/2)
+- [x] **v1.0.1**(2026-09-17)· 对话引擎镜像 **7.56 GB → 618 MB**(下载量 1.70 GB → 153 MB)、api 镜像 1.32 GB → 909 MB、入口脚本固化、每日部署冒烟 CI、文档与社区基建 —— [瘦身过程与实测](./docs/image-slim/)
+- [x] **v1.1.0**(2026-09-18)· 免改配置文件开箱即用 —— [里程碑](https://github.com/agentpit-io/hunter-community/milestone/2)
+  - [x] 六个服务全部预构建镜像 + amd64/arm64 双架构(`v1.1.0-rc1`)
+  - [x] 数据库迁移改为 api 启动时自动执行;`JWT_SECRET` 等密钥首次启动自动生成
+  - [x] 大模型配置可存库(不再只能写 `.env`),改配置热生效、无需重启容器
+  - [x] 图形化首启向导(选模型 → 填 key 当场测试 → 直接对话)
+  - [x] 五个平台的部署方案(Zeabur / Sealos / Railway / 1Panel / Coolify·Dokploy)
+        —— 模板与文档就绪并做过等价验证,但**都还没在真实平台上跑过、也都没上架**,
+        所以本版不放部署按钮,见 [一键部署到云平台](#-一键部署到云平台)
+  - 进度与实测数据:[`docs/setup-wizard/`](./docs/setup-wizard/)
+- [ ] **下一步** · 拿到平台账号后逐个实测并上架(那时才加按钮)、国内镜像源、arm64 真机验证
 
 想要什么功能?到 [讨论区想法分区](https://github.com/agentpit-io/hunter-community/discussions/categories/ideas) 投票。
 

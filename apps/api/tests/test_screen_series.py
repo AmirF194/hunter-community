@@ -923,6 +923,63 @@ _c, _d = _dd("def a = close > close[1];\ndef b = volume > volume[1];\ndef H4 = a
 check("H 宿主里每项后面跟注释:条件原文不含注释", [x["expr"] for x in _d["conditions"] if x["kind"] == "term"] == ["close > 3"]
       and _d["plot_refs"] == ["a", "b"], _d["plot_order"])
 
+print("\n── I 名字不分大小写(2026-09-19 编辑框 sma10 > sma20 报不认识)──")
+# ThinkScript 不分大小写。按类别:扫描源字段(全小写 / 全大写 / 混写 / 带点 / 带下划线)、自己的 def 名、
+# 与字段同名的 def、函数与关键字(本来就认,不能被改坏)、拿不准的不猜、位置不变。
+
+
+def fixed(src, extra=""):
+    return sd.fix_case(src, FIELDS, extra)
+
+
+def compiles(src):
+    try:
+        compile(fixed(src)[0])
+        return True
+    except sd.ScreenError:
+        return False
+
+
+check("I ⭐ 用户原样:sma10 > sma20 → SMA10 > SMA20", fixed("plot scan = sma10 > sma20;")[0] == "plot scan = SMA10 > SMA20;")
+check("I 改前确实不认识(不是本来就认)", "不认识" in err_of("plot scan = sma10 > sma20;"))
+check("I 改后编译得过", compiles("plot scan = sma10 > sma20;"))
+check("I 混写 Sma20 / eMa50", fixed("plot scan = Sma20 > eMa50;")[0] == "plot scan = SMA20 > EMA50;")
+check("I 大写下划线字段 MARKET_CAP_BASIC", fixed("plot scan = MARKET_CAP_BASIC > 1e9;")[0] == "plot scan = market_cap_basic > 1e9;")
+check("I 带点字段 perf.y", fixed("plot scan = perf.y > 0;")[0] == "plot scan = Perf.Y > 0;")
+check("I rsi → RSI、Rs_Rating → rs_rating", fixed("plot scan = rsi > 50 and Rs_Rating >= 80;")[0]
+      == "plot scan = RSI > 50 and rs_rating >= 80;")
+check("I 改写清单逐项列出", fixed("plot scan = sma10 > sma20;")[1] == ["sma10 → SMA10", "sma20 → SMA20"])
+check("I 已经是原名的不列、不改", fixed("plot scan = SMA10 > SMA20;") == ("plot scan = SMA10 > SMA20;", []))
+check("I ⭐ def 名换大小写引用:def Up … plot scan = up", fixed("def Up = close > 20; plot scan = up;")[0]
+      == "def Up = close > 20; plot scan = Up;")
+check("I def 名换大小写后编译得过", compiles("def Up = close > 20; plot scan = UP;"))
+# 2026-09-22 改口径:原来这条断言「引用归 def」,线上当天就出事(见下一条)。逐字是字段名的一律按字段
+check("I ⭐ 逐字写对的字段名不被同名(不同大小写)的 def 抢走",
+      fixed("def sma20 = Average(close, 20); plot scan = close > SMA20;")[0]
+      == "def sma20 = Average(close, 20); plot scan = close > SMA20;")
+check("I ⭐ 09-22 事故:上下文有 def sma50,追加的脚本里 SMA50 不动",
+      fixed("def c_trend = close > SMA50 and SMA50 > SMA150; plot scan = c_trend;",
+            "def sma50 = Average(close, 50); def cond_price_sma50 = close > sma50; plot scan = cond_price_sma50;")[0]
+      == "def c_trend = close > SMA50 and SMA50 > SMA150; plot scan = c_trend;")
+check("I 事故那份追加后编译得过", compiles("def sma50 = Average(close, 50); def c1 = close > sma50;"
+                                     " def c_trend = close > SMA50 and SMA50 > SMA150; plot scan = c1 and c_trend;"))
+check("I 不是字段的名字仍按 def 改(def Foo50 … foo50)",
+      fixed("def Foo50 = close > 1; plot scan = foo50;")[0] == "def Foo50 = close > 1; plot scan = Foo50;")
+check("I 追加模式:片段引用上下文里的 def,按上下文的写法改",
+      fixed("plot scan = MYCOND;", "def myCond = close > 20;")[0] == "plot scan = myCond;")
+check("I input 名换大小写", fixed("input N = 20; plot scan = close > n;")[0] == "input N = 20; plot scan = close > N;")
+check("I 函数调用不动(本来就不分)", fixed("plot scan = close > average(close, 50);")[0] == "plot scan = close > average(close, 50);")
+check("I 价格名不动(本来就不分)", fixed("plot scan = CLOSE > Close[1];")[0] == "plot scan = CLOSE > Close[1];")
+check("I 关键字不动", fixed("plot scan = close > 20 AND volume > 1;")[0] == "plot scan = close > 20 AND volume > 1;")
+check("I ⭐ 不认识的名字不乱改,照旧报不认识", "不认识" in err_of(fixed("plot scan = sma7x > 1;")[0]))
+AMB = FIELDS | {"Foo", "FOO"}
+check("I ⭐ 不分大小写对上两个字段时不猜", sd.fix_case("plot scan = foo > 1;", AMB)[0] == "plot scan = foo > 1;")
+check("I 注释里的字不动", fixed("plot scan = sma10 > 1;  # sma10 是十日线")[0] == "plot scan = SMA10 > 1;  # sma10 是十日线")
+src = "def c1 = sma10 > sma20;   # 注释\nplot scan = c1 and rsi > 50;"
+check("I ⭐ 只改大小写,长度不变(decompose / 编辑框用的位置照旧)", len(fixed(src)[0]) == len(src))
+check("I 大白话原样返回(词法不过)", fixed("股价站上50日均线") == ("股价站上50日均线", []))
+check("I 时间序列脚本里的字段也改", fixed("plot scan = sma20 > sma20[1];")[0] == "plot scan = SMA20 > SMA20[1];")
+
 print(f"\n{'ALL OK' if not FAILS else 'SOME FAILED'} · 通过 {N_OK} · 失败 {len(FAILS)}")
 if FAILS:
     print("失败清单:")
