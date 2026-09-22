@@ -181,7 +181,7 @@ bash scripts/migrate-volumes.sh          # ⚠️ 只有老用户需要,见下
 
 | 方式 | 需要谁的 key | 数据来源 | 适合谁 |
 |---|---|---|---|
-| **① 免费开源源** | 不需要 | AKShare(A 股)· yfinance(美股 / 港股) | 先跑通看效果;A 股行情要在 `.env` 设 `DATA_SOURCE_PROVIDER=akshare`,见表下说明 |
+| **① 免费开源源** | 不需要 | AKShare(A 股)· 腾讯 / 新浪免费通道(港股 / 美股) | 先跑通看效果;A 股行情要在 `.env` 设 `DATA_SOURCE_PROVIDER=akshare`,见表下说明 |
 | **② 自接工具 / MCP** | 你自己的 | 你的券商、数据商、自建 MCP,或 Cline / Cursor 生态里任意 MCP | 已有数据订阅,想接进来用;侧栏「工具箱 ＋」添加 |
 | **③ 平台数据管道** | `hunt_tools_` 开头的 key,[免费申请](https://hunter.agentpit.io/dev/api-keys) | 平台汇总的行情、财报、新闻数据,UZI 深度分析所需数据,Kronos 走势预测 | 免费源不够用,想要更全的数据 |
 

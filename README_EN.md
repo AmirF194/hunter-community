@@ -176,7 +176,7 @@ Apart from the LLM key, you decide where data comes from — **our platform key 
 
 | Option | Whose key | Data | Good for |
 |---|---|---|---|
-| **① Free open-source** | none | AKShare (A-shares) · yfinance (US / HK) | Trying it out; A-share quotes need `DATA_SOURCE_PROVIDER=akshare` in `.env` (see below the table) |
+| **① Free open-source** | none | AKShare (A-shares) · free Tencent / Sina channels (HK / US) | Trying it out; A-share quotes need `DATA_SOURCE_PROVIDER=akshare` in `.env` (see below the table) |
 | **② Your own tools / MCP** | yours | your broker, data vendor, self-built MCP, or any MCP from the Cline / Cursor ecosystem | You already pay for data; add via "Toolbox ＋" in the sidebar |
 | **③ Platform data pipeline** | a `hunt_tools_` key, [free](https://hunter.agentpit.io/dev/api-keys) | Aggregated quotes, financials and news, data for UZI deep analysis, Kronos forecasts | Free sources aren't enough and you want broader data |
 
