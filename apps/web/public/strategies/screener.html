@@ -1031,13 +1031,26 @@ async function doSave(raw, modal) {
 // 点官方示例 = 直接换成那套条件(2026-09-22 用户:「官方预留的就直接记录筛选器就行,不要再生成一次」)。
 // 原来是把示例脚本塞进生成框再走 generate(),受「追加 / 替换」开关影响:追加模式下拿当前条件当上下文编译,
 // 当前是「上升趋势」(有 def sma50)时点「VCP 波段收缩」,VCP 里的 SMA50 被当成上下文里的 sma50,报「不认识 'sma50'」。
-// 示例是一整套设置,和加载「我的扫描策略」一样一律替换:不进生成框、不看追加开关、失败时市场退回、条件不动。
+// 现在不进生成框、不再点「生成」:替换模式(或当前没有条件)直接换成示例那套;追加模式把示例的条件追加进来
+// (同日用户纠正:第一版一律替换,「我选的追加,它点击后却是替换」)。失败时市场退回、条件不动。
 async function loadOfficialPreset(p) {
   const before = S.conditions.filter(function (c) { return c.is_bool }).length
   const prevMarket = S.market
+  // 追加模式 + 已有条件 → 把示例的条件追加进来(同日用户:「我选的追加,它点击后却是替换」)。
+  // 走 generate 的追加路径(当前脚本当上下文编译、重名改名、回写失败整份退回),只是示例脚本不进生成框
+  if (S.mode === 'append' && before > 0) {
+    if (p.market) S.market = p.market
+    S.genError = null
+    await generate(false, p)
+    if (S.genError) { S.market = prevMarket; render(); return }
+    S.loadedName = ''
+    const added = S.conditions.filter(function (c) { return c.is_bool }).length - before
+    render()
+    toast('已追加官方示例「' + p.name + '」的 ' + added + ' 个条件')
+    return
+  }
   if (p.market) S.market = p.market
-  S.input = ''
-  S.genError = null
+  S.genError = null             // 生成框里用户正在写的字不动(示例不经过生成框)
   const ok = await reparse(p.script)
   if (!ok || S.genError) {
     S.market = prevMarket
@@ -1947,10 +1960,12 @@ async function reparse(script) {
   return true
 }
 
-async function generate(allowAi) {
+async function generate(allowAi, preset) {
   // allowAi=true 只可能来自用户点「AI 识别」。生成按钮永远传 undefined,
   // 所以正常点生成**一分钱都不花**:后端先试脚本、再试本地关键词。
-  const text = allowAi ? (S.aiText || '') : (S.input || '').trim()
+  // preset:点官方示例、且在追加模式时由 loadOfficialPreset 传进来(2026-09-22)。
+  // 示例脚本直接当输入,**不进生成框、不动生成框里用户正在写的字**,失败也不给 AI 按钮(官方示例本来就该解析得过)
+  const text = preset ? preset.script : allowAi ? (S.aiText || '') : (S.input || '').trim()
   if (!text) { S.genError = '生成框是空的。把筛选脚本粘进来,或者点一个示例。'; render(); return }
   if (S.login === false || !getToken()) { needLogin(); return }
   const appending = (S.mode === 'append' && S.conditions.length > 0)
@@ -1984,7 +1999,7 @@ async function generate(allowAi) {
     }
     S.genError = errOf(r, httpFail('生成失败', r.status))
     // 后端说"本地两条路都不通,可以试 AI" → 把原文记下来,弹按钮等用户点
-    S.canTryAi = canAi(r)
+    S.canTryAi = !preset && canAi(r)
     S.aiText = S.canTryAi ? text : ''
     S.aiKind = (S.canTryAi && r.data.detail.kind === 'script') ? 'script' : 'text'
     render(); return
@@ -2014,14 +2029,14 @@ async function generate(allowAi) {
   } else {
     mergeAppend(fresh)
   }
-  S.input = ''
+  S.input = preset ? prevInput : ''
   S.canTryAi = false; S.aiText = ''
   S.result = null; S.probe = {}
   // 回写再解析一次 —— 保证 tokens / is_bool 与后端完全一致(合并后名字可能改过)。
   // reparse 送的是脚本,不会再触发 AI,所以 d.ai 要在这之后补回去。
   if (!(await reparseKeepOff())) {
     // 合并 / 替换之后回写解析失败(比如追加的脚本里有和宿主同名的定义):条件区退回原样,生成框里的原文还给用户
-    restoreState(sn); S.input = prevInput || text; saveDraft(); render(); return
+    restoreState(sn); S.input = preset ? prevInput : (prevInput || text); saveDraft(); render(); return
   }
   S.ai = d.ai || null
   S.kw = d.kw || null

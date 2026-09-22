@@ -1244,41 +1244,87 @@ auditJob('保存策略', async () => {
   auditCheck('保存策略', '加载解析失败:市场退回、loadedName 清空', vm.runInContext(`S.market + '|' + S.loadedName`, ctx2) === 'us|')
 })
 
-// G2 · 点官方示例 = 直接换成那套条件(2026-09-22 线上事故:追加模式下点「VCP 波段收缩」报「不认识 'sma50'」)
-// 原来点示例是塞进生成框再 generate(),受追加开关影响、拿当前条件当上下文编译。现在和加载「我的扫描策略」一样一律替换。
+// G2 · 点官方示例:不进生成框、不再点「生成」,按「追加 / 替换」开关合并(2026-09-22)
+// 线上事故:追加模式下点「VCP 波段收缩」报「不认识 'sma50'」(后端大小写改写的锅,已修);同日用户要求点示例直接进条件区,
+// 第一版一律替换又被纠正:「我选的追加,它点击后却是替换」。
 auditJob('官方示例', async () => {
-  const ctx = scCtx()
-  vm.runInContext(`
-    S.mode = 'append'; S.market = 'hk'; S.input = '用户正在写的一句'
-    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['old1', 'old2'], plot_order: ['old1', 'old2'], conditions: [
+  const OLD = `applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['old1', 'old2'], plot_order: ['old1', 'old2'], conditions: [
       { name: 'sma50', expr: 'Average(close, 50)', kind: 'def', is_bool: false, tokens: [] },
       { name: 'old1', expr: 'close > sma50', kind: 'def', is_bool: true, tokens: [] },
-      { name: 'old2', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] } ] })
-    var PRE = { key: 'vcp_range', name: 'VCP 波段收缩', market: 'us', script: 'def c_trend = close > SMA50;' + NL + 'plot scan = c_trend;' }
-    RESP.push({ ok: true, status: 200, data: { combine: 'all', plot_name: 'scan', plot_refs: ['c_trend'], plot_order: ['c_trend'], conditions: [
+      { name: 'old2', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] } ] })`
+  const PRE = `var PRE = { key: 'vcp_range', name: 'VCP 波段收缩', market: 'us', script: 'def c_trend = close > SMA50;' + NL + 'plot scan = c_trend;' }`
+  const FRESH = `{ ok: true, status: 200, data: { combine: 'all', plot_name: 'scan', plot_refs: ['c_trend'], plot_order: ['c_trend'], conditions: [
+      { name: 'c_trend', expr: 'close > SMA50', kind: 'def', is_bool: true, tokens: [] } ] } }`
+  const bools = (c) => vm.runInContext(`S.conditions.filter(function (c) { return c.is_bool }).map(function (c) { return c.name }).join(',')`, c)
+
+  // ① 追加模式 + 已有条件 → 追加
+  const ctx = scCtx()
+  vm.runInContext(`
+    S.mode = 'append'; S.market = 'us'; S.input = '用户正在写的一句'
+    ${OLD}
+    ${PRE}
+    RESP.push(${FRESH})
+    RESP.push({ ok: true, status: 200, data: { combine: 'all', plot_name: 'scan', plot_refs: ['old1', 'old2', 'c_trend'], plot_order: ['old1', 'old2', 'c_trend'], conditions: [
+      { name: 'sma50', expr: 'Average(close, 50)', kind: 'def', is_bool: false, tokens: [] },
+      { name: 'old1', expr: 'close > sma50', kind: 'def', is_bool: true, tokens: [] },
+      { name: 'old2', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] },
       { name: 'c_trend', expr: 'close > SMA50', kind: 'def', is_bool: true, tokens: [] } ] } })
   `, ctx)
   await vm.runInContext(`loadOfficialPreset(PRE)`, ctx)
-  const b0 = ctx.SENT[0] && ctx.SENT[0].body
-  auditCheck('官方示例', '⭐追加模式下点示例:发去解析的就是示例原文,不带当前脚本当上下文', b0 && b0.script === ctx.PRE.script && !b0.context, b0)
-  auditCheck('官方示例', '⭐条件整套替换(原来 2 条没了,只剩示例的)',
-    vm.runInContext(`S.conditions.filter(function (c) { return c.is_bool }).map(function (c) { return c.name }).join(',')`, ctx) === 'c_trend')
-  auditCheck('官方示例', '市场切到示例的市场', vm.runInContext(`S.market`, ctx) === 'us')
-  auditCheck('官方示例', '不往生成框里塞示例脚本', vm.runInContext(`S.input`, ctx) === '')
-  auditCheck('官方示例', '提示替换了几条', ctx.TOASTS.some(t => /已加载官方示例「VCP 波段收缩」 · 替换了原来的 2 个条件/.test(t[0])), ctx.TOASTS)
+  const a0 = ctx.SENT[0] && ctx.SENT[0].body
+  auditCheck('官方示例', '⭐追加模式:发去解析的是示例原文,带当前脚本当上下文', a0 && a0.script === ctx.PRE.script && !!a0.context, a0)
+  auditCheck('官方示例', '⭐追加模式:原来的条件保留,示例的条件加在后面', bools(ctx) === 'old1,old2,c_trend', bools(ctx))
+  auditCheck('官方示例', '⭐追加模式:生成框里用户正在写的字不动、不塞示例脚本', vm.runInContext(`S.input`, ctx) === '用户正在写的一句')
+  auditCheck('官方示例', '追加模式:提示追加了几条', ctx.TOASTS.some(t => /已追加官方示例「VCP 波段收缩」的 1 个条件/.test(t[0])), ctx.TOASTS)
+
+  // ② 替换模式 → 整套替换
+  const ctx1 = scCtx()
+  vm.runInContext(`
+    S.mode = 'replace'; S.market = 'hk'; S.input = '用户正在写的一句'
+    ${OLD}
+    ${PRE}
+    RESP.push(${FRESH})
+  `, ctx1)
+  await vm.runInContext(`loadOfficialPreset(PRE)`, ctx1)
+  const b0 = ctx1.SENT[0] && ctx1.SENT[0].body
+  auditCheck('官方示例', '⭐替换模式:发去解析的是示例原文,不带上下文', b0 && b0.script === ctx1.PRE.script && !b0.context, b0)
+  auditCheck('官方示例', '⭐替换模式:条件整套换成示例的', bools(ctx1) === 'c_trend', bools(ctx1))
+  auditCheck('官方示例', '替换模式:市场切到示例的市场', vm.runInContext(`S.market`, ctx1) === 'us')
+  auditCheck('官方示例', '替换模式:生成框里的字不动', vm.runInContext(`S.input`, ctx1) === '用户正在写的一句')
+  auditCheck('官方示例', '替换模式:提示替换了几条', ctx1.TOASTS.some(t => /已加载官方示例「VCP 波段收缩」 · 替换了原来的 2 个条件/.test(t[0])), ctx1.TOASTS)
+
+  // ③ 追加模式但当前没有条件 → 就是加载
+  const ctx4 = scCtx()
+  vm.runInContext(`S.mode = 'append'; S.market = 'us'; ${PRE}; RESP.push(${FRESH})`, ctx4)
+  await vm.runInContext(`loadOfficialPreset(PRE)`, ctx4)
+  auditCheck('官方示例', '追加模式、当前没有条件:直接加载', bools(ctx4) === 'c_trend' && !(ctx4.SENT[0].body.context))
+
+  // ④ 失败:两种模式都退回市场、条件不动、生成框不动,追加模式也不给 AI 按钮
   const ctx2 = scCtx()
   vm.runInContext(`
-    S.market = 'hk'
+    S.mode = 'replace'; S.market = 'hk'
     applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['old1'], plot_order: ['old1'], conditions: [
       { name: 'old1', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] } ] })
     RESP.push(ERR400)
   `, ctx2)
   await vm.runInContext(`loadOfficialPreset({ key: 'x', name: 'X', market: 'us', script: 'plot scan = close > 1;' })`, ctx2)
-  auditCheck('官方示例', '解析失败:市场退回、原来的条件不动',
+  auditCheck('官方示例', '替换模式解析失败:市场退回、原来的条件不动',
     vm.runInContext(`S.market + '|' + S.conditions.map(function (c) { return c.name }).join(',')`, ctx2) === 'hk|old1')
+  const ctx3 = scCtx()
+  vm.runInContext(`
+    S.mode = 'append'; S.market = 'hk'; S.input = '我的草稿'
+    applyParsed({ combine: 'all', plot_name: 'scan', plot_refs: ['old1'], plot_order: ['old1'], conditions: [
+      { name: 'old1', expr: 'close > 20', kind: 'def', is_bool: true, tokens: [] } ] })
+    RESP.push({ ok: false, status: 400, data: { detail: { message: '不认识 xx', can_try_ai: true, kind: 'script' } } })
+  `, ctx3)
+  await vm.runInContext(`loadOfficialPreset({ key: 'x', name: 'X', market: 'us', script: 'plot scan = xx > 1;' })`, ctx3)
+  auditCheck('官方示例', '⭐追加模式解析失败:市场退回、条件不动、生成框不动、不给 AI 按钮',
+    vm.runInContext(`S.market + '|' + S.conditions.map(function (c) { return c.name }).join(',') + '|' + S.input + '|' + S.canTryAi`, ctx3) === 'hk|old1|我的草稿|false',
+    vm.runInContext(`S.market + '|' + S.input + '|' + S.canTryAi`, ctx3))
+
   const html = fs.readFileSync(path.join(DIR, 'screener.html'), 'utf8')
   const branch = html.slice(html.indexOf('if (!b.dataset.preset) return'), html.indexOf('if (!b.dataset.preset) return') + 300)
-  auditCheck('官方示例', '⭐源码:点示例走 loadOfficialPreset,不再 generate()', /loadOfficialPreset\(p\)/.test(branch) && !/generate\(\)/.test(branch), branch)
+  auditCheck('官方示例', '⭐源码:点示例走 loadOfficialPreset,点击分支里不直接 generate()', /loadOfficialPreset\(p\)/.test(branch) && !/generate\(/.test(branch), branch)
 })
 
 // H · 草稿:宿主脚本能恢复;401 时草稿不被覆盖
