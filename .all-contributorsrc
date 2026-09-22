@@ -21,6 +21,18 @@
       "contributions": [
         "code"
       ]
+    },
+    {
+      "login": "cnYui",
+      "name": "Yui(ゆい)",
+      "avatar_url": "https://avatars.githubusercontent.com/u/132864240?v=4",
+      "profile": "https://github.com/cnYui",
+      "contributions": [
+        "code",
+        "test",
+        "infra",
+        "doc"
+      ]
     }
   ],
   "commitType": "docs"
