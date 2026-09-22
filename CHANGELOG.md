@@ -3,7 +3,18 @@
 All notable changes to HunterCode · Community Edition follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.1] - 2026-09-22
+
+> 补丁版本,只修内置额度的两个接入问题,无数据库变更、无新环境变量。
+> 升级:`.env` 里的 `HUNTER_VERSION` 改成 `1.2.1`(没写的不用改),然后
+> `docker compose pull && docker compose up -d`。
+
+**上线前实测**(测试服务器上另起一套不建 `.env` 的实例,浏览器端到端):
+自带 key(`qwen3.8-max`)+ 已配平台 key → 打开「Hunter key 已配置 · 管理」→ 出现
+「一键开启内置额度」→ 点击后约 9 秒自动刷新 → 选择器只剩 **Gemini 3.8 Flash** →
+本地存着的旧模型名被自动纠正为 `hunter-llm/hunter-chat` → 发消息正常回答,
+网关当日用量同步增加;再次打开弹窗显示「对话也在用内置额度」。全程无 4xx/5xx。
+
 
 ### 🐛 修复 · Fixed
 
